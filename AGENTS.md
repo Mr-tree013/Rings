@@ -74,10 +74,14 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 ## 6. Phase 现状
 
-当前为 **Phase 0：工程初始化**。以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
+当前为 **Phase 1A 已完成**：SQLite 持久层基础（`store/db.py`、`store/migrations.py`、
+`store/events.py`）、`InboundEvent` 领域模型与状态机、`EventRepository` 端口。
 
-SQLite schema / Event Inbox / IMAP / SMTP / DeepSeek / FTS5 / Vault 扫描 / Web Server / eHall /
-Playwright / scheduler / approval token / 业务 domain entity / Windows Task Scheduler 配置。
+以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
+
+Event Inbox processor / IMAP / SMTP / DeepSeek / FTS5 / Vault 扫描 / Web Server / eHall /
+Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
+Windows Task Scheduler 配置。
 
 新增能力前先确认它属于哪个 Phase，并在 spec 或 ADR 里落了设计再动手。
 
@@ -86,4 +90,3 @@ Playwright / scheduler / approval token / 业务 domain entity / Windows Task Sc
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。
 - 不重写历史、不强推、不删除用户已有提交。
 - `uv.lock` 必须入库；不要提交其它锁文件。
-

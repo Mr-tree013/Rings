@@ -39,6 +39,9 @@ InboundEvent → classification → Case → knowledge search → material check
    且被目标字段许可的事实。
 4. 高风险能力（退课、撤销申请、退宿等）在代码能力集合中物理不存在，不靠 prompt 禁止。
 
+运行时存储：标准库 `sqlite3` 直连，SQL 全部收在 `store/` 包内，领域与应用层不执行 SQL、
+不 import 数据库驱动（ADR-0003、ADR-0008）。
+
 ## Installation
 
 需要 Python 3.13 与 [uv](https://docs.astral.sh/uv/)：
@@ -93,4 +96,3 @@ docs/adr/                                                  架构决策记录
 rules/ playbooks/ memory/ evals/ prompts/ migrations/      规则、流程、记忆、评测、提示词、迁移
 tests/{unit,integration,contract,regression,e2e}/          测试分层
 ```
-

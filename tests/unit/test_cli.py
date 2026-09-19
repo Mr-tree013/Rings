@@ -33,3 +33,10 @@ def test_doctor_succeeds_on_python_313() -> None:
     assert "3.13" in result.output
     assert "environment looks usable" in result.output
 
+
+def test_doctor_reports_the_runtime_database_path() -> None:
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "runtime db" in result.output
+    assert "assistant.db" in result.output

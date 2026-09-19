@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 APP_DIR_NAME = "growing-assistant"
+DATABASE_FILENAME = "assistant.db"
 
 
 def _xdg_dir(env_var: str, fallback: Path) -> Path:
@@ -47,3 +48,11 @@ class AppPaths:
             ("cache", self.cache),
         )
 
+    @property
+    def database_file(self) -> Path:
+        """Path of the runtime SQLite database (ADR-0003).
+
+        Resolved only — nothing here creates the file or its directory. `pw doctor`
+        depends on that: diagnosing must not have side effects.
+        """
+        return self.runtime / DATABASE_FILENAME

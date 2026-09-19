@@ -55,14 +55,20 @@ def doctor() -> None:
     version = _python_version()
     version_text = ".".join(str(part) for part in version)
     python_ok = version[:2] >= MINIMUM_PYTHON
+    paths = AppPaths.resolve()
 
     table = Table(title="pw doctor", show_header=False, title_justify="left")
     table.add_row("python", f"{version_text} ({'ok' if python_ok else 'too old'})")
     table.add_row("executable", sys.executable)
     table.add_row("platform", f"{platform.system()} {platform.release()} ({platform.machine()})")
     table.add_row("virtualenv", "yes" if _in_virtualenv() else "no")
-    for label, path in AppPaths.resolve().items():
+    for label, path in paths.items():
         table.add_row(f"{label} dir", f"{path} ({'present' if path.exists() else 'absent'})")
+    database_file = paths.database_file
+    table.add_row(
+        "runtime db",
+        f"{database_file} ({'present' if database_file.exists() else 'absent'})",
+    )
     console.print(table)
 
     if not python_ok:

@@ -2,7 +2,9 @@
 
 - Status: Accepted (frozen)
 - Date: 2026-09-19
-- Scope: Architecture v1. Phase 0 implements only the repository skeleton described here.
+- Scope: Architecture v1. Phase 0 delivered the repository skeleton; Phase 1A adds the
+  SQLite persistence foundation and the `InboundEvent` model. Everything else below is
+  still a plan, not a description of existing code.
 
 ## 1. 目标
 
@@ -197,7 +199,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | Phase | 内容 | 状态 |
 | --- | --- | --- |
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
-| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 计划 |
+| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 进行中：1A 已完成（`InboundEvent`、迁移、`SqliteEventRepository`） |
 | 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 计划 |
 | 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
@@ -221,4 +223,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0005 Model port
 - ADR-0006 Action approval boundary
 - ADR-0007 FTS5 before vector search
-
+- ADR-0008 Direct `sqlite3` access behind repository ports

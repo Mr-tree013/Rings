@@ -1,7 +1,12 @@
 """Store layer: the single SQLite runtime authority (ADR-0003).
 
-This is deliberately a package, not a single module: later phases split it into
-`db.py`, `schema.py`, `mail.py`, `cases.py`, `approvals.py`, `knowledge.py`, `audit.py`.
-Phase 0 creates no schema and no database logic.
-"""
+This is deliberately a package, not a single module. Current contents:
 
+- `db.py` — connection lifecycle, pragmas, explicit transactions
+- `migrations.py` — forward-only migration runner plus `schema_migrations` bookkeeping
+- `serialization.py` — UTC ISO 8601 datetime conversion shared by all repositories
+- `events.py` — `SqliteEventRepository`
+- `errors.py` — implementation-level failures
+
+Later phases add `mail.py`, `cases.py`, `approvals.py`, `knowledge.py`, `audit.py`.
+"""
