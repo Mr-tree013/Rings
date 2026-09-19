@@ -154,3 +154,8 @@ Windows Task Scheduler 配置。
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。
 - 不重写历史、不强推、不删除用户已有提交。
 - `uv.lock` 必须入库；不要提交其它锁文件。
+- **当前没有配置 git remote，也从未推送**：按阶段在本地提交并打 annotated tag，等用户明确要求时
+  再一次性上传（步骤见 `docs/ops/remote-upload.md`）。不要擅自 `git remote add` 或 `git push`。
+- 阶段收尾必须：工作树 clean、tag 已打且信息明确、提交里不含 `*.db`/`*.sqlite3`/`secrets/`/
+  `state/`/个人 Vault；并定期在仓库外做 `git bundle` 备份。
+- 已发布的 tag（`v0.0.1`、`v0.1.0`、`v0.2.0`）永不改写，也不要在其上追加提交。
