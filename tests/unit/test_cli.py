@@ -1,4 +1,4 @@
-"""Phase 0 tests for the `pw` CLI: `status` runs, `doctor` passes on Python 3.13."""
+"""Tests for the `pw` CLI: `status` runs, `doctor` passes on Python 3.13."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from assistant.cli import app
 runner = CliRunner()
 
 
-def test_status_runs_and_reports_phase_zero() -> None:
+def test_status_runs_and_reports_the_core_state() -> None:
     result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0, result.output
-    assert "Phase 0" in result.output
+    assert "durable event pipeline" in result.output
     assert "not implemented" in result.output
 
 

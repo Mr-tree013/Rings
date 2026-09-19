@@ -19,6 +19,7 @@ from assistant.store.migrations import (
     SCHEMA_MIGRATIONS_TABLE,
     applied_versions,
     apply_migrations,
+    default_migrations_dir,
 )
 from tests.support.fakes import FakeClock
 
@@ -97,8 +98,11 @@ def _insert_raw(database: Database, **overrides: object) -> None:
 def test_fresh_database_applies_the_initial_migration(database: Database, clock: FakeClock) -> None:
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0001"]
-    assert [migration.name for migration in applied] == ["0001_initial.sql"]
+    assert [migration.version for migration in applied] == ["0001", "0002"]
+    assert [migration.name for migration in applied] == [
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+    ]
 
 
 def test_schema_migrations_records_the_applied_version(
@@ -121,7 +125,7 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     apply_migrations(database, clock=clock)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001",)
+    assert applied_versions(database) == ("0001", "0002")
 
 
 def test_required_pragmas_are_effective(database: Database, clock: FakeClock) -> None:
@@ -277,8 +281,139 @@ def test_database_constrains_status_attempts_and_blank_fields(
         _insert_raw(database, status="WEIRD", external_id="status-check")
     with pytest.raises(sqlite3.IntegrityError, match="attempts_not_negative"):
         _insert_raw(database, attempts=-1, external_id="attempts-check")
-    with pytest.raises(sqlite3.IntegrityError, match="failed_carries_error"):
+    with pytest.raises(sqlite3.IntegrityError, match="failure_carries_error"):
         _insert_raw(database, status="FAILED", external_id="failed-check")
     with pytest.raises(sqlite3.IntegrityError, match="source_not_blank"):
         _insert_raw(database, source="   ", external_id="source-check")
 
+
+LEGACY_INSERT = """
+INSERT INTO inbound_events (
+    id, source, external_id, event_type, content,
+    received_at, status, attempts, last_error, created_at, updated_at
+) VALUES (
+    :id, :source, :external_id, :event_type, :content,
+    :received_at, :status, :attempts, :last_error, :created_at, :updated_at
+)
+"""
+
+
+def test_upgrade_from_0001_preserves_existing_events(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """The 0002 rebuild must keep 0001 rows intact and only then add the new schema."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped_0001 = default_migrations_dir() / "0001_initial.sql"
+    (legacy_directory / shipped_0001.name).write_text(
+        shipped_0001.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    assert [
+        migration.version
+        for migration in apply_migrations(database, clock=clock, directory=legacy_directory)
+    ] == ["0001"]
+
+    legacy_row = {
+        "id": str(uuid4()),
+        "source": "smail",
+        "external_id": "uidvalidity1:uid99",
+        "event_type": "mail.received",
+        "content": "notice body",
+        "received_at": NOW,
+        "status": "FAILED",
+        "attempts": 3,
+        "last_error": "RuntimeError: boom",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    with database.connect() as connection:
+        connection.execute(LEGACY_INSERT, legacy_row)
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0002"]
+    with database.connect() as connection:
+        migrated = connection.execute(
+            "SELECT * FROM inbound_events WHERE id = ?", (legacy_row["id"],)
+        ).fetchone()
+    assert migrated is not None
+    for column in (
+        "id",
+        "source",
+        "external_id",
+        "event_type",
+        "content",
+        "received_at",
+        "status",
+        "attempts",
+        "last_error",
+        "created_at",
+        "updated_at",
+    ):
+        assert migrated[column] == legacy_row[column], column
+    for column in (
+        "next_attempt_at",
+        "claim_token",
+        "claimed_by",
+        "claimed_at",
+        "lease_expires_at",
+        "dead_lettered_at",
+    ):
+        assert migrated[column] is None, column
+
+    # Indexes survive the rebuild: identity uniqueness and both claim-scan helpers.
+    assert "inbound_events_status_deadlines_idx" in _index_names(database)
+    unique_index = _index_sql(database, "inbound_events_source_external_id_key")
+    assert "WHERE external_id IS NOT NULL" in unique_index
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_raw(database, external_id="uidvalidity1:uid99")
+
+    # The status vocabulary grew to include DEAD_LETTERED, and nothing else.
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE inbound_events SET status = 'DEAD_LETTERED', dead_lettered_at = ? WHERE id = ?",
+            (NOW, legacy_row["id"]),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="dead_letter_carries_timestamp"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "UPDATE inbound_events SET status = 'DEAD_LETTERED', dead_lettered_at = NULL "
+            "WHERE id = ?",
+            (legacy_row["id"],),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="status_is_known"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "UPDATE inbound_events SET status = 'WEIRD' WHERE id = ?",
+            (legacy_row["id"],),
+        )
+
+    # Re-running the migration set after the upgrade stays a no-op.
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == ("0001", "0002")
+
+
+def test_upgraded_schema_rejects_a_half_written_lease(
+    database: Database, clock: FakeClock
+) -> None:
+    apply_migrations(database, clock=clock)
+
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="lease_is_complete"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            """
+            INSERT INTO inbound_events (
+                id, source, external_id, event_type, content, received_at, status,
+                attempts, last_error, created_at, updated_at, claim_token
+            ) VALUES (?, 'smail', 'lease-check', 'mail.received', NULL, ?, 'PROCESSING',
+                      0, NULL, ?, ?, 'token-without-the-rest')
+            """,
+            (str(uuid4()), NOW, NOW, NOW),
+        )

@@ -9,6 +9,7 @@ import pytest
 from assistant.domain.errors import InvalidEventTransition, InvalidInboundEvent
 from assistant.domain.inbound_event import (
     ALLOWED_TRANSITIONS,
+    CLAIMABLE_STATUSES,
     PENDING_STATUSES,
     EventStatus,
     InboundEvent,
@@ -17,10 +18,15 @@ from assistant.domain.inbound_event import (
 from tests.support.fakes import make_event
 
 RECEIVED_AT = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
+DEAD_LETTERED_AT = datetime(2026, 9, 19, 12, 30, tzinfo=UTC)
 
 
 def _event_in_status(status: EventStatus) -> InboundEvent:
-    carries_error = status in {EventStatus.FAILED, EventStatus.PROCESSING}
+    carries_error = status in {
+        EventStatus.FAILED,
+        EventStatus.PROCESSING,
+        EventStatus.DEAD_LETTERED,
+    }
     return make_event(
         status=status, attempts=1, last_error="boom" if carries_error else None
     )
@@ -108,11 +114,33 @@ def test_pending_statuses_are_received_and_failed() -> None:
     assert set(PENDING_STATUSES) == {EventStatus.RECEIVED, EventStatus.FAILED}
 
 
+def test_claimable_statuses_cover_recovery_but_not_terminal_states() -> None:
+    assert set(CLAIMABLE_STATUSES) == {
+        EventStatus.RECEIVED,
+        EventStatus.FAILED,
+        EventStatus.PROCESSING,
+    }
+    assert EventStatus.DEAD_LETTERED not in CLAIMABLE_STATUSES
+    assert EventStatus.PROCESSED not in CLAIMABLE_STATUSES
+
+
+def test_dead_lettered_is_terminal() -> None:
+    assert ALLOWED_TRANSITIONS[EventStatus.DEAD_LETTERED] == frozenset()
+    assert not is_allowed_transition(EventStatus.PROCESSED, EventStatus.DEAD_LETTERED)
+    assert is_allowed_transition(EventStatus.PROCESSING, EventStatus.DEAD_LETTERED)
+
+
 def test_every_allowed_transition_succeeds() -> None:
     for current, targets in ALLOWED_TRANSITIONS.items():
         for target in targets:
             moved = _event_in_status(current).transition_to(
-                target, error="boom" if target is EventStatus.FAILED else None
+                target,
+                error="boom"
+                if target in {EventStatus.FAILED, EventStatus.DEAD_LETTERED}
+                else None,
+                dead_lettered_at=DEAD_LETTERED_AT
+                if target is EventStatus.DEAD_LETTERED
+                else None,
             )
             assert moved.status is target
 
@@ -124,7 +152,13 @@ def test_every_forbidden_transition_is_rejected() -> None:
                 continue
             with pytest.raises(InvalidEventTransition):
                 _event_in_status(current).transition_to(
-                    target, error="boom" if target is EventStatus.FAILED else None
+                    target,
+                    error="boom"
+                    if target in {EventStatus.FAILED, EventStatus.DEAD_LETTERED}
+                    else None,
+                    dead_lettered_at=DEAD_LETTERED_AT
+                    if target is EventStatus.DEAD_LETTERED
+                    else None,
                 )
 
 
@@ -135,6 +169,11 @@ def test_every_forbidden_transition_is_rejected() -> None:
         (EventStatus.RECEIVED, EventStatus.PROCESSED),
         (EventStatus.FAILED, EventStatus.PROCESSED),
         (EventStatus.RECEIVED, EventStatus.FAILED),
+        (EventStatus.DEAD_LETTERED, EventStatus.PROCESSING),
+        (EventStatus.DEAD_LETTERED, EventStatus.PROCESSED),
+        (EventStatus.PROCESSED, EventStatus.DEAD_LETTERED),
+        (EventStatus.RECEIVED, EventStatus.DEAD_LETTERED),
+        (EventStatus.FAILED, EventStatus.DEAD_LETTERED),
     ],
 )
 def test_documented_forbidden_transitions(current: EventStatus, target: EventStatus) -> None:
@@ -193,3 +232,112 @@ def test_transition_returns_a_new_object_and_leaves_the_original_untouched() -> 
     assert moved is not event
     assert event.status is EventStatus.RECEIVED
     assert event.attempts == 0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [EventStatus.RECEIVED, EventStatus.FAILED, EventStatus.PROCESSING],
+)
+def test_claimed_starts_or_restarts_processing(status: EventStatus) -> None:
+    event = make_event(status=status, attempts=2, next_attempt_at=None)
+
+    claimed = event.claimed()
+
+    assert claimed.status is EventStatus.PROCESSING
+    assert claimed.attempts == 3
+    assert claimed.next_attempt_at is None
+
+
+@pytest.mark.parametrize("status", [EventStatus.PROCESSED, EventStatus.DEAD_LETTERED])
+def test_claimed_refuses_terminal_events(status: EventStatus) -> None:
+    with pytest.raises(InvalidEventTransition):
+        _event_in_status(status).claimed()
+
+
+def test_claiming_clears_a_pending_retry_time() -> None:
+    failed = make_event(
+        status=EventStatus.FAILED,
+        attempts=1,
+        next_attempt_at=DEAD_LETTERED_AT,
+    )
+
+    claimed = failed.claimed()
+
+    assert claimed.next_attempt_at is None
+    assert claimed.last_error == failed.last_error
+
+
+def test_completed_clears_every_failure_marker() -> None:
+    retrying = make_event(status=EventStatus.PROCESSING, attempts=2, last_error="boom")
+
+    processed = retrying.completed()
+
+    assert processed.status is EventStatus.PROCESSED
+    assert processed.last_error is None
+    assert processed.next_attempt_at is None
+    assert processed.dead_lettered_at is None
+    assert processed.attempts == 2
+
+
+def test_failed_records_the_retry_time() -> None:
+    retrying = make_event(status=EventStatus.PROCESSING, attempts=1)
+
+    failed = retrying.failed(error="timeout", next_attempt_at=DEAD_LETTERED_AT)
+
+    assert failed.status is EventStatus.FAILED
+    assert failed.last_error == "timeout"
+    assert failed.next_attempt_at == DEAD_LETTERED_AT
+    assert failed.dead_lettered_at is None
+
+
+def test_dead_lettered_records_the_terminal_timestamp() -> None:
+    retrying = make_event(status=EventStatus.PROCESSING, attempts=5)
+
+    dead = retrying.dead_lettered(error="poison", at=DEAD_LETTERED_AT)
+
+    assert dead.status is EventStatus.DEAD_LETTERED
+    assert dead.last_error == "poison"
+    assert dead.dead_lettered_at == DEAD_LETTERED_AT
+    assert dead.next_attempt_at is None
+    assert dead.attempts == 5
+
+
+def test_dead_lettering_requires_a_timestamp() -> None:
+    with pytest.raises(InvalidInboundEvent, match="requires dead_lettered_at"):
+        make_event(status=EventStatus.PROCESSING, attempts=1).transition_to(
+            EventStatus.DEAD_LETTERED, error="poison"
+        )
+
+
+def test_dead_lettered_event_must_record_when() -> None:
+    with pytest.raises(InvalidInboundEvent, match="dead_lettered_at"):
+        InboundEvent(
+            source="smail",
+            event_type="mail.received",
+            received_at=RECEIVED_AT,
+            status=EventStatus.DEAD_LETTERED,
+            last_error="poison",
+        )
+
+
+def test_next_attempt_at_is_only_meaningful_for_failed_events() -> None:
+    with pytest.raises(InvalidInboundEvent, match="next_attempt_at"):
+        make_event(status=EventStatus.PROCESSING, attempts=1, next_attempt_at=DEAD_LETTERED_AT)
+
+
+def test_dead_lettered_rejects_a_pending_retry_time() -> None:
+    with pytest.raises(InvalidInboundEvent, match="next_attempt_at"):
+        make_event(
+            status=EventStatus.PROCESSING,
+            attempts=1,
+        ).transition_to(
+            EventStatus.DEAD_LETTERED,
+            error="poison",
+            dead_lettered_at=DEAD_LETTERED_AT,
+            next_attempt_at=DEAD_LETTERED_AT,
+        )
+
+
+def test_timestamps_must_be_timezone_aware() -> None:
+    with pytest.raises(InvalidInboundEvent, match="timezone-aware"):
+        make_event(next_attempt_at=datetime(2026, 9, 19, 12, 0))

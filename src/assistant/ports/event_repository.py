@@ -16,14 +16,22 @@ The contract, so implementations and callers agree:
 - `transition` is a compare-and-set: the caller declares the status it believes the event
   has, and the move fails loudly if reality moved on (`UnexpectedEventStatus`) or the move
   itself is illegal (`InvalidEventTransition`).
-- Only these operations exist. No claim, worker, delete, arbitrary update or raw SQL is
-  exposed; those semantics have to be designed before they are written.
+- `claim_next` is the only way to take work. It selects and updates inside one write
+  transaction and returns an `EventClaim` carrying a fencing token, so two workers can
+  never both win the same event. `list_pending` is **not** a work-claim API (ADR-0010).
+- `complete_claim` and `fail_claim` are fenced: they only apply while the event is still
+  `PROCESSING` under the caller's token, otherwise `StaleEventClaim`. A worker whose lease
+  expired can therefore never overwrite the attempt that replaced it.
+- No delete, arbitrary update or raw SQL is exposed.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
+from assistant.domain.event_claim import EventClaim
 from assistant.domain.inbound_event import EventId, EventStatus, InboundEvent
 
 
@@ -55,7 +63,8 @@ class EventRepository(Protocol):
     async def list_pending(self, *, limit: int) -> list[InboundEvent]:
         """Return events a worker still has to process (`RECEIVED`, `FAILED`).
 
-        Ordered by `received_at`, then id, and capped by `limit`.
+        Ordered by `received_at`, then id, and capped by `limit`. Inspection only: taking
+        work must go through `claim_next`.
         """
         ...
 
@@ -76,6 +85,59 @@ class EventRepository(Protocol):
         """
         ...
 
+    async def claim_next(
+        self,
+        *,
+        worker_id: str,
+        claim_token: UUID,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> EventClaim | None:
+        """Atomically claim the oldest eligible event, or return `None`.
+
+        Eligible: `RECEIVED`; `FAILED` whose `next_attempt_at` has arrived; `PROCESSING`
+        whose lease has expired. The caller supplies the fencing token and lease window so
+        the result is deterministic and testable.
+
+        Raises:
+            ValueError: blank `worker_id`, nil token, naive timestamps, or a lease that
+                does not extend past `now`.
+        """
+        ...
+
+    async def complete_claim(
+        self,
+        event_id: EventId,
+        *,
+        claim_token: UUID,
+        completed_at: datetime,
+    ) -> InboundEvent:
+        """Move a claimed event to `PROCESSED` and clear its lease.
+
+        Raises:
+            EventNotFound: no event has that identity.
+            StaleEventClaim: the event is no longer `PROCESSING` under `claim_token`.
+        """
+        ...
+
+    async def fail_claim(
+        self,
+        event_id: EventId,
+        *,
+        claim_token: UUID,
+        failed_at: datetime,
+        error: str,
+        next_attempt_at: datetime | None,
+        dead_letter: bool,
+    ) -> InboundEvent:
+        """Record a failed attempt, either scheduling a retry or dead-lettering.
+
+        Raises:
+            EventNotFound: no event has that identity.
+            StaleEventClaim: the event is no longer `PROCESSING` under `claim_token`.
+            ValueError: `next_attempt_at` missing for a retry, or set for a dead letter.
+        """
+        ...
+
 
 __all__ = ["EventRepository"]
-

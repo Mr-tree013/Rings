@@ -2,16 +2,17 @@
 
 - Status: Accepted (frozen)
 - Date: 2026-09-19
-- Scope: Architecture v1. Phase 0 delivered the repository skeleton; Phase 1A adds the
-  SQLite persistence foundation and the `InboundEvent` model. Everything else below is
-  still a plan, not a description of existing code.
+- Scope: Architecture v1. Phase 0 delivered the repository skeleton; Phase 1 (v0.1.0)
+  delivered the durable event core: persistence, ingestion, atomic claiming with leases
+  and fencing, retry/backoff and dead letter. Everything else below is still a plan, not a
+  description of existing code.
 
 ## 1. 目标
 
 构建一个**持续为本人工作**的个人助手：把邮件、个人资料、办事大厅与手机端连成一条可审计的闭环，
 并把每次成功的流程与用户的纠正沉淀为可读、可改、可测试的规则。
 
-五项基础能力（后续 Phase 逐步实现，Phase 0 均不存在）：
+五项基础能力（后续 Phase 逐步实现，Phase 1 结束时均不存在）：
 
 1. 个人数据库：索引、检索个人资料，随资料变化更新索引，回答时能定位到原文。
 2. 持续关联 smail 邮箱：增量获取新邮件，关联历史往来，结合资料拟回复草稿；草稿由用户确认后发送；
@@ -156,6 +157,18 @@ classification
 - Production agent 不得获得 generic browser `click_anything()` 一类万能能力。
 - eHall 只能通过显式注册的 pipeline 暴露能力，且高风险 pipeline 不存在提交路径。
 
+### 7.5 事件处理语义（Phase 1，ADR-0010）
+
+- 事件处理是 **at-least-once**，不承诺 exactly-once；handler 必须幂等或只产生可去重的
+  durable intent。
+- 领取工作只能通过 repository 的原子 `claim_next`（单事务 select + update，带 `claim_token`
+  fencing token）；`list_pending` 不是领取 API。
+- `complete_claim` / `fail_claim` 必须携带当前 token；lease 过期被重新领取后，旧 token 的
+  完成/失败会以 `StaleEventClaim` 被拒绝。
+- `asyncio.CancelledError` 不算业务失败：取消向上传播，事件保持 `PROCESSING`，靠 lease 过期恢复。
+- 重试使用确定性 exponential backoff（无 jitter）；尝试耗尽或 handler 抛
+  `PermanentEventError` 时进入终态 `DEAD_LETTERED`，不会自动重新处理。
+
 ## 8. 存储边界
 
 Git 仓库只存：source code、tests、docs、rules、playbooks、evals、migrations、prompts、
@@ -199,14 +212,14 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | Phase | 内容 | 状态 |
 | --- | --- | --- |
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
-| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 进行中：1B 已完成（`InboundEvent`、迁移、async `EventRepository`、`EventInbox` 摄取入口）；事件处理 worker 未实现 |
+| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 已完成（v0.1.0）：`InboundEvent`、迁移 0001/0002、async `EventRepository`、`EventInbox`、`EventWorker`（claim/lease/fencing/retry/dead letter） |
 | 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 计划 |
 | 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
 
-## 12. 后续阶段的未决决策（明确不属于 Phase 0）
+## 12. 后续阶段的未决决策（明确不属于早期 Phase）
 
-以下问题在对应 Phase 开始前必须单独决策并落 ADR，Phase 0 不做任何实现或假设：
+以下问题在对应 Phase 开始前必须单独决策并落 ADR，早期 Phase 不做任何实现或假设：
 
 - 手机网页的鉴权方式（设备令牌 / 一次性链接 / 局域网信任边界）。
 - 邮箱授权码与模型 API key 的存放方式（0600 文件 / 系统 keyring）。
@@ -225,3 +238,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0007 FTS5 before vector search
 - ADR-0008 Direct `sqlite3` access behind repository ports
 - ADR-0009 Async boundary for blocking SQLite access
+- ADR-0010 At-least-once event processing with leases and fencing

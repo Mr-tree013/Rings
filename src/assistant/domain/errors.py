@@ -69,12 +69,40 @@ class EventNotFound(DomainError):
         super().__init__(f"inbound event {event_id} does not exist")
 
 
+class InvalidEventClaim(DomainError):
+    """An `EventClaim` was built with values that break its invariants."""
+
+
+class StaleEventClaim(DomainError):
+    """A worker tried to finish work whose claim is no longer the current one.
+
+    The lease expired and another worker reclaimed the event, or the event moved on in
+    some other way. The caller must stop: its result belongs to a superseded attempt and
+    may never overwrite the state of the newer claim (ADR-0010).
+    """
+
+    def __init__(self, event_id: UUID, claim_token: UUID) -> None:
+        self.event_id = event_id
+        self.claim_token = claim_token
+        super().__init__(f"claim {claim_token} on inbound event {event_id} is no longer current")
+
+
+class PermanentEventError(DomainError):
+    """A handler failed in a way that retrying cannot fix.
+
+    Raised by handlers to send an event straight to dead letter instead of consuming the
+    remaining retry budget (ADR-0010).
+    """
+
+
 __all__ = [
     "DomainError",
     "DuplicateInboundEvent",
     "EventNotFound",
+    "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidInboundEvent",
+    "PermanentEventError",
+    "StaleEventClaim",
     "UnexpectedEventStatus",
 ]
-

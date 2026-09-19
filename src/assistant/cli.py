@@ -1,6 +1,6 @@
 """`pw` — the growing-assistant command line.
 
-Phase 0 implements only `status` and `doctor`. Commands that would need real capability
+Implements only `status` and `doctor`. Commands that would need real capability
 (`search`, `reindex`, `cases`, `tasks`, `scheduled`, `approve`, `run`) are deliberately
 not registered yet, so the CLI never advertises behaviour that does not exist.
 """
@@ -20,7 +20,7 @@ from assistant.application.paths import AppPaths
 MINIMUM_PYTHON = (3, 13)
 
 app = typer.Typer(
-    help="pw — growing-assistant command line (Phase 0: skeleton only).",
+    help="pw — growing-assistant command line (durable event core; no integrations yet).",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -41,12 +41,14 @@ def status() -> None:
     """Show CLI status and what the daemon currently does."""
     table = Table(title="growing-assistant status", show_header=False, title_justify="left")
     table.add_row("version", __version__)
-    table.add_row("phase", "Phase 0 — engineering bootstrap")
+    table.add_row("core", "durable event pipeline (ingest, claim, retry, dead letter)")
     table.add_row("cli", "[green]ok[/green]")
     table.add_row("daemon", "skeleton only (starts, waits, exits cleanly)")
-    table.add_row("services", "[yellow]not implemented[/yellow]")
+    table.add_row(
+        "integrations", "[yellow]not implemented[/yellow] (mail, index, web, scheduler, eHall)"
+    )
     console.print(table)
-    console.print("mail / index / web / scheduler are planned for later phases.")
+    console.print("No external integration is wired up yet.")
 
 
 @app.command()

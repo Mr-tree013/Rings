@@ -1,8 +1,7 @@
 """Filesystem boundaries for runtime state, configuration and cache.
 
 The repository never stores runtime state or personal data; see ADR-0004 and the
-"数据目录边界" section of README.md. Phase 0 only *resolves* these locations, it never
-creates them.
+"数据目录边界" section of README.md. Resolving these locations never creates them.
 """
 
 from __future__ import annotations

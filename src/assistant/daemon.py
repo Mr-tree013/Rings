@@ -1,10 +1,13 @@
 """`assistantd` — the long-running asyncio daemon.
 
-Phase 0 scope: process lifecycle only. The daemon starts, waits for a stop signal, and
+Current scope: process lifecycle only. The daemon starts, waits for a stop signal, and
 shuts down cleanly. The four long-running services (mail, index, web, scheduler) are not
 implemented and must not be faked here; when they arrive they are supervised from
 `serve()`, each inside its own exception boundary so that one failing service cannot tear
 down the daemon (see docs/specs/0001-system-design.md).
+
+The durable event worker exists but is deliberately not started here: there is no real
+handler yet, and a no-op worker would only look like progress.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ async def serve(stop_event: asyncio.Event) -> None:
     Later phases add one supervised task per service here. Cancellation propagates: this
     coroutine never swallows `asyncio.CancelledError`.
     """
-    LOGGER.info("assistantd started (pid=%d, phase=0 skeleton)", os.getpid())
+    LOGGER.info("assistantd starting (pid=%d)", os.getpid())
     try:
         await stop_event.wait()
     finally:
@@ -66,4 +69,3 @@ def main() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

@@ -1,4 +1,4 @@
-"""Phase 0 tests for the daemon lifecycle.
+"""Tests for the daemon lifecycle.
 
 The daemon must start, reach its wait state, and stop without leaking exceptions — both
 when asked to stop through its stop event and when cancelled from the outside.

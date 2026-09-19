@@ -3,16 +3,15 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 0（工程初始化）
+## 当前状态：Phase 1 完成（v0.1.0，durable event core）
 
-Phase 0 只交付工程骨架、架构文档与版本管理。**当前不存在任何真实能力**：
+已完成：durable event core —— 领域模型与状态机、SQLite 迁移系统、数据库级幂等去重、
+async repository 边界、`EventInbox` 摄取入口，以及带 lease + fencing token 的原子 claim、
+确定性 retry/backoff、crash recovery 与 dead letter。
 
-- 没有收信/发信（IMAP 与 SMTP 均未实现），没有邮箱凭据
-- 没有 eHall 操作，没有 Playwright，没有浏览器自动化
-- 没有模型调用（无 DeepSeek / OpenAI 适配器），没有 API key
-- 没有个人资料索引（无 FTS5，无 Vault 扫描，无文件抽取）
-- 没有 Web UI，没有审批令牌，没有调度器
-- `assistantd` 只负责启动与优雅退出，四类长期服务（Mail / Index / Web / Scheduler）均为空
+**尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有个人资料
+索引、没有 Web UI、没有调度器。`assistantd` 仍是骨架（启动、等待信号、优雅退出）——仓库里
+有 `EventWorker`，但没有任何真实 handler，因此生产进程不会启动它。
 
 ## Architecture summary
 
@@ -95,7 +94,7 @@ uv run pytest
 ## Repository layout
 
 ```text
-src/assistant/{domain,application,ports,store,adapters}/   分层包（Phase 0 仅占位）
+src/assistant/{domain,application,ports,store,adapters}/   分层包（domain/ports/store 已实现，adapters 仍为空）
 docs/specs/                                                架构设计文档
 docs/adr/                                                  架构决策记录
 rules/ playbooks/ memory/ evals/ prompts/ migrations/      规则、流程、记忆、评测、提示词、迁移

@@ -41,6 +41,14 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **External source adapters ingest through `EventInbox` rather than writing events
   directly to SQLite.** 任何新的 input source 都只能调用
   `assistant.application.event_inbox.EventInbox.ingest()`，不得自己调 repository 写事件。
+- **Event consumers must use atomic `claim_next` semantics; `list_pending` is not a
+  work-claim API.** 领取工作只有一条合法路径：repository 的 `claim_next()`（单事务
+  select+update，带 fencing token）。`list_pending()` 仅用于查看/兼容，禁止用它拼 worker。
+- **Event processing is at-least-once. Handlers must be idempotent or only create durable
+  downstream intents.** 崩溃发生在 "handler 成功" 与 "记录完成" 之间时，该事件会被重新
+  处理；handler 不得假设自己只跑一次（ADR-0010）。
+- **`CancelledError` must not be converted into an ordinary event-processing failure.**
+  取消必须向上传播，事件保持 PROCESSING 并靠 lease 过期恢复；禁止把取消写成 FAILED。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -81,14 +89,15 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 ## 6. Phase 现状
 
-当前为 **Phase 1B 已完成**：在 1A 的 SQLite 持久层（`store/db.py`、`store/migrations.py`、
-`store/events.py`）、`InboundEvent` 领域模型与状态机、`EventRepository` 端口之上，
-新增异步持久层边界（ADR-0009）与 `EventInbox` 幂等摄取入口（`application/event_inbox.py`）。
+**Phase 1 已完成（v0.1.0）**：durable event core。包括 SQLite 持久层与迁移系统
+（`store/db.py`、`store/migrations.py`、`store/events.py`）、`InboundEvent` 领域模型与
+状态机、数据库级去重、async repository 边界（ADR-0009）、`EventInbox` 幂等摄取入口、
+原子 claim + lease + fencing、确定性 retry/backoff、dead letter 与取消语义（ADR-0010）。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-Event worker/processor（claim、retry、crash recovery）/ IMAP / SMTP / DeepSeek / FTS5 /
-Vault 扫描 / Web Server / eHall /
+真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
+DeepSeek / FTS5 / Vault 扫描 / Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 

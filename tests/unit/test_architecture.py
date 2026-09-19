@@ -19,7 +19,12 @@ from assistant.store.events import SqliteEventRepository
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "assistant"
 DOMAIN_DIR = SOURCE_ROOT / "domain"
-FORBIDDEN_IMPORT_PREFIXES = ("sqlite3", "assistant.store", "assistant.adapters")
+FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
+    "sqlite3",
+    "assistant.store",
+    "assistant.adapters",
+    "assistant.application",
+)
 LAYERS_WITHOUT_SQLITE = ("application", "domain", "ports")
 MODULES_WITHOUT_SQLITE = ("daemon.py", "cli.py")
 
@@ -46,7 +51,7 @@ def test_domain_does_not_import_sqlite_store_or_adapters() -> None:
         f"{path.name} imports {imported}"
         for path in _domain_modules()
         for imported in _imported_modules(path)
-        if imported.startswith(FORBIDDEN_IMPORT_PREFIXES)
+        if imported.startswith(FORBIDDEN_DOMAIN_IMPORT_PREFIXES)
     ]
 
     assert not violations, violations
