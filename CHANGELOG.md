@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-20
+
+Phase 2: personal knowledge and continuous storage indexing. Storage roots are configured,
+catalogued, text-indexed and kept current by the daemon, with source-spanned search over the
+result. No mail, LLM, task planning or eHall capability exists yet.
+
 ### Added
 
+- Host configuration (ADR-0013): `~/.config/growing-assistant/config.toml` with explicit local
+  and archive-vault roots, an indexing interval (10s-86400s) and `run_on_startup`. A missing
+  file means "no roots configured" and the daemon still runs.
+- `pw roots list` (config only, nothing is scanned) and `pw sync [--root] [--force-index]`,
+  with exit codes that tell the difference between "all synced/offline", "needs attention"
+  and "invalid configuration".
+- `IndexSyncService`: periodic reconciliation as scan → catalog → knowledge index, with a
+  single in-process lock, config declaration order, and root failure isolation.
+- Incomplete-scan policy for automatic sync: catalog metadata is updated for what was seen,
+  but knowledge reindexing is skipped, so a temporary permission problem cannot erase
+  searchable content.
+- Daemon integration: `assistantd` now composes services (config → runtime database →
+  migrations → services) and supervises them with deterministic restart backoff, including
+  root-level failures that stay inside the affected root.
+- `IntervalWaiter` port with an asyncio adapter, so both the sync interval and the supervisor
+  backoff wake immediately on shutdown instead of sleeping through it.
+- `pw doctor` reports the config path, its validity and the number of configured roots;
+  `pw status` describes the knowledge and daemon-service capability.
+- Orchestration tests: config parsing, local/vault sync, offline and identity-mismatch
+  handling, incomplete scans, multi-root isolation, infrastructure-failure propagation,
+  concurrent sync serialisation, supervisor restart/backoff, daemon startup reconciliation and
+  search-during-reindex consistency.
 - Content extraction (ADR-0012): UTF-8 text (strict suffix whitelist) and PDF text layers via
   `pypdf`, with safe file access that revalidates relative paths, refuses symlinks and
   non-regular files, and verifies size/mtime before and after reading.
@@ -28,10 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LIKE` fallback with `%`/`_`/`\` escaping for queries shorter than three characters.
 - Cross-root result merging by Reciprocal Rank Fusion, because BM25 scores from different
   index databases are not comparable.
-- `pw doctor` now proves SQLite FTS5 and trigram tokenizer support and reports the pypdf
-  version, without creating a database or touching user files.
-- Architecture tests: application and domain never import `pypdf` or the store/adapters, ports
-  never import concrete adapters, and only `adapters/content/pdf.py` imports `pypdf`.
+- `pw doctor` proves SQLite FTS5 and trigram tokenizer support and reports the pypdf version,
+  without creating a database or touching user files.
+- Architecture tests: application and domain never import `pypdf`, `tomllib` or the
+  store/adapters, ports never import concrete adapters, and only `adapters/content/pdf.py`
+  imports `pypdf`.
+- Stable storage identity and metadata catalog (ADR-0011):
 
 - Stable storage identity and metadata catalog (ADR-0011):
   `local://<root-id>/<relative-path>` and `vault://<vault-id>/<relative-path>` logical URIs,

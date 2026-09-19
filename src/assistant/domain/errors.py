@@ -206,7 +206,24 @@ class KnowledgeIndexCorrupt(DomainError):
     """
 
 
+class InvalidAssistantConfig(DomainError):
+    """The host configuration is malformed, self-contradictory or unsupported."""
+
+
+class ConfiguredRootNotFound(DomainError):
+    """The configuration has no storage root with that id."""
+
+
+class UnsafeStorageRoot(DomainError):
+    """A configured root path cannot be scanned automatically.
+
+    Background indexing refuses root-level symlinks and non-directories: following a root
+    symlink would silently index a different tree than the one the user configured.
+    """
+
+
 __all__ = [
+    "ConfiguredRootNotFound",
     "ContentExtractionError",
     "ContentTooLarge",
     "DomainError",
@@ -214,6 +231,7 @@ __all__ = [
     "EventNotFound",
     "FileChangedDuringExtraction",
     "Fts5Unavailable",
+    "InvalidAssistantConfig",
     "InvalidCatalogEntry",
     "InvalidEventClaim",
     "InvalidEventTransition",
@@ -236,6 +254,7 @@ __all__ = [
     "UnknownCatalogEntry",
     "UnknownStorageRoot",
     "UnsafeFilePath",
+    "UnsafeStorageRoot",
     "VaultAlreadyInitialized",
     "VaultNotInitialized",
 ]

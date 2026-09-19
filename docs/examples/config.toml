@@ -1,0 +1,27 @@
+# Example growing-assistant host configuration (ADR-0013).
+#
+# Copy to $XDG_CONFIG_HOME/growing-assistant/config.toml (~/.config/growing-assistant/config.toml)
+# and edit the paths. All paths below are fictional.
+
+format_version = 1
+
+[indexing]
+# 10 <= interval_seconds <= 86400
+interval_seconds = 300
+run_on_startup = true
+
+# A local folder: the label is yours to choose.
+[[storage.roots]]
+kind = "local"
+id = "university"
+label = "University documents"
+path = "/home/user/Documents/University"
+enabled = true
+
+# An archive vault: the label comes from <path>/.pa/vault.toml, so it is not configured here.
+[[storage.roots]]
+kind = "vault"
+id = "archive-main"
+path = "/mnt/e/archive-vault"
+enabled = true
+

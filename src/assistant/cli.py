@@ -1,12 +1,16 @@
 """`pw` — the growing-assistant command line.
 
-Implemented today: `status`, `doctor`, the `vault` group (`init`, `status`, `scan`) and the
-knowledge commands (`reindex`, `search`). Commands that would need capability the project
-does not have yet (`cases`, `tasks`, `scheduled`, `approve`, `run`) are deliberately not
-registered, so the CLI never advertises behaviour that does not exist.
+Implemented today: `status`, `doctor`, `roots list`, `sync`, the `vault` group
+(`init`, `status`, `scan`) and the knowledge commands (`reindex`, `search`). Commands that
+would need capability the project does not have yet (`cases`, `tasks`, `scheduled`,
+`approve`, `run`) are deliberately not registered, so the CLI never advertises behaviour
+that does not exist.
 
-This module is the composition root: it is the one place allowed to build adapters and
-store implementations from configuration and hand them to application services.
+`pw sync` is the orchestrator: it reconciles the configured roots exactly as the daemon's
+periodic loop does. The lower-level commands stay available for debugging.
+
+This module is a composition root: it builds adapters and store implementations from
+configuration (via `assistant.bootstrap`) and hands them to application services.
 """
 
 from __future__ import annotations
@@ -22,19 +26,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from assistant import __version__
-from assistant.adapters.content.registry import SuffixExtractorRegistry
-from assistant.adapters.filesystem.scanner import FilesystemScanner
-from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
-from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
-from assistant.adapters.system_clock import SystemClock
-from assistant.application.knowledge_indexer import KnowledgeIndexer
-from assistant.application.knowledge_search import KnowledgeSearchService
-from assistant.application.paths import AppPaths
-from assistant.application.storage_catalog import StorageCatalogService
-from assistant.domain.catalog import CatalogRoot, CatalogScanResult
+from assistant import __version__, bootstrap
+from assistant.adapters.filesystem.vault_manifest import manifest_path_for
+from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
+from assistant.domain.catalog import CatalogScanResult
+from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import (
+    ConfiguredRootNotFound,
     DomainError,
+    InvalidAssistantConfig,
     InvalidVaultManifest,
     StorageRootConflict,
     StorageRootIdentityMismatch,
@@ -45,16 +45,18 @@ from assistant.domain.errors import (
 )
 from assistant.domain.knowledge import KnowledgeIndexRunResult, KnowledgeSearchResult
 from assistant.domain.vault import VaultManifest
-from assistant.store.catalog import SqliteCatalogRepository
-from assistant.store.db import Database
 from assistant.store.errors import StoreError
-from assistant.store.knowledge_index import (
-    SqliteKnowledgeIndexFactory,
-    sqlite_search_capabilities,
-)
-from assistant.store.migrations import apply_migrations
+from assistant.store.knowledge_index import sqlite_search_capabilities
 
 MINIMUM_PYTHON = (3, 13)
+FAILING_SYNC_STATUSES = frozenset(
+    {
+        RootSyncStatus.INCOMPLETE,
+        RootSyncStatus.IDENTITY_MISMATCH,
+        RootSyncStatus.INDEX_ERROR,
+        RootSyncStatus.SCAN_ERROR,
+    }
+)
 
 app = typer.Typer(
     help="pw — growing-assistant command line (durable event core; no integrations yet).",
@@ -64,7 +66,9 @@ app = typer.Typer(
 vault_app = typer.Typer(
     help="Archive Vault commands: identity and metadata catalog.", no_args_is_help=True
 )
+roots_app = typer.Typer(help="Configured storage roots.", no_args_is_help=True)
 app.add_typer(vault_app, name="vault")
+app.add_typer(roots_app, name="roots")
 
 console = Console()
 error_console = Console(stderr=True)
@@ -84,17 +88,32 @@ def _fail(message: str, code: int = 1) -> None:
     raise typer.Exit(code=code)
 
 
+def _load_config_or_fail() -> AssistantConfig:
+    try:
+        return asyncio.run(bootstrap.config_loader().load())
+    except InvalidAssistantConfig as exc:
+        _fail(f"invalid configuration: {exc}", code=2)
+        raise AssertionError("unreachable") from exc
+
+
+def _pypdf_version() -> str:
+    try:
+        return importlib.metadata.version("pypdf")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - packaging edge case
+        return "not installed"
+
+
 @app.command()
 def status() -> None:
-    """Show CLI status and what the daemon currently does."""
+    """Show static capability status (this command does not contact the daemon)."""
     table = Table(title="growing-assistant status", show_header=False, title_justify="left")
     table.add_row("version", __version__)
     table.add_row("core", "durable event pipeline (ingest, claim, retry, dead letter)")
-    table.add_row("catalog", "storage identity + metadata catalog (no content index yet)")
+    table.add_row("knowledge", "configured storage + per-root full-text index")
+    table.add_row("daemon services", "index-sync (periodic reconciliation)")
     table.add_row("cli", "[green]ok[/green]")
-    table.add_row("daemon", "skeleton only (starts, waits, exits cleanly)")
     table.add_row(
-        "integrations", "[yellow]not implemented[/yellow] (mail, index, web, scheduler, eHall)"
+        "integrations", "[yellow]not implemented[/yellow] (mail, web, scheduler, eHall)"
     )
     console.print(table)
     console.print("No external integration is wired up yet.")
@@ -102,11 +121,19 @@ def status() -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check the runtime environment and report diagnostics."""
+    """Check the runtime environment and report diagnostics (read-only)."""
     version = _python_version()
     version_text = ".".join(str(part) for part in version)
     python_ok = version[:2] >= MINIMUM_PYTHON
-    paths = AppPaths.resolve()
+    paths = bootstrap.AppPaths.resolve()
+    config_error: str | None = None
+    configured_roots = 0
+    loader = bootstrap.config_loader()
+    try:
+        config = asyncio.run(loader.load())
+        configured_roots = len(config.roots)
+    except InvalidAssistantConfig as exc:
+        config_error = str(exc)
 
     table = Table(title="pw doctor", show_header=False, title_justify="left")
     table.add_row("python", f"{version_text} ({'ok' if python_ok else 'too old'})")
@@ -125,11 +152,12 @@ def doctor() -> None:
         "sqlite FTS5",
         "ok" if capabilities.fts5 else f"[red]missing[/red] ({capabilities.detail})",
     )
-    table.add_row(
-        "FTS5 trigram",
-        "ok" if capabilities.trigram else "[red]missing[/red]",
-    )
+    table.add_row("FTS5 trigram", "ok" if capabilities.trigram else "[red]missing[/red]")
     table.add_row("pypdf", _pypdf_version())
+    if config_error is None:
+        table.add_row("config", f"{loader.path} ({configured_roots} roots)")
+    else:
+        table.add_row("config", f"[red]ERROR[/red] ({config_error})")
     console.print(table)
 
     if not python_ok:
@@ -137,15 +165,92 @@ def doctor() -> None:
         _fail(f"pw requires Python >= {required}")
     if not (capabilities.fts5 and capabilities.trigram):
         _fail("knowledge search requires SQLite FTS5 with the trigram tokenizer")
+    if config_error is not None:
+        _fail("configuration is invalid")
 
     console.print("[green]environment looks usable[/green]")
 
 
-def _pypdf_version() -> str:
+@roots_app.command("list")
+def roots_list() -> None:
+    """List configured storage roots (config only; nothing is scanned)."""
+    config = _load_config_or_fail()
+    if not config.roots:
+        console.print("No storage roots configured.")
+        return
+    table = Table(title=f"configured storage roots — {bootstrap.config_loader().path}")
+    table.add_column("ID")
+    table.add_column("Kind")
+    table.add_column("Enabled")
+    table.add_column("Configured path")
+    for root in config.roots:
+        table.add_row(root.root_id, root.kind.value, "yes" if root.enabled else "no", root.path)
+    console.print(table)
+
+
+@app.command()
+def sync(
+    root: Annotated[
+        str | None, typer.Option("--root", help="Only reconcile this storage root id.")
+    ] = None,
+    force_index: Annotated[
+        bool,
+        typer.Option("--force-index", help="Re-extract even when metadata is unchanged."),
+    ] = False,
+) -> None:
+    """Reconcile configured roots: catalog scan, then knowledge index."""
+    config = _load_config_or_fail()
+    if not config.roots:
+        console.print("No configured roots.")
+        return
+    clock = bootstrap.system_clock()
     try:
-        return importlib.metadata.version("pypdf")
-    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - packaging edge case
-        return "not installed"
+        database = bootstrap.runtime_database(clock)
+        service = bootstrap.sync_service(config, clock, database)
+        result = asyncio.run(service.sync_once(root, force_index=force_index))
+    except ConfiguredRootNotFound as exc:
+        _fail(str(exc))
+        return
+    except StoreError as exc:
+        _fail(f"index sync failed: {exc}")
+        return
+    _print_sync_result(result)
+    failing = [item for item in result.roots if item.status in FAILING_SYNC_STATUSES]
+    if failing:
+        _fail(f"{len(failing)} of {result.configured} storage roots need attention")
+
+
+def _print_sync_result(result: IndexSyncResult) -> None:
+    for item in result.roots:
+        _print_root_sync(item)
+    console.print(
+        f"totals: configured={result.configured} synced={result.synced} "
+        f"offline={result.offline} incomplete={result.incomplete} failed={result.failed}"
+    )
+
+
+def _print_root_sync(item: RootSyncResult) -> None:
+    console.print(f"[bold]{item.root_id}[/bold] ({item.kind.value})")
+    console.print(f"  status: {item.status.value}")
+    if item.catalog_result is not None:
+        catalog = item.catalog_result
+        console.print(
+            f"  catalog: seen={catalog.seen} created={catalog.created} "
+            f"updated={catalog.updated} unchanged={catalog.unchanged} "
+            f"restored={catalog.restored} missing={catalog.marked_missing} "
+            f"complete={'yes' if catalog.scan_complete else 'no'}"
+        )
+    if item.knowledge_result is not None:
+        knowledge = item.knowledge_result
+        console.print(
+            f"  knowledge: indexed={knowledge.indexed} empty={knowledge.empty} "
+            f"unsupported={knowledge.unsupported} skipped={knowledge.skipped_unchanged} "
+            f"errors={knowledge.errors}"
+        )
+    if item.status is RootSyncStatus.INCOMPLETE:
+        console.print("  knowledge indexing skipped")
+    if item.error is not None:
+        console.print(f"  error: {item.error}")
 
 
 @app.command()
@@ -157,27 +262,38 @@ def reindex(
         bool, typer.Option("--force", help="Re-extract even when metadata is unchanged.")
     ] = False,
 ) -> None:
-    """Build or refresh the per-root knowledge index from the current catalog.
+    """Build or refresh a knowledge index from the current catalog.
 
-    This never scans: run `pw vault scan` first so newly added files are known.
+    This never scans: run `pw vault scan` (or `pw sync`) first so new files are known.
     """
-    root_ids = [root] if root is not None else [item.root.root_id for item in _catalog_roots()]
-    if not root_ids:
-        _fail("no storage roots in the catalog; run a catalog scan first")
-    indexer = _build_indexer()
-    failures = 0
-    for root_id in root_ids:
-        try:
-            result = asyncio.run(indexer.index_root(root_id, force=force))
-        except (StorageRootOffline, StorageRootIdentityMismatch) as exc:
-            failures += 1
-            error_console.print(f"[yellow]{root_id}: skipped — {exc}[/yellow]")
-            continue
-        except (UnknownStorageRoot, StoreError, DomainError) as exc:
-            failures += 1
-            error_console.print(f"[red]{root_id}: {exc}[/red]")
-            continue
-        _print_index_result(result)
+    clock = bootstrap.system_clock()
+    try:
+        database = bootstrap.runtime_database(clock)
+        catalog = bootstrap.catalog_repository(database)
+        root_ids = (
+            [root]
+            if root is not None
+            else [item.root.root_id for item in asyncio.run(catalog.list_roots())]
+        )
+        if not root_ids:
+            _fail("no storage roots in the catalog; run a catalog scan first")
+        indexer = bootstrap.knowledge_indexer(clock, database)
+        failures = 0
+        for root_id in root_ids:
+            try:
+                result = asyncio.run(indexer.index_root(root_id, force=force))
+            except (StorageRootOffline, StorageRootIdentityMismatch) as exc:
+                failures += 1
+                error_console.print(f"[yellow]{root_id}: skipped — {exc}[/yellow]")
+                continue
+            except (UnknownStorageRoot, StoreError, DomainError) as exc:
+                failures += 1
+                error_console.print(f"[red]{root_id}: {exc}[/red]")
+                continue
+            _print_index_result(result)
+    except StoreError as exc:
+        _fail(f"knowledge index failed: {exc}")
+        return
     if failures:
         _fail(f"{failures} of {len(root_ids)} storage roots could not be indexed")
 
@@ -191,8 +307,10 @@ def search(
     limit: Annotated[int, typer.Option("--limit", help="Maximum hits per signal.")] = 10,
 ) -> None:
     """Search indexed content and catalog metadata for plain text."""
-    service = _build_search_service()
+    clock = bootstrap.system_clock()
     try:
+        database = bootstrap.runtime_database(clock)
+        service = bootstrap.search_service(clock, database)
         result = asyncio.run(service.search(query, root_id=root, limit=limit))
     except ValueError as exc:
         _fail(str(exc))
@@ -201,38 +319,6 @@ def search(
         _fail(f"search failed: {exc}")
         return
     _print_search_result(result)
-
-
-def _build_indexer() -> KnowledgeIndexer:
-    clock = SystemClock()
-    catalog = SqliteCatalogRepository(_runtime_database(clock))
-    return KnowledgeIndexer(
-        catalog,
-        SuffixExtractorRegistry(),
-        SqliteKnowledgeIndexFactory(KnowledgeIndexLocator()),
-        VaultManifestFile(clock),
-        clock,
-    )
-
-
-def _build_search_service() -> KnowledgeSearchService:
-    clock = SystemClock()
-    return KnowledgeSearchService(
-        SqliteCatalogRepository(_runtime_database(clock)),
-        SqliteKnowledgeIndexFactory(KnowledgeIndexLocator()),
-        VaultManifestFile(clock),
-    )
-
-
-def _runtime_database(clock: SystemClock) -> Database:
-    database = Database.at(AppPaths.resolve().database_file)
-    apply_migrations(database, clock=clock)
-    return database
-
-
-def _catalog_roots() -> list[CatalogRoot]:
-    catalog = SqliteCatalogRepository(_runtime_database(SystemClock()))
-    return asyncio.run(catalog.list_roots())
 
 
 def _print_index_result(result: KnowledgeIndexRunResult) -> None:
@@ -276,9 +362,10 @@ def vault_init(
     label: Annotated[str, typer.Option("--label", help="Human-readable vault label.")],
 ) -> None:
     """Create `.pa/vault.toml`. Never scans and never touches the catalog."""
+    clock = bootstrap.system_clock()
     try:
         manifest = asyncio.run(
-            VaultManifestFile(SystemClock()).initialize(
+            bootstrap.VaultManifestFile(clock).initialize(
                 path, vault_id=vault_id, label=label
             )
         )
@@ -286,7 +373,7 @@ def vault_init(
         _fail(str(exc))
         return
     console.print(f"[green]initialised vault[/green] {manifest.vault_id}")
-    console.print(f"manifest: {path / '.pa' / 'vault.toml'}")
+    console.print(f"manifest: {manifest_path_for(path)}")
 
 
 @vault_app.command("status")
@@ -294,8 +381,9 @@ def vault_status(
     path: Annotated[Path, typer.Argument(help="Vault root to inspect.")],
 ) -> None:
     """Show the vault manifest. This command never touches the database."""
+    clock = bootstrap.system_clock()
     try:
-        manifest = asyncio.run(VaultManifestFile(SystemClock()).read(path))
+        manifest = asyncio.run(bootstrap.VaultManifestFile(clock).read(path))
     except (VaultNotInitialized, InvalidVaultManifest) as exc:
         _fail(str(exc))
         return
@@ -308,19 +396,13 @@ def vault_scan(
 ) -> None:
     """Scan a vault and update the host metadata catalog.
 
-    An incomplete scan is reported and exits non-zero: the metadata that was seen is
-    stored, but missing detection is skipped because a partial view proves nothing.
+    An incomplete scan is reported and exits non-zero: the metadata that was seen is stored,
+    but missing detection is skipped because a partial view proves nothing.
     """
-    clock = SystemClock()
-    database = Database.at(AppPaths.resolve().database_file)
+    clock = bootstrap.system_clock()
     try:
-        apply_migrations(database, clock=clock)
-        service = StorageCatalogService(
-            FilesystemScanner(clock),
-            VaultManifestFile(clock),
-            SqliteCatalogRepository(database),
-            clock,
-        )
+        database = bootstrap.runtime_database(clock)
+        service = bootstrap.catalog_service(clock, database)
         result = asyncio.run(service.scan_vault(path))
     except (VaultNotInitialized, InvalidVaultManifest, StorageRootConflict) as exc:
         _fail(str(exc))
@@ -343,7 +425,7 @@ def _print_manifest(manifest: VaultManifest, path: Path) -> None:
 
 
 def _print_scan_result(result: CatalogScanResult) -> None:
-    table = Table(title=f"vault scan: {result.root_id}", show_header=False, title_justify="left")
+    table = Table(title="vault scan", show_header=False, title_justify="left")
     table.add_row("seen", str(result.seen))
     table.add_row("created", str(result.created))
     table.add_row("updated", str(result.updated))

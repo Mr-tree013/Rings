@@ -72,6 +72,15 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Raw user text must not be passed directly as FTS `MATCH` syntax.**
   用户查询一律当作纯文本：长查询用带转义的 phrase，短于 3 个 code point 用 literal `LIKE`
   （`%`/`_`/`\` 必须转义并 `ESCAPE`）。
+- **Periodic reconciliation is the correctness mechanism for storage indexes; filesystem
+  notifications may only be an optimization.** 索引与 catalog 的正确性来自周期性
+  reconciliation（scan → catalog → knowledge index），不得依赖 watcher 事件不漏（ADR-0013）。
+- **Configured physical paths are host-local locations, not persistent storage identities.**
+  config 里的 path 只是本机运行时位置；身份仍是 `root_id`（Vault 还要用 `.pa/vault.toml` 复核）。
+- **An incomplete catalog scan must not trigger knowledge reindexing.** 扫描不完整时保留已见
+  metadata、跳过知识索引，且不得执行 missing 判定，避免临时权限错误抹掉可搜索内容。
+- **A root-level operational failure must not prevent reconciliation of unrelated roots.**
+  offline / identity mismatch / index 损坏只影响该 root；host runtime DB 故障才向上抛给 supervisor。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -126,11 +135,15 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 带 source span 的 chunking、per-root FTS5（trigram）索引、`pw reindex`、`pw search`
 （content hit 带 page/lines，metadata-only hit 与 offline root 明确区分）。
 
+**Phase 2 已完成（v0.2.0）**：Host config（`~/.config/growing-assistant/config.toml`）、
+`IndexSyncService` 周期 reconciliation（scan → catalog → index）、daemon 集成与 supervisor
+（确定性 backoff、单 root 失败隔离）、`pw roots list`、`pw sync`（ADR-0013）。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / LLM 问答与 RAG / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
-自动 watcher（持续增量更新）/ Web Server / eHall /
+DeepSeek / LLM 问答与 RAG / Task 与 Planner / Case / embedding 与向量检索 / OCR /
+Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 

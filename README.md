@@ -3,23 +3,34 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 1 完成（v0.1.0，durable event core）
+## 当前状态：Phase 2 完成（v0.2.0，personal knowledge + continuous storage indexing）
 
-已完成：durable event core —— 领域模型与状态机、SQLite 迁移系统、数据库级幂等去重、
-async repository 边界、`EventInbox` 摄取入口，以及带 lease + fencing token 的原子 claim、
-确定性 retry/backoff、crash recovery 与 dead letter。
+已完成：
+
+- durable event core（v0.1.0）：领域模型与状态机、SQLite 迁移、数据库级幂等去重、
+  `EventInbox`、带 lease + fencing 的原子 claim、retry/backoff、crash recovery、dead letter。
+- 个人知识（v0.2.0）：稳定存储身份（`local://` / `vault://`）、metadata catalog、
+  文本/PDF 正文抽取与 SHA-256、per-root FTS5（trigram）索引、带 `page`/`lines` 定位的检索。
+- 持续索引（v0.2.0）：`~/.config/growing-assistant/config.toml` 配置 Local/Vault roots，
+  `assistantd` 周期性 reconciliation（scan → catalog → index），root 失败隔离与 supervisor。
 
 **尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有 Web UI、
-没有调度器。`assistantd` 仍是骨架（启动、等待信号、优雅退出）——仓库里
-有 `EventWorker`，但没有任何真实 handler，因此生产进程不会启动它。
+没有 Task/Planner。`assistantd` 现在会在启动时执行一次存储 reconciliation，然后按配置周期重复；
+它仍然**不会**启动 durable EventWorker——没有真实业务 handler 时，假 handler 只会制造"已经实现"
+的错觉。
+
+**尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
+因此变更检测有一个有界延迟（默认 300 秒，可配置到 10 秒）。
 
 存储侧（Phase 2A）：Archive Vault 的**元数据 catalog** 已可用——稳定逻辑 URI、vault
 manifest、不跟随 symlink 的 metadata 扫描、增量更新与安全的 missing 判定。
 
 知识侧（Phase 2B）：**已实现** metadata catalog、文本/PDF 正文抽取、per-root FTS5（trigram）
-全文索引与带 source span 的检索；`pw reindex` / `pw search` 是显式两步链路。
-**尚未实现**：RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、自动 watcher
-（持续增量更新仍需手动 `scan` + `reindex`）。
+全文索引与带 source span 的检索。
+
+持续索引（Phase 2C）：**已实现** host config、`pw roots list`、`pw sync`，以及 `assistantd`
+的周期性 reconciliation（scan → catalog → index，单 root 失败隔离）。
+**尚未实现**：RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
 
 ## Architecture summary
 
@@ -114,6 +125,39 @@ uv run pw search "important deadline"
 
 搜索结果是检索结果，不是 AI 答案：content hit 一定带 `page N` 或 `lines A-B`，
 文件名/路径命中单独标为 `[metadata]`，离线 root 会被明确列出而不是静默忽略。
+
+### 配置与持续同步
+
+`~/.config/growing-assistant/config.toml`（示例见 `docs/examples/config.toml`）：
+
+```toml
+format_version = 1
+
+[indexing]
+interval_seconds = 300
+run_on_startup = true
+
+[[storage.roots]]
+kind = "local"
+id = "university"
+label = "University documents"
+path = "/home/user/Documents/University"
+
+[[storage.roots]]
+kind = "vault"
+id = "archive-main"
+path = "/mnt/e/archive-vault"
+```
+
+```bash
+uv run pw roots list          # 只读配置，不扫描任何目录
+uv run pw sync               # 手动跑一次 reconciliation（daemon 每周期做同样的事）
+uv run pw sync --root archive-main --force-index
+uv run assistantd            # 启动后立即同步一次，然后按 interval 周期重复
+```
+
+同一 root 的同步在单进程内串行；一个 root 离线、身份不符或索引损坏都不会阻止其他 root 同步。
+扫描不完整时只更新已看到的 metadata，**不会**重跑知识索引，因此临时权限问题不会抹掉可搜索内容。
 
 ## Repository layout
 

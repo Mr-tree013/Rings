@@ -27,7 +27,12 @@ FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
     "assistant.application",
 )
 LAYERS_WITHOUT_SQLITE = ("application", "domain", "ports")
-MODULES_WITHOUT_SQLITE = ("daemon.py", "cli.py")
+MODULES_WITHOUT_SQLITE = (
+    "cli.py",
+    "bootstrap.py",
+    "daemon/app.py",
+    "daemon/supervisor.py",
+)
 
 
 def _imported_modules(path: Path) -> set[str]:

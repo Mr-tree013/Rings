@@ -46,6 +46,9 @@
 - 每类长期服务必须有独立异常边界；单个服务失败不得导致 daemon 整体退出。
 - daemon 只负责生命周期与监督，不承载业务规则。
 - Windows Task Scheduler 未来只在登录时拉起 WSL 内的 `assistantd`，不承载业务逻辑。
+- 当前唯一在跑的长期服务是 `index-sync`（周期性 storage reconciliation，ADR-0013）：
+  daemon 启动时先跑一次，然后按 `interval_seconds` 周期重复；它**不**启动 durable EventWorker
+  （没有真实业务 handler）。daemon 侧由 supervisor 负责 restart/backoff。
 
 另有 CLI `pw`，未来命令集合：
 
@@ -218,7 +221,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | --- | --- | --- |
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
 | 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 已完成（v0.1.0）：`InboundEvent`、迁移 0001/0002、async `EventRepository`、`EventInbox`、`EventWorker`（claim/lease/fencing/retry/dead letter） |
-| 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 进行中：2A/2B 已完成（稳定存储身份、metadata catalog、正文抽取与 SHA-256、per-root FTS5/trigram、带 source span 的检索）；自动增量更新与模型接入未实现 |
+| 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 已完成（v0.2.0）：2A 稳定身份与 metadata catalog、2B 正文抽取/SHA-256/per-root FTS5/带 source span 检索、2C host config + 周期 reconciliation + daemon supervisor；模型接入仍未实现 |
 | 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
 
@@ -246,3 +249,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0010 At-least-once event processing with leases and fencing
 - ADR-0011 Stable storage identity and rebuildable metadata catalog
 - ADR-0012 Rebuildable per-root full-text knowledge index
+- ADR-0013 Configured storage roots and periodic reconciliation

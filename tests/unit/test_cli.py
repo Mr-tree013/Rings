@@ -181,6 +181,7 @@ def _env(tmp_path: Path) -> dict[str, str]:
     return {
         "XDG_DATA_HOME": str(tmp_path / "xdg"),
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
     }
 
 
@@ -309,3 +310,206 @@ def test_reindex_reports_an_offline_root_with_a_nonzero_exit(tmp_path: Path) -> 
 
     assert result.exit_code == 1
     assert "skipped" in result.output
+
+
+def _write_config(tmp_path: Path, body: str) -> Path:
+    directory = tmp_path / "config" / "growing-assistant"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "config.toml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _local_root_config(tmp_path: Path, documents: Path, *, interval: int = 3600) -> Path:
+    return _write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "format_version = 1",
+                "[indexing]",
+                f"interval_seconds = {interval}",
+                "run_on_startup = true",
+                "[[storage.roots]]",
+                'kind = "local"',
+                'id = "university"',
+                'label = "University"',
+                f'path = "{documents}"',
+                "enabled = true",
+                "",
+            )
+        ),
+    )
+
+
+def test_roots_list_without_a_config(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["roots", "list"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "No storage roots configured." in result.output
+
+
+def test_roots_list_shows_configured_roots(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "format_version = 1",
+                "[[storage.roots]]",
+                'kind = "local"',
+                'id = "university"',
+                'label = "University"',
+                'path = "/home/someone/uni"',
+                "[[storage.roots]]",
+                'kind = "vault"',
+                'id = "archive-main"',
+                'path = "/mnt/e/archive"',
+                "enabled = false",
+                "",
+            )
+        ),
+    )
+
+    result = runner.invoke(app, ["roots", "list"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "university" in result.output
+    assert "local" in result.output
+    assert "archive-main" in result.output
+    assert "vault" in result.output
+    assert "/mnt/e/archive" in result.output
+
+
+def test_roots_list_rejects_an_invalid_config(tmp_path: Path) -> None:
+    _write_config(tmp_path, "this is not = = toml")
+
+    result = runner.invoke(app, ["roots", "list"], env=_env(tmp_path))
+
+    assert result.exit_code == 2
+    assert "invalid configuration" in result.output
+
+
+def test_sync_without_roots_exits_zero(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["sync"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "No configured roots." in result.output
+
+
+def test_sync_local_root_end_to_end(tmp_path: Path) -> None:
+    documents = tmp_path / "documents" / "university"
+    _write(documents / "notes.md", "the important deadline is Friday\n")
+    _local_root_config(tmp_path, documents)
+
+    sync = runner.invoke(app, ["sync"], env=_env(tmp_path))
+    search = runner.invoke(app, ["search", "deadline"], env=_env(tmp_path))
+
+    assert sync.exit_code == 0, sync.output
+    assert "status: synced" in sync.output
+    assert "catalog: seen=1" in sync.output
+    assert "knowledge: indexed=1" in sync.output
+    assert "index.sqlite3" not in sync.output
+    assert search.exit_code == 0, search.output
+    assert "local://university/notes.md" in search.output
+
+
+def test_sync_offline_vault_exits_zero(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "format_version = 1",
+                "[[storage.roots]]",
+                'kind = "vault"',
+                'id = "archive-main"',
+                f'path = "{tmp_path / "usb" / "archive"}"',
+                "",
+            )
+        ),
+    )
+
+    result = runner.invoke(app, ["sync"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "status: offline" in result.output
+
+
+def test_sync_identity_mismatch_exits_one(tmp_path: Path) -> None:
+    vault = tmp_path / "usb" / "archive"
+    vault.mkdir(parents=True)
+    asyncio.run(
+        VaultManifestFile(SystemClock()).initialize(
+            vault, vault_id="someone-else", label="Other"
+        )
+    )
+    _write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "format_version = 1",
+                "[[storage.roots]]",
+                'kind = "vault"',
+                'id = "archive-main"',
+                f'path = "{vault}"',
+                "",
+            )
+        ),
+    )
+
+    result = runner.invoke(app, ["sync"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "status: identity_mismatch" in result.output
+
+
+def test_sync_incomplete_scan_exits_one_and_skips_indexing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    documents = tmp_path / "documents" / "university"
+    _write(documents / "notes.md", "content\n")
+    _local_root_config(tmp_path, documents)
+    incomplete = FilesystemSnapshot(
+        entries=(),
+        complete=False,
+        errors=(ScanError(relative_path=".", error_type="PermissionError", message="denied"),),
+        skipped_symlinks=(),
+        started_at=datetime(2026, 9, 20, 10, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 9, 20, 10, 0, tzinfo=UTC),
+    )
+
+    async def fake_scan(self: FilesystemScanner, path: Path) -> FilesystemSnapshot:
+        return incomplete
+
+    monkeypatch.setattr(FilesystemScanner, "scan", fake_scan)
+
+    result = runner.invoke(app, ["sync"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "status: incomplete" in result.output
+    assert "knowledge indexing skipped" in result.output
+
+
+def test_sync_unknown_root_is_rejected(tmp_path: Path) -> None:
+    documents = tmp_path / "documents" / "university"
+    _write(documents / "notes.md", "content\n")
+    _local_root_config(tmp_path, documents)
+
+    result = runner.invoke(app, ["sync", "--root", "unknown"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "no configured storage root" in result.output
+
+
+def test_doctor_reports_config_status(tmp_path: Path) -> None:
+    documents = tmp_path / "documents" / "university"
+    documents.mkdir(parents=True)
+    _local_root_config(tmp_path, documents)
+
+    healthy = runner.invoke(app, ["doctor"], env=_env(tmp_path))
+    _write_config(tmp_path, "format_version = 99")
+    broken = runner.invoke(app, ["doctor"], env=_env(tmp_path))
+
+    assert healthy.exit_code == 0, healthy.output
+    assert "config" in healthy.output
+    assert "1 roots" in healthy.output
+    assert broken.exit_code == 1
+    assert "ERROR" in broken.output
