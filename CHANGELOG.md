@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Async SQLite repository boundary (ADR-0009): `EventRepository` is an async port, the
+  SQLite adapter runs each blocking operation in a worker thread, and connections are
+  created and closed inside that thread (`Database` is now a connection factory).
+- `EventInbox` idempotent ingestion API (`application/event_inbox.py`): the single entry
+  point for source adapters, returning `CREATED` or `DUPLICATE` rather than leaking the
+  store's `DuplicateInboundEvent` into adapter code.
+- `EventRepository.get_by_external_identity`, the read side of the `(source, external_id)`
+  identity used by idempotent ingestion.
+- Architecture tests for the new boundaries: the application layer never imports the
+  store, only infrastructure imports `sqlite3`, the repository API is async, and the
+  sqlite3 thread guard is never disabled.
+
+### Changed
+
+- `Database` (Phase 1A) no longer holds a live connection; `Database.connect()` opens a
+  configured connection in the calling thread and closes it on exit.
+
 - Direct SQLite persistence (ADR-0008): `store/db.py` owns connection lifecycle, the
   required pragmas (`foreign_keys`, `journal_mode=WAL`, `busy_timeout`) and explicit
   `BEGIN IMMEDIATE` transactions.

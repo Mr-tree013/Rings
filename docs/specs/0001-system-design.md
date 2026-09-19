@@ -199,7 +199,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | Phase | 内容 | 状态 |
 | --- | --- | --- |
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
-| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 进行中：1A 已完成（`InboundEvent`、迁移、`SqliteEventRepository`） |
+| 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 进行中：1B 已完成（`InboundEvent`、迁移、async `EventRepository`、`EventInbox` 摄取入口）；事件处理 worker 未实现 |
 | 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 计划 |
 | 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
@@ -224,3 +224,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0006 Action approval boundary
 - ADR-0007 FTS5 before vector search
 - ADR-0008 Direct `sqlite3` access behind repository ports
+- ADR-0009 Async boundary for blocking SQLite access

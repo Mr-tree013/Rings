@@ -1,13 +1,23 @@
-"""SQLite connection handling: pragmas, transactions and lifecycle (ADR-0003, ADR-0008).
+"""SQLite connections: pragmas and explicit transactions (ADR-0003, ADR-0008, ADR-0009).
+
+`sqlite3.Connection` objects never cross a thread boundary: every connection is created,
+used and closed inside the thread that runs the SQL. `Database` is therefore a connection
+*factory plus pragma policy*, not a connection owner. Application code reaches storage
+through the async repository, which runs each blocking operation in a worker thread
+(`asyncio.to_thread`, ADR-0009).
 
 Design notes:
 
-- Connections are never module-level globals. Every caller owns the connection it opened.
-- `isolation_level=None` disables sqlite3's implicit transaction management so that
+- Connections are never module-level globals and never cached between operations.
+- `isolation_level=None` disables sqlite3's implicit transaction management, so
   transactions are always explicit (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`).
 - `PRAGMA journal_mode = WAL` is required for file databases. In-memory databases cannot
-  use WAL (SQLite reports `memory`), so the requirement is only enforced for real files
-  instead of pretending otherwise in tests.
+  use WAL (SQLite reports `memory`), so the requirement is enforced for real files only
+  instead of pretending otherwise in tests. A shared in-memory database is not usable
+  with per-operation connections, so tests use real files.
+- The sqlite3 thread guard is deliberately left enabled: no `check_same_thread` argument
+  is ever passed to `connect`, because disabling the guard would hide cross-thread use of
+  a connection instead of preventing it.
 """
 
 from __future__ import annotations
@@ -25,34 +35,24 @@ BUSY_TIMEOUT_MS = 5000
 
 
 class Database:
-    """A thin, explicit wrapper around a single `sqlite3` connection."""
+    """Connection factory and pragma policy for one SQLite database file."""
 
-    def __init__(self, connection: sqlite3.Connection, path: str) -> None:
-        self._connection = connection
+    def __init__(self, path: str, *, create_parent: bool = True) -> None:
         self._path = path
+        self._create_parent = create_parent
 
     @classmethod
-    def open(cls, path: str | Path, *, create_parent: bool = True) -> Database:
-        """Open (and, for files, create) a database and apply the required pragmas."""
-        target = str(path)
-        if target != MEMORY_PATH and create_parent:
-            resolved = Path(target).expanduser()
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            target = str(resolved)
-        connection = sqlite3.connect(target, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        database = cls(connection, target)
-        database._configure()
-        return database
+    def at(cls, path: str | Path, *, create_parent: bool = True) -> Database:
+        """Describe the database at `path`. Nothing is opened or created here.
 
-    @property
-    def connection(self) -> sqlite3.Connection:
-        """The underlying connection, for store modules in this package."""
-        return self._connection
+        Opening the file happens later, in `connect()`, inside whichever thread runs the
+        SQL — which is what makes a `Database` safe to hand to a worker thread.
+        """
+        return cls(str(path), create_parent=create_parent)
 
     @property
     def path(self) -> str:
-        """The path this database was opened with."""
+        """The path this database was declared with."""
         return self._path
 
     @property
@@ -61,52 +61,68 @@ class Database:
         return self._path != MEMORY_PATH
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        """Run a block inside one `BEGIN IMMEDIATE` transaction.
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a configured connection in the calling thread, then close it.
 
-        Commits on success, rolls back on any exception (including cancellation).
-        Nested transactions are refused rather than silently flattened.
+        When `create_parent` is set, the parent directory is created first so a first-run
+        daemon can write its runtime database.
         """
-        if self._connection.in_transaction:
-            raise DatabaseConfigurationError("nested transactions are not supported")
-        self._connection.execute("BEGIN IMMEDIATE")
+        target = self._path
+        if self.is_file_database and self._create_parent:
+            resolved = Path(target).expanduser()
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            target = str(resolved)
+        connection = sqlite3.connect(target, isolation_level=None)
         try:
-            yield self._connection
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            raise
-        else:
-            if self._connection.in_transaction:
-                self._connection.execute("COMMIT")
+            connection.row_factory = sqlite3.Row
+            _configure(connection, path=target, is_file_database=self.is_file_database)
+            yield connection
+        finally:
+            connection.close()
 
-    def close(self) -> None:
-        """Close the connection."""
-        self._connection.close()
 
-    def __enter__(self) -> Database:
-        return self
+@contextmanager
+def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Run a block inside one `BEGIN IMMEDIATE` transaction on `connection`.
 
-    def __exit__(self, *_: object) -> None:
-        self.close()
+    Commits on success, rolls back on any exception (including cancellation). Nested
+    transactions are refused rather than silently flattened.
+    """
+    if connection.in_transaction:
+        raise DatabaseConfigurationError("nested transactions are not supported")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        yield connection
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    else:
+        if connection.in_transaction:
+            connection.execute("COMMIT")
 
-    def _configure(self) -> None:
-        connection = self._connection
-        connection.execute("PRAGMA foreign_keys = ON")
-        journal_mode = str(
-            connection.execute(f"PRAGMA journal_mode = {REQUIRED_JOURNAL_MODE}").fetchone()[0]
+
+def _configure(connection: sqlite3.Connection, *, path: str, is_file_database: bool) -> None:
+    connection.execute("PRAGMA foreign_keys = ON")
+    journal_mode = str(
+        connection.execute(f"PRAGMA journal_mode = {REQUIRED_JOURNAL_MODE}").fetchone()[0]
+    )
+    connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    if is_file_database and journal_mode.lower() != REQUIRED_JOURNAL_MODE:
+        raise DatabaseConfigurationError(
+            f"{path} reports journal_mode={journal_mode!r}, "
+            f"expected {REQUIRED_JOURNAL_MODE!r}"
         )
-        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        if self.is_file_database and journal_mode.lower() != REQUIRED_JOURNAL_MODE:
-            raise DatabaseConfigurationError(
-                f"{self._path} reports journal_mode={journal_mode!r}, "
-                f"expected {REQUIRED_JOURNAL_MODE!r}"
-            )
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise DatabaseConfigurationError("foreign key enforcement could not be enabled")
-        if int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) != BUSY_TIMEOUT_MS:
-            raise DatabaseConfigurationError(f"busy_timeout is not {BUSY_TIMEOUT_MS}ms")
+    if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+        raise DatabaseConfigurationError("foreign key enforcement could not be enabled")
+    if int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) != BUSY_TIMEOUT_MS:
+        raise DatabaseConfigurationError(f"busy_timeout is not {BUSY_TIMEOUT_MS}ms")
 
 
-__all__ = ["BUSY_TIMEOUT_MS", "MEMORY_PATH", "REQUIRED_JOURNAL_MODE", "Database"]
-
+__all__ = [
+    "BUSY_TIMEOUT_MS",
+    "MEMORY_PATH",
+    "REQUIRED_JOURNAL_MODE",
+    "Database",
+    "transaction",
+]

@@ -1,11 +1,15 @@
 """Forward-only migration runner for the runtime SQLite store (ADR-0003, ADR-0008).
 
+The runner is intentionally synchronous: the daemon applies migrations during startup,
+before any long-running asyncio service exists, so there is no event loop to protect
+(ADR-0009). It opens its own connection per step and never runs inside a worker thread.
+
 Why the transaction control sits inside the SQL text: Python's `executescript()`
 performs an implicit COMMIT before it runs, so an outer `BEGIN` cannot make a migration
 atomic (verified against CPython 3.13). The runner therefore builds
 `BEGIN IMMEDIATE; <migration>; INSERT INTO schema_migrations ...; COMMIT;` and hands the
-whole thing to `executescript`, keeping the schema change and its bookkeeping in a
-single transaction.
+whole thing to `executescript`, keeping the schema change and its bookkeeping in a single
+transaction.
 
 There is no downgrade: forward migrations only, and re-running `apply_migrations` is a
 no-op.
@@ -122,16 +126,18 @@ def apply_migrations(
 
 def _ensure_bookkeeping_table(database: Database) -> None:
     try:
-        database.connection.executescript(_BOOKKEEPING_SQL)
+        with database.connect() as connection:
+            connection.executescript(_BOOKKEEPING_SQL)
     except sqlite3.Error as exc:
         raise MigrationError(f"could not create {SCHEMA_MIGRATIONS_TABLE}: {exc}") from exc
 
 
 def _load_applied(database: Database) -> dict[str, str]:
     try:
-        rows = database.connection.execute(
-            f"SELECT version, name FROM {SCHEMA_MIGRATIONS_TABLE}"
-        ).fetchall()
+        with database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT version, name FROM {SCHEMA_MIGRATIONS_TABLE}"
+            ).fetchall()
     except sqlite3.Error as exc:
         raise MigrationError(f"could not read {SCHEMA_MIGRATIONS_TABLE}: {exc}") from exc
     return {str(row["version"]): str(row["name"]) for row in rows}
@@ -155,12 +161,13 @@ def _apply_one(database: Database, migration: MigrationFile, clock: Clock) -> No
             "COMMIT;",
         )
     )
-    try:
-        database.connection.executescript(script)
-    except sqlite3.Error as exc:
-        if database.connection.in_transaction:
-            database.connection.execute("ROLLBACK")
-        raise MigrationError(f"migration {migration.name} failed: {exc}") from exc
+    with database.connect() as connection:
+        try:
+            connection.executescript(script)
+        except sqlite3.Error as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise MigrationError(f"migration {migration.name} failed: {exc}") from exc
 
 
 def _sql_literal(value: str) -> str:
@@ -178,3 +185,4 @@ __all__ = [
     "default_migrations_dir",
     "discover_migrations",
 ]
+

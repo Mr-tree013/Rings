@@ -1,13 +1,13 @@
 """Integration tests for the migration runner, against real SQLite files.
 
 sqlite3 is never mocked here: durability, ordering and rollback are the behaviours under
-test, and they only mean something against a real database.
+test, and they only mean something against a real database. The runner stays synchronous
+(ADR-0009); only the repository has an async boundary.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,10 +41,8 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Iterator[Database]:
-    db = Database.open(tmp_path / "assistant.db")
-    yield db
-    db.close()
+def database(tmp_path: Path) -> Database:
+    return Database.at(tmp_path / "assistant.db")
 
 
 def _write_migration(directory: Path, name: str, sql: str) -> None:
@@ -52,18 +50,29 @@ def _write_migration(directory: Path, name: str, sql: str) -> None:
 
 
 def _table_names(database: Database) -> set[str]:
-    rows = database.connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table'"
-    ).fetchall()
+    with database.connect() as connection:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _index_names(database: Database) -> set[str]:
+    with database.connect() as connection:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
     return {str(row["name"]) for row in rows}
 
 
 def _index_sql(database: Database, name: str) -> str:
-    row = database.connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)
-    ).fetchone()
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)
+        ).fetchone()
     assert row is not None, f"index {name} does not exist"
     return " ".join(str(row["sql"]).split())
+
+
+def _row_count(database: Database) -> int:
+    with database.connect() as connection:
+        return int(connection.execute("SELECT count(*) FROM inbound_events").fetchone()[0])
 
 
 def _insert_raw(database: Database, **overrides: object) -> None:
@@ -81,12 +90,11 @@ def _insert_raw(database: Database, **overrides: object) -> None:
         "updated_at": NOW,
     }
     values.update(overrides)
-    database.connection.execute(RAW_INSERT, values)
+    with database.connect() as connection:
+        connection.execute(RAW_INSERT, values)
 
 
-def test_fresh_database_applies_the_initial_migration(
-    database: Database, clock: FakeClock
-) -> None:
+def test_fresh_database_applies_the_initial_migration(database: Database, clock: FakeClock) -> None:
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == ["0001"]
@@ -98,9 +106,10 @@ def test_schema_migrations_records_the_applied_version(
 ) -> None:
     apply_migrations(database, clock=clock)
 
-    row = database.connection.execute(
-        f"SELECT version, name, applied_at FROM {SCHEMA_MIGRATIONS_TABLE}"
-    ).fetchone()
+    with database.connect() as connection:
+        row = connection.execute(
+            f"SELECT version, name, applied_at FROM {SCHEMA_MIGRATIONS_TABLE}"
+        ).fetchone()
 
     assert row is not None
     assert row["version"] == "0001"
@@ -118,9 +127,26 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
 def test_required_pragmas_are_effective(database: Database, clock: FakeClock) -> None:
     apply_migrations(database, clock=clock)
 
-    assert database.connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert database.connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-    assert database.connection.execute("PRAGMA busy_timeout").fetchone()[0] == BUSY_TIMEOUT_MS
+    with database.connect() as connection:
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert foreign_keys == 1
+    assert busy_timeout == BUSY_TIMEOUT_MS
+
+
+def test_every_connection_is_configured_the_same_way(
+    database: Database, clock: FakeClock
+) -> None:
+    apply_migrations(database, clock=clock)
+
+    with database.connect() as first, database.connect() as second:
+        assert first is not second
+        assert first.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert second.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert second.execute("PRAGMA busy_timeout").fetchone()[0] == BUSY_TIMEOUT_MS
 
 
 def test_inbound_events_table_exists_with_required_indexes(
@@ -133,12 +159,7 @@ def test_inbound_events_table_exists_with_required_indexes(
     unique_index = _index_sql(database, "inbound_events_source_external_id_key")
     assert "CREATE UNIQUE INDEX" in unique_index.upper()
     assert "WHERE external_id IS NOT NULL" in unique_index
-    assert "inbound_events_status_received_at_idx" in {
-        str(row["name"])
-        for row in database.connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index'"
-        ).fetchall()
-    }
+    assert "inbound_events_status_received_at_idx" in _index_names(database)
 
 
 def test_missing_migrations_directory_fails(
@@ -244,8 +265,7 @@ def test_database_allows_many_rows_without_external_id(
     _insert_raw(database, source="cli", external_id=None)
     _insert_raw(database, source="cli", external_id=None)
 
-    count = database.connection.execute("SELECT count(*) FROM inbound_events").fetchone()[0]
-    assert count == 2
+    assert _row_count(database) == 2
 
 
 def test_database_constrains_status_attempts_and_blank_fields(
@@ -261,3 +281,4 @@ def test_database_constrains_status_attempts_and_blank_fields(
         _insert_raw(database, status="FAILED", external_id="failed-check")
     with pytest.raises(sqlite3.IntegrityError, match="source_not_blank"):
         _insert_raw(database, source="   ", external_id="source-check")
+

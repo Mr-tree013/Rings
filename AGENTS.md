@@ -34,6 +34,13 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 - **Domain 层不得依赖 Adapter**，也不得 import DeepSeek、Playwright、SQLAlchemy、任何 Web 框架或数据库驱动。
 - Domain 不得发起 I/O；副作用只能出现在 adapter 或 application 的显式步骤里。
+- **Async application code must not directly execute blocking sqlite3 calls.** 阻塞的
+  sqlite3 只能在 store adapter 内部的 private `_*_sync` 方法里执行，且必须经
+  `asyncio.to_thread` 进入；connection 必须在执行 SQL 的那个 worker thread 内创建和关闭，
+  禁止跨线程传递 connection，禁止设置 `check_same_thread=False`（ADR-0009）。
+- **External source adapters ingest through `EventInbox` rather than writing events
+  directly to SQLite.** 任何新的 input source 都只能调用
+  `assistant.application.event_inbox.EventInbox.ingest()`，不得自己调 repository 写事件。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -74,12 +81,14 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 ## 6. Phase 现状
 
-当前为 **Phase 1A 已完成**：SQLite 持久层基础（`store/db.py`、`store/migrations.py`、
-`store/events.py`）、`InboundEvent` 领域模型与状态机、`EventRepository` 端口。
+当前为 **Phase 1B 已完成**：在 1A 的 SQLite 持久层（`store/db.py`、`store/migrations.py`、
+`store/events.py`）、`InboundEvent` 领域模型与状态机、`EventRepository` 端口之上，
+新增异步持久层边界（ADR-0009）与 `EventInbox` 幂等摄取入口（`application/event_inbox.py`）。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-Event Inbox processor / IMAP / SMTP / DeepSeek / FTS5 / Vault 扫描 / Web Server / eHall /
+Event worker/processor（claim、retry、crash recovery）/ IMAP / SMTP / DeepSeek / FTS5 /
+Vault 扫描 / Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 

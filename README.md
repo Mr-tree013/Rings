@@ -40,7 +40,12 @@ InboundEvent → classification → Case → knowledge search → material check
 4. 高风险能力（退课、撤销申请、退宿等）在代码能力集合中物理不存在，不靠 prompt 禁止。
 
 运行时存储：标准库 `sqlite3` 直连，SQL 全部收在 `store/` 包内，领域与应用层不执行 SQL、
-不 import 数据库驱动（ADR-0003、ADR-0008）。
+不 import 数据库驱动（ADR-0003、ADR-0008）。Repository 端口是 async 的，阻塞的 sqlite3
+调用只在 worker thread 内执行，connection 不跨线程（ADR-0009）。
+
+外部输入统一经 `EventInbox` 摄取为持久化的 `RECEIVED` 事件：重复的 `(source, external_id)`
+是幂等成功（返回 `DUPLICATE`）而不是错误。**尚无事件处理 worker**——claim、retry、崩溃恢复
+是后续 Phase 单独设计的内容。
 
 ## Installation
 
