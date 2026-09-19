@@ -49,6 +49,16 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   处理；handler 不得假设自己只跑一次（ADR-0010）。
 - **`CancelledError` must not be converted into an ordinary event-processing failure.**
   取消必须向上传播，事件保持 PROCESSING 并靠 lease 过期恢复；禁止把取消写成 FAILED。
+- **Physical filesystem paths are runtime locations, not persistent document identities.**
+  文档身份只能是 `root_id + relative_path`（`local://…` / `vault://…`）；`/mnt/e/...`、
+  `E:\...` 只能作为可变的 runtime metadata（`storage_roots.last_known_path`），
+  绝不允许进入 logical URI 或长期引用（ADR-0011）。
+- **Filesystem metadata scanning must not follow symlinks.** file/dir symlink 一律跳过并计数，
+  禁止 `follow_symlinks=True` 的遍历（ADR-0011）。
+- **Incomplete scans must never mark unseen catalog entries missing.**
+  只有 `complete=True` 的 snapshot 才能执行 missing 判定；scanner 出错时 `marked_missing` 必须为 0。
+- **Metadata scans must not read full file contents.** 本阶段禁止在扫描里 `open()` / `read_bytes()` /
+  hash / OCR；size 与 mtime 只能来自目录项元数据（有静态测试守）。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -94,10 +104,15 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 状态机、数据库级去重、async repository 边界（ADR-0009）、`EventInbox` 幂等摄取入口、
 原子 claim + lease + fencing、确定性 retry/backoff、dead letter 与取消语义（ADR-0010）。
 
+**Phase 2A 已完成**：稳定存储身份与元数据 catalog（ADR-0011）：`local://` / `vault://`
+逻辑 URI、`.pa/vault.toml` manifest、不跟随 symlink 的 metadata scanner、
+`storage_roots` / `catalog_entries`（迁移 0003）、增量扫描与安全 missing 判定、
+离线 Vault 元数据保留、`pw vault init|status|scan`。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / FTS5 / Vault 扫描 / Web Server / eHall /
+DeepSeek / 文件正文抽取 / FTS5 / 语义检索 / Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 

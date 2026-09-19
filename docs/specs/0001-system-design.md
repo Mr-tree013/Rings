@@ -183,8 +183,13 @@ example configuration。
 个人 Vault 与 Git 仓库物理分离，例如 `~/personal-vault/` 或移动存储
 `/mnt/e/archive-vault/`，未来包含 `facts/`、`inbox/`、`attachments/`、`archive/`。
 
-冷数据 Archive Vault 使用稳定逻辑 URI：`vault://archive-main/...`。
-不得使用 `/mnt/e/...` 或 Windows 盘符作为持久 ID。
+冷数据 Archive Vault 使用稳定逻辑 URI：`vault://archive-main/...`；本机目录使用
+`local://<root-id>/...`。不得使用 `/mnt/e/...` 或 Windows 盘符作为持久 ID：物理路径只是
+runtime metadata（ADR-0011）。
+
+主机端 SQLite 维护**元数据 catalog**（`storage_roots` / `catalog_entries`）：由扫描派生、
+可重建，原始文件始终是 authority，本阶段不保存正文、摘要、embedding 或内容 hash。只有一次
+**完整**扫描才能把未出现的条目标记为 `MISSING`；Vault 离线不等于文件缺失。
 
 U 盘等移动存储属于 archive storage，不是 Agent runtime。
 
@@ -213,7 +218,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | --- | --- | --- |
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
 | 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 已完成（v0.1.0）：`InboundEvent`、迁移 0001/0002、async `EventRepository`、`EventInbox`、`EventWorker`（claim/lease/fencing/retry/dead letter） |
-| 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 计划 |
+| 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 进行中：2A 已完成（稳定存储身份、vault manifest、metadata catalog、安全 missing 判定）；正文抽取、FTS5 与模型接入未实现 |
 | 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
 
@@ -239,3 +244,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0008 Direct `sqlite3` access behind repository ports
 - ADR-0009 Async boundary for blocking SQLite access
 - ADR-0010 At-least-once event processing with leases and fencing
+- ADR-0011 Stable storage identity and rebuildable metadata catalog

@@ -9,9 +9,13 @@
 async repository 边界、`EventInbox` 摄取入口，以及带 lease + fencing token 的原子 claim、
 确定性 retry/backoff、crash recovery 与 dead letter。
 
-**尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有个人资料
-索引、没有 Web UI、没有调度器。`assistantd` 仍是骨架（启动、等待信号、优雅退出）——仓库里
+**尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有 Web UI、
+没有调度器。`assistantd` 仍是骨架（启动、等待信号、优雅退出）——仓库里
 有 `EventWorker`，但没有任何真实 handler，因此生产进程不会启动它。
+
+存储侧（Phase 2A）：Archive Vault 的**元数据 catalog** 已可用——稳定逻辑 URI、vault
+manifest、不跟随 symlink 的 metadata 扫描、增量更新与安全的 missing 判定。
+**尚无全文检索**：不解析文件正文、不做 OCR、不做 embedding、不建 FTS5 索引，也不支持问答/RAG。
 
 ## Architecture summary
 
@@ -89,7 +93,18 @@ uv run pytest
 ```
 
 个人 Vault 与代码仓库**物理分离**；U 盘等移动存储属于 archive 存储，不是 Agent runtime。
-冷数据引用使用稳定逻辑 URI（如 `vault://archive-main/...`），不使用 `/mnt/e/...` 或盘符作为持久 ID。
+文档身份是稳定逻辑 URI，而不是挂载路径：
+
+```text
+local://<root-id>/<relative-path>     本机目录（root id 由调用方显式指定）
+vault://<vault-id>/<relative-path>    Archive Vault（id 来自 .pa/vault.toml）
+```
+
+```bash
+uv run pw vault init /mnt/e/archive --id archive-main --label "Personal Archive"
+uv run pw vault status /mnt/e/archive
+uv run pw vault scan /mnt/e/archive
+```
 
 ## Repository layout
 

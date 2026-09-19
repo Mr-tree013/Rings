@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Stable storage identity and metadata catalog (ADR-0011):
+  `local://<root-id>/<relative-path>` and `vault://<vault-id>/<relative-path>` logical URIs,
+  with strict rejection of traversal, absolute paths, backslashes and Windows drive prefixes.
+- `.pa/vault.toml` archive vault manifest (`format_version`, `vault_id`, `label`,
+  `created_at`) with explicit, never-overwriting, atomically written initialisation.
+- `pw vault init|status|scan` nested command group: initialise a manifest, inspect it without
+  touching the database, or scan a vault into the host catalog.
+- Migration `0003_storage_catalog.sql` adding `storage_roots` and `catalog_entries` (foreign
+  key, unique `(root_id, relative_path)`, presence/size/mtime constraints) without touching
+  the event-core schema.
+- Filesystem metadata scanner: relative paths, `size_bytes`, `mtime_ns` and media type only,
+  with symlinks skipped and reported, `.pa` excluded, and structured errors instead of
+  crashes.
+- Incremental catalog semantics: stable entry ids per `(root_id, relative_path)`, unchanged
+  versus updated detection by `size + mtime_ns`, `MISSING` only after a *complete* scan, and
+  `restored` when a path reappears.
+- `CatalogRepository` port and `SqliteCatalogRepository`; `pw vault scan` reports
+  seen/created/updated/unchanged/restored/missing/complete/errors and exits non-zero when a
+  scan is incomplete.
+- Architecture tests: the application layer never imports adapters/store/sqlite3, the domain
+  never touches `os` or `pathlib.Path`, and the metadata scanner never reads or hashes file
+  contents.
+
 ## [0.1.0] - 2026-09-20
 
 Phase 1: the durable event core. Events are ingested, stored, claimed, retried and
@@ -67,4 +92,3 @@ dead-lettered durably. No external integration (mail, eHall, model, web) exists 
 - Project rules for future agent sessions in `AGENTS.md`.
 - `uv`-managed environment pinning Python 3.13, with Ruff, mypy and pytest configured.
 - Phase 0 tests covering CLI status, environment doctor and daemon lifecycle.
-

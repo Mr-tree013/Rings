@@ -98,10 +98,11 @@ def _insert_raw(database: Database, **overrides: object) -> None:
 def test_fresh_database_applies_the_initial_migration(database: Database, clock: FakeClock) -> None:
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0001", "0002"]
+    assert [migration.version for migration in applied] == ["0001", "0002", "0003"]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
         "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
     ]
 
 
@@ -125,7 +126,7 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     apply_migrations(database, clock=clock)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002")
+    assert applied_versions(database) == ("0001", "0002", "0003")
 
 
 def test_required_pragmas_are_effective(database: Database, clock: FakeClock) -> None:
@@ -332,7 +333,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0002"]
+    assert [migration.version for migration in applied] == ["0002", "0003"]
     with database.connect() as connection:
         migrated = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_row["id"],)
@@ -395,7 +396,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     # Re-running the migration set after the upgrade stays a no-op.
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002")
+    assert applied_versions(database) == ("0001", "0002", "0003")
 
 
 def test_upgraded_schema_rejects_a_half_written_lease(
@@ -417,3 +418,132 @@ def test_upgraded_schema_rejects_a_half_written_lease(
             """,
             (str(uuid4()), NOW, NOW, NOW),
         )
+
+
+LEGACY_EVENT_INSERT = """
+INSERT INTO inbound_events (
+    id, source, external_id, event_type, content,
+    received_at, status, attempts, last_error, created_at, updated_at
+) VALUES (
+    :id, :source, :external_id, :event_type, :content,
+    :received_at, :status, :attempts, :last_error, :created_at, :updated_at
+)
+"""
+
+
+def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """0003 adds the catalog tables without disturbing the event core."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in ("0001_initial.sql", "0002_event_processing_leases.sql"):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    assert [
+        migration.version
+        for migration in apply_migrations(database, clock=clock, directory=legacy_directory)
+    ] == ["0001", "0002"]
+    legacy_event = {
+        "id": str(uuid4()),
+        "source": "smail",
+        "external_id": "uidvalidity1:uid7",
+        "event_type": "mail.received",
+        "content": "notice",
+        "received_at": NOW,
+        "status": "PROCESSING",
+        "attempts": 1,
+        "last_error": "RuntimeError: boom",
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    with database.connect() as connection:
+        connection.execute(LEGACY_EVENT_INSERT, legacy_event)
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0003"]
+    with database.connect() as connection:
+        event_row = connection.execute(
+            "SELECT * FROM inbound_events WHERE id = ?", (legacy_event["id"],)
+        ).fetchone()
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        indexes = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+    assert event_row is not None
+    for column, value in legacy_event.items():
+        assert event_row[column] == value, column
+    assert {"storage_roots", "catalog_entries"} <= tables
+    assert "inbound_events_source_external_id_key" in indexes
+
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO storage_roots (root_id, kind, label, last_known_path, "
+            "first_seen_at, last_seen_at) VALUES ('archive-main', 'vault', 'Archive', "
+            "'/mnt/e/archive', ?, ?)",
+            (NOW, NOW),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'unknown-root', 'a.txt', 'a.txt', '.txt', 1, 1, NULL, 'present', ?, ?, ?, 's')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="presence_is_known"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'archive-main', 'a.txt', 'a.txt', '.txt', 1, 1, NULL, 'offline', ?, ?, ?, 's')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="size_not_negative"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'archive-main', 'a.txt', 'a.txt', '.txt', -1, 1, NULL, 'present', ?, ?, ?, 's')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'archive-main', 'a.txt', 'a.txt', '.txt', 1, 1, NULL, 'present', ?, ?, ?, 's')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="UNIQUE"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'archive-main', 'a.txt', 'a.txt', '.txt', 5, 5, NULL, 'present', ?, ?, ?, 's')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == ("0001", "0002", "0003")

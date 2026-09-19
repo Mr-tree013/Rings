@@ -95,14 +95,57 @@ class PermanentEventError(DomainError):
     """
 
 
+class InvalidStorageRoot(DomainError):
+    """A storage root was declared with an invalid identity or label."""
+
+
+class InvalidStorageUri(DomainError):
+    """A logical storage URI is malformed, absolute, or tries to traverse out of its root."""
+
+
+class StorageRootConflict(DomainError):
+    """An existing root_id was reused with a different storage kind.
+
+    A root's identity is permanent (ADR-0011): the same id cannot be a local folder in one
+    scan and an archive vault in the next.
+    """
+
+
+class InvalidVaultManifest(DomainError):
+    """A `.pa/vault.toml` is missing required fields, malformed, or self-contradictory."""
+
+
+class VaultNotInitialized(DomainError):
+    """The directory has no `.pa/vault.toml`, so it is not an archive vault yet.
+
+    Initialisation is always explicit: seeing a removable drive must never create a
+    manifest on its own.
+    """
+
+
+class VaultAlreadyInitialized(DomainError):
+    """The directory already has a `.pa/vault.toml`; initialisation never overwrites it."""
+
+
+class InvalidCatalogEntry(DomainError):
+    """A catalog record, snapshot entry or scan result breaks its invariants."""
+
+
 __all__ = [
     "DomainError",
     "DuplicateInboundEvent",
     "EventNotFound",
+    "InvalidCatalogEntry",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidInboundEvent",
+    "InvalidStorageRoot",
+    "InvalidStorageUri",
+    "InvalidVaultManifest",
     "PermanentEventError",
     "StaleEventClaim",
+    "StorageRootConflict",
     "UnexpectedEventStatus",
+    "VaultAlreadyInitialized",
+    "VaultNotInitialized",
 ]

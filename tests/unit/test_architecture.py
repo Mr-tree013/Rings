@@ -40,6 +40,16 @@ def _imported_modules(path: Path) -> set[str]:
     return modules
 
 
+def _imported_names(path: Path) -> set[str]:
+    """Fully-qualified names of `from X import Y` statements."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
 def _domain_modules() -> list[Path]:
     modules = sorted(DOMAIN_DIR.glob("*.py"))
     assert modules, f"no domain modules found under {DOMAIN_DIR}"
@@ -79,6 +89,37 @@ def test_application_does_not_import_the_store() -> None:
     ]
 
     assert not violations, violations
+
+
+def test_application_does_not_import_adapters_or_sqlite() -> None:
+    application_modules = sorted((SOURCE_ROOT / "application").glob("*.py"))
+
+    violations = [
+        f"{path.name} imports {imported}"
+        for path in application_modules
+        for imported in _imported_modules(path)
+        if imported.startswith(("assistant.adapters", "assistant.store")) or imported == "sqlite3"
+    ]
+
+    assert not violations, violations
+
+
+def test_domain_does_not_touch_the_filesystem() -> None:
+    offenders: list[str] = []
+    for path in _domain_modules():
+        if any(name == "os" or name.startswith("os.") for name in _imported_modules(path)):
+            offenders.append(f"{path.name} imports os")
+        if "pathlib.Path" in _imported_names(path):
+            offenders.append(f"{path.name} imports pathlib.Path")
+    assert not offenders, offenders
+
+
+def test_metadata_scanner_never_reads_file_contents() -> None:
+    scanner = SOURCE_ROOT / "adapters" / "filesystem" / "scanner.py"
+    text = scanner.read_text(encoding="utf-8")
+
+    for forbidden in ("open(", "read_bytes(", "read_text(", "hashlib", "sha256"):
+        assert forbidden not in text, f"metadata scanning must not read contents: {forbidden}"
 
 
 def test_only_infrastructure_imports_sqlite3() -> None:

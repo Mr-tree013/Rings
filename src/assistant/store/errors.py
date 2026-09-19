@@ -21,5 +21,13 @@ class MigrationError(StoreError):
     """A migration file is invalid, out of order, or failed to apply."""
 
 
-__all__ = ["DatabaseConfigurationError", "MigrationError", "StoreError"]
+class CatalogStoreError(StoreError):
+    """The metadata catalog could not be read or written."""
 
+
+__all__ = [
+    "CatalogStoreError",
+    "DatabaseConfigurationError",
+    "MigrationError",
+    "StoreError",
+]
