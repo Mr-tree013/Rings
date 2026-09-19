@@ -131,21 +131,111 @@ class InvalidCatalogEntry(DomainError):
     """A catalog record, snapshot entry or scan result breaks its invariants."""
 
 
+class InvalidSourceSpan(DomainError):
+    """A source span is neither a usable line range nor a usable page number."""
+
+
+class InvalidKnowledgeDocument(DomainError):
+    """Extracted content or knowledge-index state breaks its invariants."""
+
+
+class UnknownStorageRoot(DomainError):
+    """The catalog has no such storage root."""
+
+
+class UnknownCatalogEntry(DomainError):
+    """The catalog has no such entry under that root."""
+
+
+class StorageRootOffline(DomainError):
+    """A storage root's physical location is not currently present.
+
+    Offline is a runtime condition, never a catalog state: nothing is marked missing and no
+    index metadata is discarded because a drive is unplugged.
+    """
+
+
+class StorageRootIdentityMismatch(DomainError):
+    """The storage mounted at a root's known path is not the root we catalogued.
+
+    A different vault id at the same mount point means the index (and any content read)
+    would belong to someone else's data, so the operation is refused.
+    """
+
+
+class UnsafeFilePath(DomainError):
+    """A path is unsafe to read: symlink, non-regular file, or escaping its root."""
+
+
+class FileChangedDuringExtraction(DomainError):
+    """The file no longer matches the catalog metadata that was used to plan the read."""
+
+
+class ContentTooLarge(DomainError):
+    """A file exceeds the size limit for its extractor."""
+
+
+class ContentExtractionError(DomainError):
+    """An extractor could not read a file it claims to support.
+
+    Adapter-specific exceptions (for example pypdf's) are translated into this error so no
+    third-party exception type crosses the adapter boundary.
+    """
+
+
+class Fts5Unavailable(DomainError):
+    """This SQLite build has no FTS5 module."""
+
+
+class TrigramTokenizerUnavailable(DomainError):
+    """This SQLite build has FTS5 but not the trigram tokenizer."""
+
+
+class KnowledgeIndexMismatch(DomainError):
+    """An index database is bound to a different root or storage kind."""
+
+
+class KnowledgeIndexNeedsRebuild(DomainError):
+    """An index database was written by a schema version this build does not understand."""
+
+
+class KnowledgeIndexCorrupt(DomainError):
+    """An index database cannot be read.
+
+    The index is derived data: recovery is a deliberate rebuild, never an automatic delete.
+    """
+
+
 __all__ = [
+    "ContentExtractionError",
+    "ContentTooLarge",
     "DomainError",
     "DuplicateInboundEvent",
     "EventNotFound",
+    "FileChangedDuringExtraction",
+    "Fts5Unavailable",
     "InvalidCatalogEntry",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidInboundEvent",
+    "InvalidKnowledgeDocument",
+    "InvalidSourceSpan",
     "InvalidStorageRoot",
     "InvalidStorageUri",
     "InvalidVaultManifest",
+    "KnowledgeIndexCorrupt",
+    "KnowledgeIndexMismatch",
+    "KnowledgeIndexNeedsRebuild",
     "PermanentEventError",
     "StaleEventClaim",
     "StorageRootConflict",
+    "StorageRootIdentityMismatch",
+    "StorageRootOffline",
+    "TrigramTokenizerUnavailable",
     "UnexpectedEventStatus",
+    "UnknownCatalogEntry",
+    "UnknownStorageRoot",
+    "UnsafeFilePath",
     "VaultAlreadyInitialized",
     "VaultNotInitialized",
 ]

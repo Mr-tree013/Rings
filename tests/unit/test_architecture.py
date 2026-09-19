@@ -21,6 +21,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "assistant"
 DOMAIN_DIR = SOURCE_ROOT / "domain"
 FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
     "sqlite3",
+    "pypdf",
     "assistant.store",
     "assistant.adapters",
     "assistant.application",
@@ -98,10 +99,40 @@ def test_application_does_not_import_adapters_or_sqlite() -> None:
         f"{path.name} imports {imported}"
         for path in application_modules
         for imported in _imported_modules(path)
-        if imported.startswith(("assistant.adapters", "assistant.store")) or imported == "sqlite3"
+        if imported.startswith(("assistant.adapters", "assistant.store", "pypdf"))
+        or imported == "sqlite3"
     ]
 
     assert not violations, violations
+
+
+def test_ports_do_not_import_concrete_adapters() -> None:
+    port_modules = sorted((SOURCE_ROOT / "ports").glob("*.py"))
+    assert port_modules, "no port modules found"
+
+    violations = [
+        f"{path.name} imports {imported}"
+        for path in port_modules
+        for imported in _imported_modules(path)
+        if imported.startswith(("assistant.adapters", "assistant.store"))
+    ]
+
+    assert not violations, violations
+
+
+def test_only_the_pdf_adapter_imports_pypdf() -> None:
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(
+            name == "pypdf" or name.startswith("pypdf.")
+            for name in _imported_modules(path)
+        )
+        and not (path.parent.name == "content" and path.name == "pdf.py")
+    ]
+
+    assert not offenders, offenders
+    assert (SOURCE_ROOT / "adapters" / "content" / "pdf.py").is_file()
 
 
 def test_domain_does_not_touch_the_filesystem() -> None:

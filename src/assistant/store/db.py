@@ -30,25 +30,42 @@ from pathlib import Path
 from assistant.store.errors import DatabaseConfigurationError
 
 MEMORY_PATH = ":memory:"
-REQUIRED_JOURNAL_MODE = "wal"
+JOURNAL_MODE_WAL = "wal"
+JOURNAL_MODE_DELETE = "delete"
+DEFAULT_JOURNAL_MODE = JOURNAL_MODE_WAL
+REQUIRED_JOURNAL_MODE = JOURNAL_MODE_WAL
+"""The runtime store's journal mode. Derived stores (knowledge indexes) may choose another."""
 BUSY_TIMEOUT_MS = 5000
 
 
 class Database:
     """Connection factory and pragma policy for one SQLite database file."""
 
-    def __init__(self, path: str, *, create_parent: bool = True) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        create_parent: bool = True,
+        journal_mode: str = DEFAULT_JOURNAL_MODE,
+    ) -> None:
         self._path = path
         self._create_parent = create_parent
+        self._journal_mode = journal_mode
 
     @classmethod
-    def at(cls, path: str | Path, *, create_parent: bool = True) -> Database:
+    def at(
+        cls,
+        path: str | Path,
+        *,
+        create_parent: bool = True,
+        journal_mode: str = DEFAULT_JOURNAL_MODE,
+    ) -> Database:
         """Describe the database at `path`. Nothing is opened or created here.
 
         Opening the file happens later, in `connect()`, inside whichever thread runs the
         SQL — which is what makes a `Database` safe to hand to a worker thread.
         """
-        return cls(str(path), create_parent=create_parent)
+        return cls(str(path), create_parent=create_parent, journal_mode=journal_mode)
 
     @property
     def path(self) -> str:
@@ -59,6 +76,11 @@ class Database:
     def is_file_database(self) -> bool:
         """Whether this database is backed by a file on disk."""
         return self._path != MEMORY_PATH
+
+    @property
+    def journal_mode(self) -> str:
+        """The journal mode required of every connection to this database."""
+        return self._journal_mode
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -75,7 +97,12 @@ class Database:
         connection = sqlite3.connect(target, isolation_level=None)
         try:
             connection.row_factory = sqlite3.Row
-            _configure(connection, path=target, is_file_database=self.is_file_database)
+            _configure(
+                connection,
+                path=target,
+                is_file_database=self.is_file_database,
+                journal_mode=self._journal_mode,
+            )
             yield connection
         finally:
             connection.close()
@@ -102,16 +129,21 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
             connection.execute("COMMIT")
 
 
-def _configure(connection: sqlite3.Connection, *, path: str, is_file_database: bool) -> None:
+def _configure(
+    connection: sqlite3.Connection,
+    *,
+    path: str,
+    is_file_database: bool,
+    journal_mode: str,
+) -> None:
     connection.execute("PRAGMA foreign_keys = ON")
-    journal_mode = str(
-        connection.execute(f"PRAGMA journal_mode = {REQUIRED_JOURNAL_MODE}").fetchone()[0]
+    achieved_mode = str(
+        connection.execute(f"PRAGMA journal_mode = {journal_mode}").fetchone()[0]
     )
     connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    if is_file_database and journal_mode.lower() != REQUIRED_JOURNAL_MODE:
+    if is_file_database and achieved_mode.lower() != journal_mode.lower():
         raise DatabaseConfigurationError(
-            f"{path} reports journal_mode={journal_mode!r}, "
-            f"expected {REQUIRED_JOURNAL_MODE!r}"
+            f"{path} reports journal_mode={achieved_mode!r}, expected {journal_mode!r}"
         )
     if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
         raise DatabaseConfigurationError("foreign key enforcement could not be enabled")
@@ -121,6 +153,9 @@ def _configure(connection: sqlite3.Connection, *, path: str, is_file_database: b
 
 __all__ = [
     "BUSY_TIMEOUT_MS",
+    "DEFAULT_JOURNAL_MODE",
+    "JOURNAL_MODE_DELETE",
+    "JOURNAL_MODE_WAL",
     "MEMORY_PATH",
     "REQUIRED_JOURNAL_MODE",
     "Database",

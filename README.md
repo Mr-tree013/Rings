@@ -15,7 +15,11 @@ async repository 边界、`EventInbox` 摄取入口，以及带 lease + fencing 
 
 存储侧（Phase 2A）：Archive Vault 的**元数据 catalog** 已可用——稳定逻辑 URI、vault
 manifest、不跟随 symlink 的 metadata 扫描、增量更新与安全的 missing 判定。
-**尚无全文检索**：不解析文件正文、不做 OCR、不做 embedding、不建 FTS5 索引，也不支持问答/RAG。
+
+知识侧（Phase 2B）：**已实现** metadata catalog、文本/PDF 正文抽取、per-root FTS5（trigram）
+全文索引与带 source span 的检索；`pw reindex` / `pw search` 是显式两步链路。
+**尚未实现**：RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、自动 watcher
+（持续增量更新仍需手动 `scan` + `reindex`）。
 
 ## Architecture summary
 
@@ -104,7 +108,12 @@ vault://<vault-id>/<relative-path>    Archive Vault（id 来自 .pa/vault.toml�
 uv run pw vault init /mnt/e/archive --id archive-main --label "Personal Archive"
 uv run pw vault status /mnt/e/archive
 uv run pw vault scan /mnt/e/archive
+uv run pw reindex --root archive-main
+uv run pw search "important deadline"
 ```
+
+搜索结果是检索结果，不是 AI 答案：content hit 一定带 `page N` 或 `lines A-B`，
+文件名/路径命中单独标为 `[metadata]`，离线 root 会被明确列出而不是静默忽略。
 
 ## Repository layout
 

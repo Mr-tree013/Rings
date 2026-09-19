@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -177,7 +178,10 @@ def _vault(tmp_path: Path) -> Path:
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
-    return {"XDG_DATA_HOME": str(tmp_path / "xdg")}
+    return {
+        "XDG_DATA_HOME": str(tmp_path / "xdg"),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+    }
 
 
 def _write(path: Path, text: str = "content") -> Path:
@@ -192,3 +196,116 @@ def _initialise_vault(vault: Path) -> None:
             vault, vault_id="archive-main", label="Personal Archive"
         )
     )
+
+
+def test_doctor_reports_search_capabilities() -> None:
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "sqlite FTS5" in result.output
+    assert "FTS5 trigram" in result.output
+    assert "pypdf" in result.output
+
+
+def test_reindex_without_any_root_is_refused(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["reindex"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "no storage roots" in result.output
+
+
+def test_reindex_and_search_end_to_end(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "notes.md", "the important deadline is Friday\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+
+    reindex = runner.invoke(app, ["reindex", "--root", "archive-main"], env=_env(tmp_path))
+    search = runner.invoke(app, ["search", "deadline"], env=_env(tmp_path))
+
+    assert reindex.exit_code == 0, reindex.output
+    assert "indexed" in reindex.output
+    assert search.exit_code == 0, search.output
+    assert "vault://archive-main/notes.md" in search.output
+    assert "lines 1-" in search.output
+    assert "deadline" in search.output
+
+
+def test_reindex_does_not_scan_new_files(tmp_path: Path) -> None:
+    """The two-step model: catalog first, then index."""
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "first.md", "first content\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+    _write(vault / "second.md", "second content\n")
+
+    result = runner.invoke(app, ["reindex", "--root", "archive-main"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "seen" in result.output
+    assert runner.invoke(app, ["search", "second"], env=_env(tmp_path)).output.count(
+        "second content"
+    ) == 0
+
+
+def test_search_treats_operators_as_plain_text(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "notes.md", "plain prose only\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+    assert runner.invoke(app, ["reindex"], env=_env(tmp_path)).exit_code == 0
+
+    result = runner.invoke(app, ["search", 'a:b OR NEAR(x)'], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "no matches" in result.output
+
+
+def test_search_rejects_an_out_of_range_limit(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["search", "deadline", "--limit", "0"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "limit" in result.output
+
+
+def test_search_reports_metadata_hits_separately(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "budget-2026.md", "unrelated body\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+    assert runner.invoke(app, ["reindex"], env=_env(tmp_path)).exit_code == 0
+
+    result = runner.invoke(app, ["search", "budget"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "[metadata]" in result.output
+    assert "content unavailable / not indexed" in result.output
+
+
+def test_search_reports_offline_roots_and_keeps_metadata(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "deadline-notes.md", "the important deadline is Friday\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+    assert runner.invoke(app, ["reindex"], env=_env(tmp_path)).exit_code == 0
+    shutil.rmtree(vault)
+
+    result = runner.invoke(app, ["search", "deadline"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert "Offline roots skipped for content search:" in result.output
+    assert "archive-main" in result.output
+    assert "[metadata]" in result.output
+
+
+def test_reindex_reports_an_offline_root_with_a_nonzero_exit(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _initialise_vault(vault)
+    _write(vault / "notes.md", "content\n")
+    assert runner.invoke(app, ["vault", "scan", str(vault)], env=_env(tmp_path)).exit_code == 0
+    shutil.rmtree(vault)
+
+    result = runner.invoke(app, ["reindex"], env=_env(tmp_path))
+
+    assert result.exit_code == 1
+    assert "skipped" in result.output

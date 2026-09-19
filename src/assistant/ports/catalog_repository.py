@@ -65,6 +65,24 @@ class CatalogRepository(Protocol):
         """
         ...
 
+    async def list_roots(self) -> list[CatalogRoot]:
+        """List every known storage root, ordered by root id."""
+        ...
+
+    async def search_metadata(
+        self,
+        query: str,
+        *,
+        limit: int,
+        root_id: str | None = None,
+        include_missing: bool = False,
+    ) -> list[CatalogEntry]:
+        """Search file names and relative paths with a literal (non-wildcard) match.
+
+        This is metadata search only — no file contents are involved — and it is what keeps a
+        vault discoverable while it is unplugged.
+        """
+        ...
+
 
 __all__ = ["CatalogRepository"]
-

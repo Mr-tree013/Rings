@@ -59,6 +59,19 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   只有 `complete=True` 的 snapshot 才能执行 missing 判定；scanner 出错时 `marked_missing` 必须为 0。
 - **Metadata scans must not read full file contents.** 本阶段禁止在扫描里 `open()` / `read_bytes()` /
   hash / OCR；size 与 mtime 只能来自目录项元数据（有静态测试守）。
+- **Full-text indexes are derived data; original files remain authority.** 正文与 FTS 索引可随时重建，
+  绝不放进 `assistant.db`；Vault 的索引在 `<vault>/.pa/index.sqlite3`，Local root 的索引在
+  `$XDG_CACHE_HOME/growing-assistant/knowledge/<root-id>/`（ADR-0012）。
+- **Archive Vault full-text content must not be silently copied into host runtime storage.**
+  Vault 离线时只允许返回 catalog metadata，绝不允许把 Vault 正文复制到主机或缓存里"备用"。
+- **Search results referring to file content must carry a source span.** 每个 content hit 必须带
+  `page N` 或 `lines A-B`；没有定位信息的正文命中不允许出现在结果里。
+- **Indexers must revalidate filesystem metadata and symlink safety at read time.**
+  读正文前必须重新校验 relative path、拒绝 symlink 与非普通文件，并比对 catalog 的 size/mtime
+  （读取前后各一次）；不一致即为 ERROR，不得写入索引。
+- **Raw user text must not be passed directly as FTS `MATCH` syntax.**
+  用户查询一律当作纯文本：长查询用带转义的 phrase，短于 3 个 code point 用 literal `LIKE`
+  （`%`/`_`/`\` 必须转义并 `ESCAPE`）。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -109,10 +122,15 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 `storage_roots` / `catalog_entries`（迁移 0003）、增量扫描与安全 missing 判定、
 离线 Vault 元数据保留、`pw vault init|status|scan`。
 
+**Phase 2B 已完成**：正文抽取与可重建全文索引（ADR-0012）：文本/PDF 抽取、SHA-256 内容指纹、
+带 source span 的 chunking、per-root FTS5（trigram）索引、`pw reindex`、`pw search`
+（content hit 带 page/lines，metadata-only hit 与 offline root 明确区分）。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / 文件正文抽取 / FTS5 / 语义检索 / Web Server / eHall /
+DeepSeek / LLM 问答与 RAG / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
+自动 watcher（持续增量更新）/ Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 

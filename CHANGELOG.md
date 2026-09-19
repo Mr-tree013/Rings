@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Content extraction (ADR-0012): UTF-8 text (strict suffix whitelist) and PDF text layers via
+  `pypdf`, with safe file access that revalidates relative paths, refuses symlinks and
+  non-regular files, and verifies size/mtime before and after reading.
+- Strong SHA-256 content fingerprints computed only for files that are actually extracted;
+  the metadata scan still never reads file contents.
+- Deterministic, source-traceable chunking (`chunk_lines`, `chunk_pages`) with inclusive line
+  ranges and page numbers, plus explicit EMPTY / UNSUPPORTED / ERROR outcomes.
+- Per-root, rebuildable knowledge index in its own SQLite database
+  (`<vault>/.pa/index.sqlite3`, `$XDG_CACHE_HOME/growing-assistant/knowledge/<root-id>/`),
+  bound to `root_id`, `storage_kind` and `schema_version`, using FTS5 `trigram`.
+- Whole-document index replacement inside one transaction, so chunks, FTS rows and document
+  state can never disagree; a failed attempt removes previously searchable text instead of
+  serving it.
+- `pw reindex [--root] [--force]` and `pw search QUERY [--root] [--limit]`, with content hits
+  carrying `page N` / `lines A-B`, metadata-only hits, and explicit offline-root reporting.
+- Literal search semantics for user input: quoted phrase queries with escaped quotes, and a
+  `LIKE` fallback with `%`/`_`/`\` escaping for queries shorter than three characters.
+- Cross-root result merging by Reciprocal Rank Fusion, because BM25 scores from different
+  index databases are not comparable.
+- `pw doctor` now proves SQLite FTS5 and trigram tokenizer support and reports the pypdf
+  version, without creating a database or touching user files.
+- Architecture tests: application and domain never import `pypdf` or the store/adapters, ports
+  never import concrete adapters, and only `adapters/content/pdf.py` imports `pypdf`.
+
 - Stable storage identity and metadata catalog (ADR-0011):
   `local://<root-id>/<relative-path>` and `vault://<vault-id>/<relative-path>` logical URIs,
   with strict rejection of traversal, absolute paths, backslashes and Windows drive prefixes.
@@ -31,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Architecture tests: the application layer never imports adapters/store/sqlite3, the domain
   never touches `os` or `pathlib.Path`, and the metadata scanner never reads or hashes file
   contents.
+
+### Fixed
+
+- The unchanged-skip optimisation now performs a stat-only revalidation before skipping, so a
+  file modified without a catalog rescan becomes an ERROR instead of silently keeping stale
+  text searchable.
 
 ## [0.1.0] - 2026-09-20
 

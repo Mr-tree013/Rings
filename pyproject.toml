@@ -8,6 +8,7 @@ authors = [{ name = "Mr-tree013", email = "2170532007@qq.com" }]
 dependencies = [
     "typer>=0.15",
     "rich>=13.9",
+    "pypdf>=6.19.0",
 ]
 
 [project.scripts]

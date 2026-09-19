@@ -1,9 +1,9 @@
 """`pw` — the growing-assistant command line.
 
-Implemented today: `status`, `doctor`, and the `vault` group (`init`, `status`, `scan`).
-Commands that would need capability the project does not have yet (`search`, `reindex`,
-`cases`, `tasks`, `scheduled`, `approve`, `run`) are deliberately not registered, so the
-CLI never advertises behaviour that does not exist.
+Implemented today: `status`, `doctor`, the `vault` group (`init`, `status`, `scan`) and the
+knowledge commands (`reindex`, `search`). Commands that would need capability the project
+does not have yet (`cases`, `tasks`, `scheduled`, `approve`, `run`) are deliberately not
+registered, so the CLI never advertises behaviour that does not exist.
 
 This module is the composition root: it is the one place allowed to build adapters and
 store implementations from configuration and hand them to application services.
@@ -12,6 +12,7 @@ store implementations from configuration and hand them to application services.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import platform
 import sys
 from pathlib import Path
@@ -22,23 +23,35 @@ from rich.console import Console
 from rich.table import Table
 
 from assistant import __version__
+from assistant.adapters.content.registry import SuffixExtractorRegistry
 from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
+from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
 from assistant.adapters.system_clock import SystemClock
+from assistant.application.knowledge_indexer import KnowledgeIndexer
+from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.paths import AppPaths
 from assistant.application.storage_catalog import StorageCatalogService
-from assistant.domain.catalog import CatalogScanResult
+from assistant.domain.catalog import CatalogRoot, CatalogScanResult
 from assistant.domain.errors import (
     DomainError,
     InvalidVaultManifest,
     StorageRootConflict,
+    StorageRootIdentityMismatch,
+    StorageRootOffline,
+    UnknownStorageRoot,
     VaultAlreadyInitialized,
     VaultNotInitialized,
 )
+from assistant.domain.knowledge import KnowledgeIndexRunResult, KnowledgeSearchResult
 from assistant.domain.vault import VaultManifest
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.db import Database
 from assistant.store.errors import StoreError
+from assistant.store.knowledge_index import (
+    SqliteKnowledgeIndexFactory,
+    sqlite_search_capabilities,
+)
 from assistant.store.migrations import apply_migrations
 
 MINIMUM_PYTHON = (3, 13)
@@ -107,13 +120,153 @@ def doctor() -> None:
         "runtime db",
         f"{database_file} ({'present' if database_file.exists() else 'absent'})",
     )
+    capabilities = sqlite_search_capabilities()
+    table.add_row(
+        "sqlite FTS5",
+        "ok" if capabilities.fts5 else f"[red]missing[/red] ({capabilities.detail})",
+    )
+    table.add_row(
+        "FTS5 trigram",
+        "ok" if capabilities.trigram else "[red]missing[/red]",
+    )
+    table.add_row("pypdf", _pypdf_version())
     console.print(table)
 
     if not python_ok:
         required = ".".join(str(part) for part in MINIMUM_PYTHON)
         _fail(f"pw requires Python >= {required}")
+    if not (capabilities.fts5 and capabilities.trigram):
+        _fail("knowledge search requires SQLite FTS5 with the trigram tokenizer")
 
     console.print("[green]environment looks usable[/green]")
+
+
+def _pypdf_version() -> str:
+    try:
+        return importlib.metadata.version("pypdf")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - packaging edge case
+        return "not installed"
+
+
+@app.command()
+def reindex(
+    root: Annotated[
+        str | None, typer.Option("--root", help="Only index this storage root id.")
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Re-extract even when metadata is unchanged.")
+    ] = False,
+) -> None:
+    """Build or refresh the per-root knowledge index from the current catalog.
+
+    This never scans: run `pw vault scan` first so newly added files are known.
+    """
+    root_ids = [root] if root is not None else [item.root.root_id for item in _catalog_roots()]
+    if not root_ids:
+        _fail("no storage roots in the catalog; run a catalog scan first")
+    indexer = _build_indexer()
+    failures = 0
+    for root_id in root_ids:
+        try:
+            result = asyncio.run(indexer.index_root(root_id, force=force))
+        except (StorageRootOffline, StorageRootIdentityMismatch) as exc:
+            failures += 1
+            error_console.print(f"[yellow]{root_id}: skipped — {exc}[/yellow]")
+            continue
+        except (UnknownStorageRoot, StoreError, DomainError) as exc:
+            failures += 1
+            error_console.print(f"[red]{root_id}: {exc}[/red]")
+            continue
+        _print_index_result(result)
+    if failures:
+        _fail(f"{failures} of {len(root_ids)} storage roots could not be indexed")
+
+
+@app.command()
+def search(
+    query: Annotated[str, typer.Argument(help="Plain text to look for.")],
+    root: Annotated[
+        str | None, typer.Option("--root", help="Only search this storage root id.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum hits per signal.")] = 10,
+) -> None:
+    """Search indexed content and catalog metadata for plain text."""
+    service = _build_search_service()
+    try:
+        result = asyncio.run(service.search(query, root_id=root, limit=limit))
+    except ValueError as exc:
+        _fail(str(exc))
+        return
+    except StoreError as exc:
+        _fail(f"search failed: {exc}")
+        return
+    _print_search_result(result)
+
+
+def _build_indexer() -> KnowledgeIndexer:
+    clock = SystemClock()
+    catalog = SqliteCatalogRepository(_runtime_database(clock))
+    return KnowledgeIndexer(
+        catalog,
+        SuffixExtractorRegistry(),
+        SqliteKnowledgeIndexFactory(KnowledgeIndexLocator()),
+        VaultManifestFile(clock),
+        clock,
+    )
+
+
+def _build_search_service() -> KnowledgeSearchService:
+    clock = SystemClock()
+    return KnowledgeSearchService(
+        SqliteCatalogRepository(_runtime_database(clock)),
+        SqliteKnowledgeIndexFactory(KnowledgeIndexLocator()),
+        VaultManifestFile(clock),
+    )
+
+
+def _runtime_database(clock: SystemClock) -> Database:
+    database = Database.at(AppPaths.resolve().database_file)
+    apply_migrations(database, clock=clock)
+    return database
+
+
+def _catalog_roots() -> list[CatalogRoot]:
+    catalog = SqliteCatalogRepository(_runtime_database(SystemClock()))
+    return asyncio.run(catalog.list_roots())
+
+
+def _print_index_result(result: KnowledgeIndexRunResult) -> None:
+    table = Table(
+        title=f"knowledge index: {result.root_id}", show_header=False, title_justify="left"
+    )
+    table.add_row("seen", str(result.seen))
+    table.add_row("indexed", str(result.indexed))
+    table.add_row("empty", str(result.empty))
+    table.add_row("unsupported", str(result.unsupported))
+    table.add_row("skipped", str(result.skipped_unchanged))
+    table.add_row("errors", str(result.errors))
+    console.print(table)
+
+
+def _print_search_result(result: KnowledgeSearchResult) -> None:
+    for merged in result.content_hits:
+        hit = merged.hit
+        console.print(f"[bold]\\[content][/bold] {hit.logical_uri}")
+        console.print(f"  {hit.source_span.describe()}")
+        console.print(f"  {hit.snippet}")
+    for entry in result.metadata_hits:
+        console.print(f"[bold]\\[metadata][/bold] {entry.logical_uri}")
+        console.print("  content unavailable / not indexed")
+    if result.offline_roots:
+        console.print("Offline roots skipped for content search:")
+        for root_id in result.offline_roots:
+            console.print(f"- {root_id}")
+    if result.identity_mismatches:
+        console.print("Roots whose mount holds a different vault:")
+        for root_id in result.identity_mismatches:
+            console.print(f"- {root_id}")
+    if not result.content_hits and not result.metadata_hits:
+        console.print("no matches")
 
 
 @vault_app.command("init")
@@ -211,4 +364,3 @@ def main() -> None:
 
 
 __all__ = ["app", "main"]
-

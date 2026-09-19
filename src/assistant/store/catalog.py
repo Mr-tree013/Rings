@@ -29,6 +29,7 @@ from assistant.domain.errors import StorageRootConflict
 from assistant.domain.storage import StorageKind, StorageRoot, StorageUri
 from assistant.store.db import Database, transaction
 from assistant.store.errors import CatalogStoreError
+from assistant.store.search_text import like_pattern
 from assistant.store.serialization import from_utc_iso, to_utc_iso
 
 _ENTRY_FIELDS = (
@@ -46,11 +47,13 @@ _ENTRY_SELECT = (
 )
 _ENTRY_FROM = "FROM catalog_entries e JOIN storage_roots r ON r.root_id = e.root_id"
 
-_SELECT_ROOT_SQL = """
-SELECT root_id, kind, label, last_known_path, first_seen_at, last_seen_at, last_scanned_at
-  FROM storage_roots
- WHERE root_id = ?
-"""
+_ROOT_FIELDS = (
+    "root_id, kind, label, last_known_path, first_seen_at, last_seen_at, last_scanned_at"
+)
+
+_SELECT_ROOT_SQL = f"SELECT {_ROOT_FIELDS} FROM storage_roots WHERE root_id = ?"
+
+_SELECT_ROOTS_SQL = f"SELECT {_ROOT_FIELDS} FROM storage_roots ORDER BY root_id"
 
 _INSERT_ROOT_SQL = """
 INSERT INTO storage_roots (
@@ -141,6 +144,27 @@ class SqliteCatalogRepository:
             raise ValueError("limit must be a positive integer or None")
         return await asyncio.to_thread(
             self._list_by_root_sync, root_id, include_missing, limit
+        )
+
+    async def list_roots(self) -> list[CatalogRoot]:
+        """List every known storage root, ordered by root id."""
+        return await asyncio.to_thread(self._list_roots_sync)
+
+    async def search_metadata(
+        self,
+        query: str,
+        *,
+        limit: int,
+        root_id: str | None = None,
+        include_missing: bool = False,
+    ) -> list[CatalogEntry]:
+        """Search file names and relative paths literally (no wildcards, no contents)."""
+        if not query.strip():
+            raise ValueError("query must not be blank")
+        if limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        return await asyncio.to_thread(
+            self._search_metadata_sync, query, limit, root_id, include_missing
         )
 
     # ------------------------------------------------------------ blocking internals
@@ -307,23 +331,33 @@ class SqliteCatalogRepository:
     def _get_root_sync(self, root_id: str) -> CatalogRoot | None:
         with self._database.connect() as connection:
             row = connection.execute(_SELECT_ROOT_SQL, (root_id,)).fetchone()
-        if row is None:
-            return None
-        return CatalogRoot(
-            root=StorageRoot(
-                root_id=str(row["root_id"]),
-                kind=StorageKind(str(row["kind"])),
-                label=str(row["label"]),
-            ),
-            last_known_path=str(row["last_known_path"]),
-            first_seen_at=from_utc_iso(str(row["first_seen_at"])),
-            last_seen_at=from_utc_iso(str(row["last_seen_at"])),
-            last_scanned_at=(
-                None
-                if row["last_scanned_at"] is None
-                else from_utc_iso(str(row["last_scanned_at"]))
-            ),
+        return None if row is None else _row_to_root(row)
+
+    def _list_roots_sync(self) -> list[CatalogRoot]:
+        with self._database.connect() as connection:
+            rows = connection.execute(_SELECT_ROOTS_SQL).fetchall()
+        return [_row_to_root(row) for row in rows]
+
+    def _search_metadata_sync(
+        self, query: str, limit: int, root_id: str | None, include_missing: bool
+    ) -> list[CatalogEntry]:
+        pattern = like_pattern(query)
+        statement = (
+            f"SELECT {_ENTRY_SELECT} {_ENTRY_FROM} "
+            "WHERE (e.name LIKE ? ESCAPE '\\' OR e.relative_path LIKE ? ESCAPE '\\')"
         )
+        parameters: list[object] = [pattern, pattern]
+        if root_id is not None:
+            statement += " AND e.root_id = ?"
+            parameters.append(root_id)
+        if not include_missing:
+            statement += " AND e.presence = ?"
+            parameters.append(CatalogPresence.PRESENT.value)
+        statement += " ORDER BY e.relative_path LIMIT ?"
+        parameters.append(limit)
+        with self._database.connect() as connection:
+            rows = connection.execute(statement, tuple(parameters)).fetchall()
+        return [_row_to_entry(row) for row in rows]
 
     def _get_by_location_sync(
         self, storage_kind: StorageKind, root_id: str, relative_path: str
@@ -365,6 +399,22 @@ def _metadata_changed(previous: sqlite3.Row, entry: FileSnapshotEntry) -> bool:
         or str(previous["name"]) != entry.name
         or str(previous["suffix"]) != entry.suffix
         or previous["media_type"] != entry.media_type
+    )
+
+
+def _row_to_root(row: sqlite3.Row) -> CatalogRoot:
+    return CatalogRoot(
+        root=StorageRoot(
+            root_id=str(row["root_id"]),
+            kind=StorageKind(str(row["kind"])),
+            label=str(row["label"]),
+        ),
+        last_known_path=str(row["last_known_path"]),
+        first_seen_at=from_utc_iso(str(row["first_seen_at"])),
+        last_seen_at=from_utc_iso(str(row["last_seen_at"])),
+        last_scanned_at=(
+            None if row["last_scanned_at"] is None else from_utc_iso(str(row["last_scanned_at"]))
+        ),
     )
 
 
