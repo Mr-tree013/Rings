@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Commitment domain (ADR-0014): `Task`, `Deadline`, `CalendarEvent`, `PlanBlock` and
+  `WorkSession` as five distinct concepts, with explicit state machines, half-open interval
+  semantics and timezone-aware timestamps throughout.
+- Durable commitment persistence (migration `0004_commitment_core.sql`): five tables with
+  database-level state, priority, estimate, terminal-consistency, positive-duration and
+  foreign-key constraints, plus indexes for plan-block and work-session queries.
+- `CommitmentRepository` and `WorkRepository` ports with SQLite adapters, optimistic
+  concurrency via the `updated_at` compare-and-set token (`StaleTaskUpdate`), and an atomic
+  terminal transition that completes/cancels a task and cancels its unfinished plan blocks in
+  one transaction.
+- `TaskService`, `CalendarService` and `WorkService`: structured commands, deadline rules for
+  OPEN tasks only, plan blocks only for OPEN tasks, work sessions that may be back-filled
+  after completion, busy-interval queries that keep their source kind, and id-prefix
+  resolution that refuses to guess.
+- Structured commitment CLI: `pw tasks`, `pw task add|show|done|cancel|deadline`,
+  `pw calendar [--days]`, `pw calendar add`, `pw plan add|cancel`, `pw work add|list`, with
+  ISO-8601-offset timestamps only (naive input is rejected, local time is never assumed).
+- Regression tests for the core domain boundaries: a deadline never occupies busy time, plan
+  duration never counts as actual work, completion cancels only unfinished plan blocks, and a
+  failed terminal transition leaves both the task and its plan blocks untouched.
+
 ## [0.2.0] - 2026-09-20
 
 Phase 2: personal knowledge and continuous storage indexing. Storage roots are configured,

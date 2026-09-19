@@ -81,6 +81,18 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   metadata、跳过知识索引，且不得执行 missing 判定，避免临时权限错误抹掉可搜索内容。
 - **A root-level operational failure must not prevent reconciliation of unrelated roots.**
   offline / identity mismatch / index 损坏只影响该 root；host runtime DB 故障才向上抛给 supervisor。
+- **Task, Deadline, CalendarEvent, PlanBlock, and WorkSession are distinct domain concepts and
+  must not be collapsed into one schedule item.** Task 不是日历事件；Deadline 不是时间块；
+  PlanBlock 是计划、WorkSession 是事实（ADR-0014）。
+- **Actual work is derived from WorkSession records, never from PlanBlock duration.**
+  估时用 `Task.estimated_minutes`，实际耗时只来自 WorkSession 的精确秒数；禁止从 PlanBlock 推断。
+- **Deadlines do not occupy calendar time.** `get_busy_intervals` 只包含 active CalendarEvent 与
+  active PlanBlock；deadline 永远不出现在忙碌时间里。
+- **Task terminal transitions and cancellation of unfinished PlanBlocks must be atomic.**
+  complete/cancel 与"取消 `ends_at > terminal time` 的未完成 plan block"必须在同一事务内完成。
+- **Application services use Clock for domain timestamps; domain code never reads wall-clock
+  time directly.** 时间来源只有 `Clock`（domain 与 application 都有静态测试守），
+  CLI 用户输入的时间必须是带 offset 的 ISO 8601，绝不猜测本机时区。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -139,10 +151,17 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 `IndexSyncService` 周期 reconciliation（scan → catalog → index）、daemon 集成与 supervisor
 （确定性 backoff、单 root 失败隔离）、`pw roots list`、`pw sync`（ADR-0013）。
 
+**Phase 3A 已完成**：Commitment 领域与持久化（ADR-0014）：Task/Deadline/CalendarEvent/
+PlanBlock/WorkSession 五个独立概念、迁移 0004、`CommitmentRepository` + `WorkRepository`、
+乐观并发（`StaleTaskUpdate`）、原子终态转换、`TaskService`/`CalendarService`/`WorkService`
+与结构化 CLI（`pw tasks`、`pw task …`、`pw calendar`、`pw plan …`、`pw work …`）。
+版本仍是 0.2.0，未发布 v0.3.0（等 deterministic Planner 完成）。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / LLM 问答与 RAG / Task 与 Planner / Case / embedding 与向量检索 / OCR /
+DeepSeek / LLM 问答与 RAG / 自动排期（Planner）/ Reminder Scheduler / 自然语言时间解析 /
+重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
 Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
 Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。

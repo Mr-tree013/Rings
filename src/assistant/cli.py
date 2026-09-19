@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
-from assistant import __version__, bootstrap
+from assistant import __version__, bootstrap, cli_commitments
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
+from assistant.cli_support import console, error_console, fail
 from assistant.domain.catalog import CatalogScanResult
 from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import (
@@ -69,9 +69,10 @@ vault_app = typer.Typer(
 roots_app = typer.Typer(help="Configured storage roots.", no_args_is_help=True)
 app.add_typer(vault_app, name="vault")
 app.add_typer(roots_app, name="roots")
+cli_commitments.register(app)
 
-console = Console()
-error_console = Console(stderr=True)
+_fail = fail
+"""Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
 
 
 def _python_version() -> tuple[int, int, int]:
@@ -80,12 +81,6 @@ def _python_version() -> tuple[int, int, int]:
 
 def _in_virtualenv() -> bool:
     return sys.prefix != sys.base_prefix
-
-
-def _fail(message: str, code: int = 1) -> None:
-    """Report a user-facing failure and exit without a traceback."""
-    error_console.print(f"[red]{message}[/red]")
-    raise typer.Exit(code=code)
 
 
 def _load_config_or_fail() -> AssistantConfig:

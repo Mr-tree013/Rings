@@ -222,7 +222,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | 0 | 工程初始化、架构文档、版本管理、最小可运行骨架 | 本 Phase |
 | 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 已完成（v0.1.0）：`InboundEvent`、迁移 0001/0002、async `EventRepository`、`EventInbox`、`EventWorker`（claim/lease/fencing/retry/dead letter） |
 | 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 已完成（v0.2.0）：2A 稳定身份与 metadata catalog、2B 正文抽取/SHA-256/per-root FTS5/带 source span 检索、2C host config + 周期 reconciliation + daemon supervisor；模型接入仍未实现 |
-| 3 | IMAP/SMTP、outbox 状态机、草稿与确认链路 | 计划 |
+| 3 | Commitment 领域、Planner、IMAP/SMTP、outbox、草稿与确认链路 | 进行中：3A 已完成（Task/Deadline/CalendarEvent/PlanBlock/WorkSession、迁移 0004、乐观并发与原子终态转换、结构化 CLI）；Planner、提醒、自然语言解析与邮件未实现 |
 | 4 | Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 计划 |
 
 ## 12. 后续阶段的未决决策（明确不属于早期 Phase）
@@ -250,3 +250,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0011 Stable storage identity and rebuildable metadata catalog
 - ADR-0012 Rebuildable per-root full-text knowledge index
 - ADR-0013 Configured storage roots and periodic reconciliation
+- ADR-0014 Explicit commitment and time-planning domain model

@@ -98,11 +98,12 @@ def _insert_raw(database: Database, **overrides: object) -> None:
 def test_fresh_database_applies_the_initial_migration(database: Database, clock: FakeClock) -> None:
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0001", "0002", "0003"]
+    assert [migration.version for migration in applied] == ["0001", "0002", "0003", "0004"]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
         "0002_event_processing_leases.sql",
         "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
     ]
 
 
@@ -126,7 +127,7 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     apply_migrations(database, clock=clock)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
 
 
 def test_required_pragmas_are_effective(database: Database, clock: FakeClock) -> None:
@@ -333,7 +334,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0002", "0003"]
+    assert [migration.version for migration in applied] == ["0002", "0003", "0004"]
     with database.connect() as connection:
         migrated = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_row["id"],)
@@ -396,7 +397,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     # Re-running the migration set after the upgrade stays a no-op.
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
 
 
 def test_upgraded_schema_rejects_a_half_written_lease(
@@ -465,7 +466,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0003"]
+    assert [migration.version for migration in applied] == ["0003", "0004"]
     with database.connect() as connection:
         event_row = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_event["id"],)
@@ -546,4 +547,110 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
+
+
+def test_upgrade_from_v0_2_0_adds_the_commitment_core(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """0004 adds the commitment tables without disturbing events or the storage catalog."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    assert [
+        migration.version
+        for migration in apply_migrations(database, clock=clock, directory=legacy_directory)
+    ] == ["0001", "0002", "0003"]
+    event_row = {
+        "id": str(uuid4()),
+        "source": "smail",
+        "external_id": "uidvalidity1:uid9",
+        "event_type": "mail.received",
+        "content": "notice",
+        "received_at": NOW,
+        "status": "RECEIVED",
+        "attempts": 0,
+        "last_error": None,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    with database.connect() as connection:
+        connection.execute(LEGACY_EVENT_INSERT, event_row)
+        connection.execute(
+            "INSERT INTO storage_roots (root_id, kind, label, last_known_path, "
+            "first_seen_at, last_seen_at) VALUES ('archive-main', 'vault', 'Archive', "
+            "'/mnt/e/archive', ?, ?)",
+            (NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO catalog_entries (id, root_id, relative_path, name, suffix, "
+            "size_bytes, mtime_ns, media_type, presence, first_seen_at, last_seen_at, "
+            "metadata_updated_at, last_seen_scan_id) VALUES "
+            "(?, 'archive-main', 'notes/a.md', 'a.md', '.md', 10, 20, 'text/markdown', "
+            "'present', ?, ?, ?, 'scan-1')",
+            (str(uuid4()), NOW, NOW, NOW),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0004"]
+    with database.connect() as connection:
+        stored_event = connection.execute(
+            "SELECT * FROM inbound_events WHERE id = ?", (event_row["id"],)
+        ).fetchone()
+        stored_entry = connection.execute(
+            "SELECT relative_path, size_bytes FROM catalog_entries"
+        ).fetchone()
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert stored_event is not None
+    for column, value in event_row.items():
+        assert stored_event[column] == value, column
+    assert stored_entry is not None
+    assert (stored_entry["relative_path"], stored_entry["size_bytes"]) == ("notes/a.md", 10)
+    assert {
+        "tasks",
+        "deadlines",
+        "calendar_events",
+        "plan_blocks",
+        "work_sessions",
+    } <= tables
+
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="tasks_priority_is_known"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO tasks (id, title, status, priority, created_at, updated_at) "
+            "VALUES (?, 'x', 'open', 'urgent', ?, ?)",
+            (str(uuid4()), NOW, NOW),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO work_sessions (id, task_id, started_at, ended_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                str(uuid4()),
+                str(uuid4()),
+                NOW,
+                "2026-09-20T10:00:00.000000+00:00",
+                NOW,
+            ),
+        )
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004")

@@ -16,17 +16,22 @@ from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
 from assistant.adapters.system_clock import SystemClock
+from assistant.application.calendar_service import CalendarService
 from assistant.application.index_sync import IndexSyncService
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.paths import AppPaths
 from assistant.application.storage_catalog import StorageCatalogService
+from assistant.application.task_service import TaskService
+from assistant.application.work_service import WorkService
 from assistant.domain.config import AssistantConfig
 from assistant.ports.clock import Clock
 from assistant.store.catalog import SqliteCatalogRepository
+from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.migrations import apply_migrations
+from assistant.store.work import SqliteWorkRepository
 
 
 def config_loader(path: Path | None = None) -> TomlConfigLoader:
@@ -98,15 +103,45 @@ def system_clock() -> SystemClock:
     return SystemClock()
 
 
+def commitment_repository(database: Database) -> SqliteCommitmentRepository:
+    """The commitment store: tasks, deadlines, calendar events and plan blocks."""
+    return SqliteCommitmentRepository(database)
+
+
+def work_repository(database: Database) -> SqliteWorkRepository:
+    """The work-session store."""
+    return SqliteWorkRepository(database)
+
+
+def task_service(database: Database, clock: Clock) -> TaskService:
+    """Tasks and deadlines."""
+    return TaskService(commitment_repository(database), clock)
+
+
+def calendar_service(database: Database, clock: Clock) -> CalendarService:
+    """Calendar events, plan blocks and busy time."""
+    return CalendarService(commitment_repository(database), clock)
+
+
+def work_service(database: Database, clock: Clock) -> WorkService:
+    """Actual work sessions."""
+    return WorkService(work_repository(database), commitment_repository(database), clock)
+
+
 __all__ = [
     "AppPaths",
     "VaultManifestFile",
+    "calendar_service",
     "catalog_repository",
     "catalog_service",
+    "commitment_repository",
     "config_loader",
     "knowledge_indexer",
     "runtime_database",
     "search_service",
     "sync_service",
     "system_clock",
+    "task_service",
+    "work_repository",
+    "work_service",
 ]

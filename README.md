@@ -30,7 +30,11 @@ manifest、不跟随 symlink 的 metadata 扫描、增量更新与安全的 miss
 
 持续索引（Phase 2C）：**已实现** host config、`pw roots list`、`pw sync`，以及 `assistantd`
 的周期性 reconciliation（scan → catalog → index，单 root 失败隔离）。
-**尚未实现**：RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
+
+承诺与时间（Phase 3A）：**已实现** durable commitment model —— Task / Deadline /
+CalendarEvent / PlanBlock / WorkSession 五个独立概念的持久化与结构化 CLI。
+**尚未实现**：自动排期（Planner）、提醒（Reminder Scheduler）、自然语言时间解析、
+重复任务/事件、RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
 
 ## Architecture summary
 
@@ -158,6 +162,34 @@ uv run assistantd            # 启动后立即同步一次，然后按 interval 
 
 同一 root 的同步在单进程内串行；一个 root 离线、身份不符或索引损坏都不会阻止其他 root 同步。
 扫描不完整时只更新已看到的 metadata，**不会**重跑知识索引，因此临时权限问题不会抹掉可搜索内容。
+
+### 任务、日历、计划与实际工作
+
+五个概念严格分开：`Task`（要做的事）、`Deadline`（最晚完成时间）、`CalendarEvent`
+（已被占用的时间）、`PlanBlock`（计划用来做某个 Task 的时间）、`WorkSession`（实际做了多久）。
+**Deadline 不占用时间，PlanBlock 不等于实际耗时。**
+
+```bash
+uv run pw task add "Write SE lab report" --estimate 300 --priority high \
+    --deadline 2026-10-20T23:59:00+08:00
+uv run pw tasks                     # 默认只列 OPEN；--all 包含已完成/已取消
+uv run pw task show <id-or-prefix>  # 含 deadline、plan blocks、work sessions
+uv run pw task done <id>            # 完成时会原子取消未结束的 plan block
+uv run pw task deadline <id> --clear
+
+uv run pw calendar add "SE lecture" --start 2026-09-21T10:00:00+08:00 \
+    --end 2026-09-21T12:00:00+08:00
+uv run pw calendar --days 30        # 未来 30 天的繁忙时间（区分 event / plan）
+
+uv run pw plan add <task-id> --start 2026-09-23T19:00:00+08:00 \
+    --end 2026-09-23T21:00:00+08:00
+uv run pw work add <task-id> --start 2026-09-22T20:00:00+08:00 \
+    --end 2026-09-22T21:00:00+08:00
+uv run pw work list <task-id>       # 实际投入时间（精确秒数）
+```
+
+时间参数只接受带时区偏移的 ISO 8601；`tomorrow`、`next Friday` 这类输入会被拒绝
+（那属于未来的自然语言解释器，不属于 CLI）。ID 参数接受完整 UUID 或唯一前缀，匹配多个时拒绝猜测。
 
 ## Repository layout
 

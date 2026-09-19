@@ -222,33 +222,169 @@ class UnsafeStorageRoot(DomainError):
     """
 
 
+class InvalidCommitment(DomainError):
+    """Base class for commitment-domain validation failures."""
+
+
+class InvalidTask(InvalidCommitment):
+    """A task breaks its invariants (blank title, bad estimate, inconsistent timestamps)."""
+
+
+class InvalidDeadline(InvalidCommitment):
+    """A deadline breaks its invariants."""
+
+
+class InvalidCalendarEvent(InvalidCommitment):
+    """A calendar event breaks its invariants (non-positive duration, naive time)."""
+
+
+class InvalidPlanBlock(InvalidCommitment):
+    """A plan block breaks its invariants."""
+
+
+class InvalidWorkSession(InvalidCommitment):
+    """A work session breaks its invariants."""
+
+
+class InvalidTimeInterval(DomainError):
+    """An interval is not a usable half-open range."""
+
+
+class DuplicateCommitment(DomainError):
+    """A task, deadline, event, plan block or session with that identity already exists."""
+
+
+class InvalidTaskTransition(DomainError):
+    """A task status transition was attempted that the state machine forbids."""
+
+    def __init__(self, current: object, target: object) -> None:
+        self.current = current
+        self.target = target
+        super().__init__(f"task cannot move from {current} to {target}")
+
+
+class TaskNotOpen(DomainError):
+    """The operation requires an OPEN task."""
+
+
+class TaskNotFound(DomainError):
+    """No task exists for the requested identity."""
+
+    def __init__(self, task_id: object) -> None:
+        self.task_id = task_id
+        super().__init__(f"task {task_id} does not exist")
+
+
+class DeadlineNotFound(DomainError):
+    """The task has no active deadline."""
+
+    def __init__(self, task_id: object) -> None:
+        self.task_id = task_id
+        super().__init__(f"task {task_id} has no active deadline")
+
+
+class CalendarEventNotFound(DomainError):
+    """No calendar event exists for the requested identity."""
+
+    def __init__(self, event_id: object) -> None:
+        self.event_id = event_id
+        super().__init__(f"calendar event {event_id} does not exist")
+
+
+class PlanBlockNotFound(DomainError):
+    """No plan block exists for the requested identity."""
+
+    def __init__(self, plan_block_id: object) -> None:
+        self.plan_block_id = plan_block_id
+        super().__init__(f"plan block {plan_block_id} does not exist")
+
+
+class WorkSessionNotFound(DomainError):
+    """No work session exists for the requested identity."""
+
+    def __init__(self, session_id: object) -> None:
+        self.session_id = session_id
+        super().__init__(f"work session {session_id} does not exist")
+
+
+class CalendarEventNotActive(DomainError):
+    """The calendar event is already cancelled."""
+
+
+class PlanBlockNotActive(DomainError):
+    """The plan block is already cancelled."""
+
+
+class StaleTaskUpdate(DomainError):
+    """An update was built on a task version that has since changed.
+
+    `updated_at` is the optimistic concurrency token: a caller that read the task at T1 and
+    writes with `expected_updated_at = T1` is rejected once anyone else has moved the task,
+    so two callers can never silently overwrite each other.
+    """
+
+    def __init__(self, task_id: object, expected_updated_at: object) -> None:
+        self.task_id = task_id
+        self.expected_updated_at = expected_updated_at
+        super().__init__(
+            f"task {task_id} was modified since {expected_updated_at}; reload and retry"
+        )
+
+
+class AmbiguousId(DomainError):
+    """An id prefix matched more than one object."""
+
+    def __init__(self, prefix: str, matches: int) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        super().__init__(f"id prefix {prefix!r} is ambiguous ({matches} matches)")
+
+
 __all__ = [
+    "AmbiguousId",
+    "CalendarEventNotActive",
+    "CalendarEventNotFound",
     "ConfiguredRootNotFound",
     "ContentExtractionError",
     "ContentTooLarge",
+    "DeadlineNotFound",
     "DomainError",
+    "DuplicateCommitment",
     "DuplicateInboundEvent",
     "EventNotFound",
     "FileChangedDuringExtraction",
     "Fts5Unavailable",
     "InvalidAssistantConfig",
+    "InvalidCalendarEvent",
     "InvalidCatalogEntry",
+    "InvalidCommitment",
+    "InvalidDeadline",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidInboundEvent",
     "InvalidKnowledgeDocument",
+    "InvalidPlanBlock",
     "InvalidSourceSpan",
     "InvalidStorageRoot",
     "InvalidStorageUri",
+    "InvalidTask",
+    "InvalidTaskTransition",
+    "InvalidTimeInterval",
     "InvalidVaultManifest",
+    "InvalidWorkSession",
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
     "KnowledgeIndexNeedsRebuild",
     "PermanentEventError",
+    "PlanBlockNotActive",
+    "PlanBlockNotFound",
     "StaleEventClaim",
+    "StaleTaskUpdate",
     "StorageRootConflict",
     "StorageRootIdentityMismatch",
     "StorageRootOffline",
+    "TaskNotFound",
+    "TaskNotOpen",
     "TrigramTokenizerUnavailable",
     "UnexpectedEventStatus",
     "UnknownCatalogEntry",
@@ -257,4 +393,5 @@ __all__ = [
     "UnsafeStorageRoot",
     "VaultAlreadyInitialized",
     "VaultNotInitialized",
+    "WorkSessionNotFound",
 ]

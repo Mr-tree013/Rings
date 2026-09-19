@@ -25,8 +25,13 @@ class CatalogStoreError(StoreError):
     """The metadata catalog could not be read or written."""
 
 
+class CommitmentStoreError(StoreError):
+    """Task, deadline, calendar or plan state could not be read or written."""
+
+
 __all__ = [
     "CatalogStoreError",
+    "CommitmentStoreError",
     "DatabaseConfigurationError",
     "MigrationError",
     "StoreError",

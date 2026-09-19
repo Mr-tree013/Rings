@@ -83,6 +83,19 @@ def test_domain_never_reads_the_clock_directly() -> None:
     assert not offenders, f"time must come from a Clock port, not datetime.now(): {offenders}"
 
 
+def test_application_never_reads_the_clock_directly() -> None:
+    offenders = [
+        path.name
+        for path in sorted((SOURCE_ROOT / "application").glob("*.py"))
+        if "datetime.now(" in path.read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, (
+        "application services must take a Clock, not read wall-clock time: "
+        f"{offenders}"
+    )
+
+
 def test_application_does_not_import_the_store() -> None:
     application_modules = sorted((SOURCE_ROOT / "application").glob("*.py"))
     assert application_modules, "no application modules found"
