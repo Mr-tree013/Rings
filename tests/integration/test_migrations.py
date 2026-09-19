@@ -98,12 +98,15 @@ def _insert_raw(database: Database, **overrides: object) -> None:
 def test_fresh_database_applies_the_initial_migration(database: Database, clock: FakeClock) -> None:
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0001", "0002", "0003", "0004"]
+    assert [migration.version for migration in applied] == [
+        "0001", "0002", "0003", "0004", "0005",
+    ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
         "0002_event_processing_leases.sql",
         "0003_storage_catalog.sql",
         "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
     ]
 
 
@@ -127,7 +130,7 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     apply_migrations(database, clock=clock)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005")
 
 
 def test_required_pragmas_are_effective(database: Database, clock: FakeClock) -> None:
@@ -334,7 +337,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0002", "0003", "0004"]
+    assert [migration.version for migration in applied] == ["0002", "0003", "0004", "0005"]
     with database.connect() as connection:
         migrated = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_row["id"],)
@@ -397,7 +400,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     # Re-running the migration set after the upgrade stays a no-op.
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005")
 
 
 def test_upgraded_schema_rejects_a_half_written_lease(
@@ -466,7 +469,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0003", "0004"]
+    assert [migration.version for migration in applied] == ["0003", "0004", "0005"]
     with database.connect() as connection:
         event_row = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_event["id"],)
@@ -547,7 +550,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005")
 
 
 def test_upgrade_from_v0_2_0_adds_the_commitment_core(
@@ -602,7 +605,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0004"]
+    assert [migration.version for migration in applied] == ["0004", "0005"]
     with database.connect() as connection:
         stored_event = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (event_row["id"],)
@@ -653,4 +656,98 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005")
+
+
+def test_upgrade_adds_planning_proposals_and_block_provenance(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """0005 rebuilds plan_blocks with provenance and adds the proposal tables."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    apply_migrations(database, clock=clock, directory=legacy_directory)
+    task_id = str(uuid4())
+    block_id = str(uuid4())
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO tasks (id, title, status, priority, estimated_minutes, created_at, "
+            "updated_at) VALUES (?, 'Write report', 'open', 'high', 300, ?, ?)",
+            (task_id, NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO plan_blocks (id, task_id, starts_at, ends_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (block_id, task_id, NOW, "2026-09-20T11:00:00.000000+00:00", NOW, NOW),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0005"]
+    with database.connect() as connection:
+        block = connection.execute(
+            "SELECT origin, proposal_id, task_id FROM plan_blocks WHERE id = ?", (block_id,)
+        ).fetchone()
+        revision = connection.execute(
+            "SELECT value FROM commitment_meta WHERE key = 'revision'"
+        ).fetchone()
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert block is not None
+    assert (block["origin"], block["proposal_id"], block["task_id"]) == ("manual", None, task_id)
+    assert revision is not None and revision["value"] == "0"
+    expected_tables = {
+        "plan_proposals",
+        "proposed_plan_blocks",
+        "planning_issues",
+        "commitment_meta",
+    }
+    assert expected_tables <= tables
+
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="provenance_is_consistent"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO plan_blocks (id, task_id, starts_at, ends_at, created_at, updated_at, "
+            "origin, proposal_id) VALUES (?, ?, ?, ?, ?, ?, 'planner', NULL)",
+            (
+                str(uuid4()),
+                task_id,
+                NOW,
+                "2026-09-20T11:00:00.000000+00:00",
+                NOW,
+                NOW,
+            ),
+        )
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="origin_is_known"),
+        database.connect() as connection,
+    ):
+        connection.execute(
+            "INSERT INTO plan_blocks (id, task_id, starts_at, ends_at, created_at, updated_at, "
+            "origin, proposal_id) VALUES (?, ?, ?, ?, ?, ?, 'robot', NULL)",
+            (
+                str(uuid4()),
+                task_id,
+                NOW,
+                "2026-09-20T11:00:00.000000+00:00",
+                NOW,
+                NOW,
+            ),
+        )
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005")

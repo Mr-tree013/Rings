@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Planning preferences (ADR-0015): `[planning]` config with a required IANA `timezone`,
+  block-size bounds, a deadline buffer, and weekly `[[planning.availability]]` windows with
+  strict `HH:MM` validation, weekday normalisation and no overnight windows.
+- Planning domain: `PlanningWindow`, the `PlanningTask` read model, `PlanningIssue` codes,
+  `ProposedPlanBlock`, `PlanProposal` with its status vocabulary, and half-open interval
+  algebra (`merge_intervals`, `subtract_intervals`, `clip_interval`).
+- Plan block provenance (migration `0005_planning_proposals.sql`): every block is now either
+  `manual` (user-owned, never touched by the planner) or `planner` (carrying the proposal that
+  created it), enforced by database constraints; existing blocks migrate to `manual`.
+- Durable planning tables: `plan_proposals`, `proposed_plan_blocks`, `planning_issues`, plus
+  `commitment_meta` holding the revision baseline used to fence stale proposals.
+- **In progress:** Phase 3B is not finished — the greedy planner, atomic proposal apply,
+  revision increments and the `pw plan week|show|apply` CLI are still missing, so nothing in
+  the product proposes or applies a plan yet (`docs/adr/0015` lists the remaining work).
 - Commitment domain (ADR-0014): `Task`, `Deadline`, `CalendarEvent`, `PlanBlock` and
   `WorkSession` as five distinct concepts, with explicit state machines, half-open interval
   semantics and timezone-aware timestamps throughout.

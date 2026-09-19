@@ -117,7 +117,7 @@ async def test_async_main_runs_an_initial_reconciliation(
         / "index.sqlite3"
     )
     try:
-        await _wait_for(lambda: catalog.is_file() and index.is_file(), timeout=15)
+        await _wait_for(lambda: _indexed_documents(catalog, index) == 1, timeout=15)
         states = await _query(index, "SELECT relative_path, status FROM knowledge_documents")
         roots = await _query(catalog, "SELECT root_id, kind FROM storage_roots")
     finally:
@@ -127,6 +127,18 @@ async def test_async_main_runs_an_initial_reconciliation(
 
     assert roots == [("university", "local")]
     assert states == [("notes.md", "indexed")]
+
+
+def _indexed_documents(catalog: Path, index: Path) -> int:
+    """How many documents the index holds so far (0 while it is still being built)."""
+    if not catalog.is_file() or not index.is_file():
+        return 0
+    try:
+        with sqlite3.connect(index) as connection:
+            row = connection.execute("SELECT count(*) FROM knowledge_documents").fetchone()
+    except sqlite3.Error:
+        return 0
+    return 0 if row is None else int(row[0])
 
 
 async def _wait_for(predicate: object, *, timeout: float) -> None:
@@ -142,4 +154,3 @@ async def _wait_for(predicate: object, *, timeout: float) -> None:
 async def _query(path: Path, statement: str) -> list[tuple[object, ...]]:
     with sqlite3.connect(path) as connection:
         return [tuple(row) for row in connection.execute(statement)]
-

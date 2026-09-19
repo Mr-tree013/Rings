@@ -32,7 +32,7 @@ from assistant.domain.errors import (
     TaskNotFound,
     TaskNotOpen,
 )
-from assistant.domain.plan_block import PlanBlock, PlanBlockId
+from assistant.domain.plan_block import PlanBlock, PlanBlockId, PlanBlockOrigin
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.commitment_repository import CommitmentTransitionResult
 from assistant.store.db import Database, transaction
@@ -47,7 +47,9 @@ _DEADLINE_FIELDS = "id, task_id, due_at, created_at, updated_at"
 _EVENT_FIELDS = (
     "id, title, description, starts_at, ends_at, created_at, updated_at, cancelled_at"
 )
-_BLOCK_FIELDS = "id, task_id, starts_at, ends_at, created_at, updated_at, cancelled_at"
+_BLOCK_FIELDS = (
+    "id, task_id, starts_at, ends_at, created_at, updated_at, cancelled_at, origin, proposal_id"
+)
 
 _SELECT_TASK_SQL = f"SELECT {_TASK_FIELDS} FROM tasks WHERE id = ?"
 _SELECT_DEADLINE_SQL = f"SELECT {_DEADLINE_FIELDS} FROM deadlines WHERE task_id = ?"
@@ -398,7 +400,8 @@ class SqliteCommitmentRepository:
         try:
             with self._database.connect() as connection:
                 connection.execute(
-                    f"INSERT INTO plan_blocks ({_BLOCK_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO plan_blocks "
+                    f"({_BLOCK_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     _block_parameters(block),
                 )
         except sqlite3.IntegrityError as exc:
@@ -519,6 +522,8 @@ def _block_parameters(block: PlanBlock) -> tuple[object, ...]:
         to_utc_iso(block.created_at),
         to_utc_iso(block.updated_at),
         _optional_iso(block.cancelled_at),
+        str(block.origin),
+        None if block.proposal_id is None else str(block.proposal_id),
     )
 
 
@@ -589,6 +594,10 @@ def _row_to_plan_block(row: sqlite3.Row) -> PlanBlock:
             created_at=from_utc_iso(str(row["created_at"])),
             updated_at=from_utc_iso(str(row["updated_at"])),
             cancelled_at=_optional_datetime(row["cancelled_at"]),
+            origin=PlanBlockOrigin(str(row["origin"])),
+            proposal_id=(
+                None if row["proposal_id"] is None else UUID(str(row["proposal_id"]))
+            ),
         )
     except (ValueError, DomainError) as exc:
         raise CommitmentStoreError(f"stored plan block is not readable: {exc}") from exc

@@ -93,6 +93,17 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Application services use Clock for domain timestamps; domain code never reads wall-clock
   time directly.** 时间来源只有 `Clock`（domain 与 application 都有静态测试守），
   CLI 用户输入的时间必须是带 offset 的 ISO 8601，绝不猜测本机时区。
+- **Planner output must be a reviewable proposal; planning must not silently mutate
+  PlanBlocks.** Planner 先写 durable `PlanProposal`，只有用户显式 apply 才产生 plan block（ADR-0015）。
+- **Manual PlanBlocks are user-owned busy time and must never be replaced by the automatic
+  planner.** apply 只能取消/替换 `origin=planner` 且与 proposal window 相交的 block。
+- **Planner-generated blocks must retain proposal provenance.** `origin=planner` 必须携带
+  `proposal_id`，`origin=manual` 必须为 NULL（domain 与 DB CHECK 双重保证）。
+- **A stale proposal must never be applied.** apply 事务中必须校验 commitment revision 与
+  proposal 记录一致；不匹配就标 STALE 且不写任何 plan block。
+- **Remaining task effort is estimated effort minus recorded WorkSession effort; PlanBlock
+  duration is never treated as actual work.** 估时来自 `Task.estimated_minutes`，实际耗时只来自
+  WorkSession；PlanBlock（含旧 planner block）不减少剩余工作量。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。

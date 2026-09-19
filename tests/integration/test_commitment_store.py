@@ -508,8 +508,8 @@ async def test_database_constraints_are_enforced(
         )
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         execute(
-            "INSERT INTO plan_blocks (id, task_id, starts_at, ends_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO plan_blocks (id, task_id, starts_at, ends_at, created_at, updated_at, "
+            "origin, proposal_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', NULL)",
             (
                 str(uuid4()),
                 str(uuid4()),

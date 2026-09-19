@@ -19,6 +19,13 @@ PlanBlockId = UUID
 """Stable identity of a plan block."""
 
 
+class PlanBlockOrigin(StrEnum):
+    """Who created a block: the user, or an applied plan proposal."""
+
+    MANUAL = "manual"
+    PLANNER = "planner"
+
+
 class PlanBlockStatus(StrEnum):
     """Whether the block is still planned."""
 
@@ -47,6 +54,8 @@ class PlanBlock:
     updated_at: datetime
     id: PlanBlockId = field(default_factory=new_plan_block_id)
     cancelled_at: datetime | None = None
+    origin: PlanBlockOrigin = PlanBlockOrigin.MANUAL
+    proposal_id: UUID | None = None
 
     def __post_init__(self) -> None:
         _require_aware(self.starts_at, "starts_at")
@@ -59,6 +68,10 @@ class PlanBlock:
             raise InvalidPlanBlock("updated_at must not precede created_at")
         if self.cancelled_at is not None:
             _require_aware(self.cancelled_at, "cancelled_at")
+        if self.origin is PlanBlockOrigin.MANUAL and self.proposal_id is not None:
+            raise InvalidPlanBlock("a MANUAL plan block must not carry a proposal id")
+        if self.origin is PlanBlockOrigin.PLANNER and self.proposal_id is None:
+            raise InvalidPlanBlock("a PLANNER plan block must carry its proposal id")
 
     @property
     def status(self) -> PlanBlockStatus:
@@ -71,6 +84,11 @@ class PlanBlock:
     def is_active(self) -> bool:
         """Whether this block is still planned."""
         return self.cancelled_at is None
+
+    @property
+    def is_planner_generated(self) -> bool:
+        """Whether the automatic planner owns this block."""
+        return self.origin is PlanBlockOrigin.PLANNER
 
     @property
     def planned_seconds(self) -> int:
@@ -88,7 +106,7 @@ class PlanBlock:
 __all__ = [
     "PlanBlock",
     "PlanBlockId",
+    "PlanBlockOrigin",
     "PlanBlockStatus",
     "new_plan_block_id",
 ]
-

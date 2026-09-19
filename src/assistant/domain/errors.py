@@ -340,6 +340,36 @@ class AmbiguousId(DomainError):
         super().__init__(f"id prefix {prefix!r} is ambiguous ({matches} matches)")
 
 
+class PlanningNotConfigured(DomainError):
+    """The host config has no `[planning]` section.
+
+    The planner never guesses a timezone or working hours: without explicit configuration it
+    refuses to plan.
+    """
+
+
+class PlanProposalNotFound(DomainError):
+    """No plan proposal exists for the requested identity."""
+
+    def __init__(self, proposal_id: object) -> None:
+        self.proposal_id = proposal_id
+        super().__init__(f"plan proposal {proposal_id} does not exist")
+
+
+class StalePlanProposal(DomainError):
+    """A proposal was built from planning input that has since changed.
+
+    The proposal is marked stale and nothing is written: applying it could overwrite a newer
+    deadline, a new busy block or recorded work.
+    """
+
+    def __init__(self, proposal_id: object) -> None:
+        self.proposal_id = proposal_id
+        super().__init__(
+            f"plan proposal {proposal_id} is stale; create a new plan with `pw plan week`"
+        )
+
+
 __all__ = [
     "AmbiguousId",
     "CalendarEventNotActive",
@@ -378,7 +408,10 @@ __all__ = [
     "PermanentEventError",
     "PlanBlockNotActive",
     "PlanBlockNotFound",
+    "PlanProposalNotFound",
+    "PlanningNotConfigured",
     "StaleEventClaim",
+    "StalePlanProposal",
     "StaleTaskUpdate",
     "StorageRootConflict",
     "StorageRootIdentityMismatch",
