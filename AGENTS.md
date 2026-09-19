@@ -166,16 +166,25 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 PlanBlock/WorkSession 五个独立概念、迁移 0004、`CommitmentRepository` + `WorkRepository`、
 乐观并发（`StaleTaskUpdate`）、原子终态转换、`TaskService`/`CalendarService`/`WorkService`
 与结构化 CLI（`pw tasks`、`pw task …`、`pw calendar`、`pw plan …`、`pw work …`）。
-版本仍是 0.2.0，未发布 v0.3.0（等 deterministic Planner 完成）。
+
+**Phase 3B 已完成**：确定性周计划（ADR-0015）：`PlanningConfig`/weekly availability、
+纯 `GreedyPlanner`、commitment revision fencing、持久 `PlanProposal`/`ProposedPlanBlock`/
+`PlanningIssue`、原子 apply（只替换 `origin=planner` 的 block，永不改 manual block）、
+`PlannerService` 与 CLI（`pw plan week|proposals|show|apply`、`pw task edit`）。
+版本仍是 0.2.0，未发布 v0.3.0（等 rolling replanning + reminders 完成）。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / LLM 问答与 RAG / 自动排期（Planner）/ Reminder Scheduler / 自然语言时间解析 /
+DeepSeek / LLM 问答与 RAG / 自动重规划与 daemon 自动排期 / Reminder Scheduler /
+个人估时学习 / 自然语言时间解析 /
 重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
 Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
-Playwright / scheduler / approval token / Task、Case、Approval 等其余 domain entity /
+Playwright / scheduler / approval token / Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
+
+（Task/Deadline/CalendarEvent/PlanBlock/WorkSession 与 PlanProposal 已实现；Case、Approval
+等其余 domain entity 仍属后续 Phase。）
 
 新增能力前先确认它属于哪个 Phase，并在 spec 或 ADR 里落了设计再动手。
 

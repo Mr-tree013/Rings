@@ -15,7 +15,8 @@ from uuid import UUID
 from assistant.domain.errors import DomainError, DuplicateCommitment, TaskNotFound
 from assistant.domain.task import TaskId
 from assistant.domain.work_session import WorkSession, WorkSessionId
-from assistant.store.db import Database
+from assistant.store.commitment_revision import increment_revision
+from assistant.store.db import Database, transaction
 from assistant.store.errors import CommitmentStoreError
 from assistant.store.serialization import from_utc_iso, to_utc_iso
 
@@ -56,7 +57,7 @@ class SqliteWorkRepository:
 
     def _add_sync(self, session: WorkSession) -> WorkSession:
         try:
-            with self._database.connect() as connection:
+            with self._database.connect() as connection, transaction(connection):
                 connection.execute(
                     f"INSERT INTO work_sessions ({_SESSION_FIELDS}) VALUES (?, ?, ?, ?, ?)",
                     (
@@ -67,6 +68,7 @@ class SqliteWorkRepository:
                         to_utc_iso(session.created_at),
                     ),
                 )
+                increment_revision(connection)
         except sqlite3.IntegrityError as exc:
             message = str(exc)
             if "FOREIGN KEY" in message.upper():

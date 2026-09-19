@@ -33,8 +33,13 @@ manifest、不跟随 symlink 的 metadata 扫描、增量更新与安全的 miss
 
 承诺与时间（Phase 3A）：**已实现** durable commitment model —— Task / Deadline /
 CalendarEvent / PlanBlock / WorkSession 五个独立概念的持久化与结构化 CLI。
-**尚未实现**：自动排期（Planner）、提醒（Reminder Scheduler）、自然语言时间解析、
-重复任务/事件、RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
+
+确定性周计划（Phase 3B）：**已实现** proposal-based weekly planning —— `pw plan week` 用确定性
+greedy planner 生成持久、可审阅的 `PlanProposal`（不做 LLM 调用），`pw plan show` 原样展示当时
+的 proposal，`pw plan apply` 是唯一写入 plan block 的路径；planner block 与 manual block 来源可
+区分且可追溯，stale proposal 永不应用。**尚未实现**：automatic replanning、reminders、
+个人估时学习（personal effort learning）、LLM 任务解读、自然语言时间解析、重复任务/事件、
+RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
 
 ## Architecture summary
 

@@ -174,6 +174,8 @@ class CalendarService:
                 source_id=block.id,
                 starts_at=block.starts_at,
                 ends_at=block.ends_at,
+                origin=block.origin.value,
+                proposal_id=block.proposal_id,
             )
             for block in blocks
         ]

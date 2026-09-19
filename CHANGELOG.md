@@ -20,9 +20,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   created it), enforced by database constraints; existing blocks migrate to `manual`.
 - Durable planning tables: `plan_proposals`, `proposed_plan_blocks`, `planning_issues`, plus
   `commitment_meta` holding the revision baseline used to fence stale proposals.
-- **In progress:** Phase 3B is not finished — the greedy planner, atomic proposal apply,
-  revision increments and the `pw plan week|show|apply` CLI are still missing, so nothing in
-  the product proposes or applies a plan yet (`docs/adr/0015` lists the remaining work).
+- Deterministic weekly planner (ADR-0015): a pure greedy scheduler (no LLM, no solver
+  dependency) that orders tasks (deadline, priority, creation, id), first-fits them into weekly
+  availability, subtracts busy time, honours deadlines as a hard finish constraint, prefers the
+  deadline buffer and reports issues (`MISSING_ESTIMATE`, `ESTIMATE_EXHAUSTED`,
+  `DEADLINE_ALREADY_PASSED`, `BUFFER_VIOLATED`, `INSUFFICIENT_CAPACITY`,
+  `WINDOW_CAPACITY_EXHAUSTED`, `NO_AVAILABILITY`) in deterministic order.
+- Reviewable plan proposals: `PlannerService` reads one consistent `PlanningSnapshot`, computes
+  remaining effort as `estimate − ceil(work-session seconds / 60)`, expands weekly availability
+  in the configured IANA timezone (stdlib `zoneinfo`, with an explicit DST policy) and stores a
+  durable `PlanProposal` with its blocks and issues. Nothing is written to `plan_blocks` until
+  the user applies it.
+- Stale-proposal fencing: every planning-relevant mutation (task, deadline, calendar event,
+  plan block, work session, apply) bumps `commitment_meta.revision` in its own transaction;
+  proposals record both a canonical SHA-256 input fingerprint and the revision they were built
+  from, and applying a proposal whose input moved marks it `STALE` without changing any plan
+  block.
+- Atomic proposal apply: cancelling the replaced planner blocks, inserting the new planner
+  blocks with their `proposal_id`, marking the proposal `APPLIED` and bumping the revision once
+  all happen in one transaction — manual blocks are never touched, and a failure rolls the
+  whole replacement back.
+- Planner CLI: `pw plan week [--next]` (propose only, never apply), `pw plan proposals`,
+  `pw plan show` (renders the stored proposal), `pw plan apply`, and `pw task edit`
+  (`--estimate`, `--clear-estimate`, `--priority`, `--title`, `--description`) so planner issues
+  such as `MISSING_ESTIMATE` can be fixed. `pw calendar` now labels each plan block `manual` or
+  `planner <proposal>`.
 - Commitment domain (ADR-0014): `Task`, `Deadline`, `CalendarEvent`, `PlanBlock` and
   `WorkSession` as five distinct concepts, with explicit state machines, half-open interval
   semantics and timezone-aware timestamps throughout.

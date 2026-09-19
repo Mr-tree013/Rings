@@ -370,6 +370,27 @@ class StalePlanProposal(DomainError):
         )
 
 
+class PlanProposalNotPending(DomainError):
+    """The proposal was already applied, superseded or marked stale."""
+
+    def __init__(self, proposal_id: object, status: object) -> None:
+        self.proposal_id = proposal_id
+        self.status = status
+        super().__init__(f"plan proposal {proposal_id} is {status}, not pending")
+
+
+class PlanningSnapshotChanged(DomainError):
+    """Commitment state changed between reading a planning snapshot and storing its proposal.
+
+    The proposal is not persisted at all: a proposal that is born stale would only waste the
+    user's review. The caller re-reads the snapshot and re-plans (bounded retries).
+    """
+
+
+class PlanningStateUnstable(DomainError):
+    """Planning input kept changing across the allowed retries."""
+
+
 __all__ = [
     "AmbiguousId",
     "CalendarEventNotActive",
@@ -409,7 +430,10 @@ __all__ = [
     "PlanBlockNotActive",
     "PlanBlockNotFound",
     "PlanProposalNotFound",
+    "PlanProposalNotPending",
     "PlanningNotConfigured",
+    "PlanningSnapshotChanged",
+    "PlanningStateUnstable",
     "StaleEventClaim",
     "StalePlanProposal",
     "StaleTaskUpdate",

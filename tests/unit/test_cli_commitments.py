@@ -21,6 +21,8 @@ def _env(tmp_path: Path) -> dict[str, str]:
         "XDG_DATA_HOME": str(tmp_path / "data"),
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        # Keep table rendering deterministic so assertions never depend on the tty size.
+        "COLUMNS": "200",
     }
 
 
@@ -208,3 +210,66 @@ def test_calendar_add_rejects_a_naive_timestamp(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "timezone offset" in result.output
+
+
+def test_task_edit_changes_estimate_and_priority(tmp_path: Path) -> None:
+    task_id = _add_task(tmp_path)
+
+    edited = runner.invoke(
+        app,
+        ["task", "edit", task_id, "--estimate", "240", "--priority", "high"],
+        env=_env(tmp_path),
+    )
+    shown = runner.invoke(app, ["task", "show", task_id], env=_env(tmp_path))
+
+    assert edited.exit_code == 0, edited.output
+    assert "estimate: 240m" in edited.output
+    assert "priority: high" in edited.output
+    assert "240m" in shown.output
+    assert "high" in shown.output
+
+
+def test_task_edit_can_clear_the_estimate(tmp_path: Path) -> None:
+    task_id = _add_task(tmp_path)
+
+    cleared = runner.invoke(
+        app, ["task", "edit", task_id, "--clear-estimate"], env=_env(tmp_path)
+    )
+    shown = runner.invoke(app, ["task", "show", task_id], env=_env(tmp_path))
+
+    assert cleared.exit_code == 0, cleared.output
+    assert "estimate: -" in cleared.output
+    assert "Estimate    │ -" in shown.output
+
+
+def test_task_edit_requires_exactly_one_kind_of_change(tmp_path: Path) -> None:
+    task_id = _add_task(tmp_path)
+
+    conflicting = runner.invoke(
+        app,
+        ["task", "edit", task_id, "--estimate", "60", "--clear-estimate"],
+        env=_env(tmp_path),
+    )
+    empty = runner.invoke(app, ["task", "edit", task_id], env=_env(tmp_path))
+
+    assert conflicting.exit_code == 1
+    assert "either --estimate or --clear-estimate" in conflicting.output
+    assert empty.exit_code == 1
+    assert "nothing to edit" in empty.output
+
+
+def test_task_edit_rejects_terminal_tasks_and_unknown_ids(tmp_path: Path) -> None:
+    task_id = _add_task(tmp_path)
+    runner.invoke(app, ["task", "done", task_id], env=_env(tmp_path))
+
+    terminal = runner.invoke(
+        app, ["task", "edit", task_id, "--estimate", "60"], env=_env(tmp_path)
+    )
+    unknown = runner.invoke(
+        app, ["task", "edit", "ffffffff", "--estimate", "60"], env=_env(tmp_path)
+    )
+
+    assert terminal.exit_code == 1
+    assert "completed" in terminal.output
+    assert unknown.exit_code == 1
+    assert "does not exist" in unknown.output

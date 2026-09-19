@@ -12,6 +12,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated, Any
+from uuid import UUID
 
 import typer
 from rich.table import Table
@@ -22,13 +23,16 @@ from assistant.application.calendar_service import (
     CreateCalendarEvent,
     CreatePlanBlock,
 )
-from assistant.application.task_service import CreateTask, TaskService
+from assistant.application.planner_service import PlannerService
+from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.work_service import WorkService
 from assistant.cli_support import console, fail, format_local, parse_aware_datetime, short_id
 from assistant.domain.calendar_event import CalendarEvent
+from assistant.domain.config import AssistantConfig
 from assistant.domain.deadline import Deadline
-from assistant.domain.errors import DomainError
+from assistant.domain.errors import DomainError, InvalidAssistantConfig, StalePlanProposal
 from assistant.domain.plan_block import PlanBlock
+from assistant.domain.planning import PlanProposalDetail
 from assistant.domain.task import Task, TaskPriority
 from assistant.domain.work_session import WorkSession
 from assistant.ports.clock import Clock
@@ -44,30 +48,47 @@ class Services:
     tasks: TaskService
     calendar: CalendarService
     work: WorkService
+    planner: PlannerService
     commitments: CommitmentRepository
 
 
-def services_for(database: Any, clock: Clock) -> Services:
+def services_for(
+    database: Any, clock: Clock, config: AssistantConfig | None = None
+) -> Services:
     """Build the commitment services for one command run."""
     return Services(
         clock=clock,
         tasks=bootstrap.task_service(database, clock),
         calendar=bootstrap.calendar_service(database, clock),
         work=bootstrap.work_service(database, clock),
+        planner=bootstrap.planner_service(database, clock, config),
         commitments=bootstrap.commitment_repository(database),
     )
 
 
-def run[T](action: Callable[[Services], Coroutine[Any, Any, T]]) -> T:
-    """Build services, run one async action, and turn project errors into CLI failures."""
+def run[T](
+    action: Callable[[Services], Coroutine[Any, Any, T]], *, load_config: bool = False
+) -> T:
+    """Build services, run one async action, and turn project errors into CLI failures.
+
+    Host configuration is only read where it is actually needed (the planner commands), so a
+    broken config cannot break `pw tasks`.
+    """
 
     async def runner() -> T:
         clock = bootstrap.system_clock()
         database = bootstrap.runtime_database(clock)
-        return await action(services_for(database, clock))
+        config = await bootstrap.config_loader().load() if load_config else None
+        return await action(services_for(database, clock, config))
 
     try:
         return asyncio.run(runner())
+    except StalePlanProposal:
+        # `pw plan apply` renders this one itself, so it must not be flattened to a generic
+        # failure message here.
+        raise
+    except InvalidAssistantConfig as exc:
+        fail(f"invalid configuration: {exc}", code=2)
     except DomainError as exc:
         fail(str(exc))
     except StoreError as exc:
@@ -281,6 +302,83 @@ async def _clear_deadline(services: Services, reference: str) -> None:
     await services.tasks.clear_deadline(task_id)
 
 
+@task_app.command("edit")
+def task_edit(
+    reference: Annotated[str, typer.Argument(help="Task id or unique prefix.")],
+    title: Annotated[str | None, typer.Option("--title", help="New title.")] = None,
+    description: Annotated[
+        str | None, typer.Option("--description", help="New description.")
+    ] = None,
+    estimate: Annotated[
+        int | None, typer.Option("--estimate", help="New estimate in minutes (>= 1).")
+    ] = None,
+    clear_estimate: Annotated[
+        bool, typer.Option("--clear-estimate", help="Remove the estimate.")
+    ] = False,
+    priority: Annotated[
+        str | None, typer.Option("--priority", help="low | normal | high.")
+    ] = None,
+) -> None:
+    """Edit an OPEN task's details (planner issues like MISSING_ESTIMATE are fixed here)."""
+    if estimate is not None and clear_estimate:
+        fail("pass either --estimate or --clear-estimate, not both")
+    if (
+        title is None
+        and description is None
+        and estimate is None
+        and priority is None
+        and not clear_estimate
+    ):
+        fail(
+            "nothing to edit: pass --title, --description, --estimate, "
+            "--clear-estimate or --priority"
+        )
+    parsed_priority = priority_of(priority) if priority is not None else None
+    task = run(
+        lambda services: _edit_task(
+            services,
+            reference,
+            title=title,
+            description=description,
+            estimate=estimate,
+            clear_estimate=clear_estimate,
+            priority=parsed_priority,
+        )
+    )
+    console.print(f"[green]updated[/green] {short_id(task.id)}  {task.title}")
+    console.print(f"  estimate: {_minutes(task.estimated_minutes)}")
+    console.print(f"  priority: {task.priority.value}")
+
+
+async def _edit_task(
+    services: Services,
+    reference: str,
+    *,
+    title: str | None,
+    description: str | None,
+    estimate: int | None,
+    clear_estimate: bool,
+    priority: TaskPriority | None,
+) -> Task:
+    task_id = await services.tasks.resolve_task_id(reference)
+    current = await services.tasks.require_task(task_id)
+    if clear_estimate:
+        new_estimate: int | None = None
+    elif estimate is not None:
+        new_estimate = estimate
+    else:
+        new_estimate = current.estimated_minutes
+    return await services.tasks.update_task(
+        task_id,
+        EditTask(
+            title=title if title is not None else current.title,
+            description=description if description is not None else current.description,
+            priority=priority if priority is not None else current.priority,
+            estimated_minutes=new_estimate,
+        ),
+    )
+
+
 @calendar_app.callback(invoke_without_command=True)
 def calendar_default(
     ctx: typer.Context,
@@ -294,11 +392,15 @@ def calendar_default(
         console.print("nothing scheduled")
         return
     table = Table(title=f"busy time (next {days} days)")
-    for column in ("Kind", "ID", "Start", "End", "Title"):
+    for column in ("Kind", "Origin", "ID", "Start", "End", "Title"):
         table.add_column(column)
     for interval in intervals:
+        origin = interval.origin or "-"
+        if interval.proposal_id is not None:
+            origin = f"{origin} {short_id(interval.proposal_id)}"
         table.add_row(
             interval.source_kind.value,
+            origin,
             short_id(interval.source_id),
             format_local(interval.starts_at),
             format_local(interval.ends_at),
@@ -371,6 +473,145 @@ def plan_cancel(
     """Cancel a plan block by hand."""
     block: PlanBlock = run(lambda services: _plan_cancel(services, reference))
     console.print(f"[yellow]cancelled[/yellow] {short_id(block.id)}")
+
+
+@plan_app.command("week")
+def plan_week(
+    next_week: Annotated[
+        bool, typer.Option("--next", help="Plan next week instead of the current one.")
+    ] = False,
+) -> None:
+    """Create a reviewable proposal for the week. This never applies it."""
+    detail, titles = run(
+        lambda services: _week_detail(services, next_week=next_week), load_config=True
+    )
+    _print_proposal_overview(detail, show_hints=True, titles=titles)
+
+
+async def _week_detail(
+    services: Services, *, next_week: bool
+) -> tuple[PlanProposalDetail, dict[UUID, str]]:
+    detail = await services.planner.create_week_proposal(next_week=next_week)
+    return detail, await _task_titles(services)
+
+
+@plan_app.command("proposals")
+def plan_proposals(
+    limit: Annotated[int, typer.Option("--limit", help="How many proposals to show.")] = 20,
+) -> None:
+    """List stored proposals, newest first."""
+    summaries = run(
+        lambda services: services.planner.list_proposal_summaries(limit=limit),
+        load_config=True,
+    )
+    if not summaries:
+        console.print("no proposals")
+        return
+    table = Table(title="plan proposals")
+    for column in ("ID", "Status", "Window", "Timezone", "Created", "Blocks", "Issues"):
+        table.add_column(column)
+    for summary in summaries:
+        proposal = summary.proposal
+        table.add_row(
+            short_id(proposal.id),
+            proposal.status.value,
+            f"{format_local(proposal.window.starts_at)} -> "
+            f"{format_local(proposal.window.ends_at)}",
+            proposal.window.timezone,
+            format_local(proposal.created_at),
+            str(summary.block_count),
+            str(summary.issue_count),
+        )
+    console.print(table)
+
+
+@plan_app.command("show")
+def plan_show(
+    reference: Annotated[str, typer.Argument(help="Proposal id or unique prefix.")]
+) -> None:
+    """Show a stored proposal exactly as it was created (no re-planning)."""
+    detail, titles = run(
+        lambda services: _proposal_detail(services, reference), load_config=True
+    )
+    _print_proposal_overview(detail, show_hints=False, titles=titles)
+    console.print(f"  input revision: {detail.proposal.input_revision}")
+    console.print(f"  fingerprint: {detail.proposal.input_fingerprint}")
+    if detail.proposal.applied_at is not None:
+        console.print(f"  applied: {format_local(detail.proposal.applied_at)}")
+    if detail.proposal.superseded_at is not None:
+        console.print(f"  superseded: {format_local(detail.proposal.superseded_at)}")
+
+
+async def _proposal_detail(
+    services: Services, reference: str
+) -> tuple[PlanProposalDetail, dict[UUID, str]]:
+    detail = await services.planner.get_proposal_detail(reference)
+    return detail, await _task_titles(services)
+
+
+async def _task_titles(services: Services) -> dict[UUID, str]:
+    tasks = await services.tasks.list_tasks(include_terminal=True)
+    return {task.id: task.title for task in tasks}
+
+
+@plan_app.command("apply")
+def plan_apply(
+    reference: Annotated[str, typer.Argument(help="Proposal id or unique prefix.")]
+) -> None:
+    """Apply a pending proposal: planner blocks replace older planner blocks."""
+    try:
+        result = run(
+            lambda services: services.planner.apply_proposal(reference), load_config=True
+        )
+    except StalePlanProposal:
+        fail("Proposal is stale; create a new plan with `pw plan week`.")
+    console.print(f"[green]Applied proposal[/green] {short_id(result.proposal.id)}")
+    console.print(f"  Created: {result.created_blocks} planner blocks")
+    console.print(f"  Replaced: {result.replaced_blocks} planner blocks")
+
+
+def _print_proposal_overview(
+    detail: PlanProposalDetail, *, show_hints: bool, titles: dict[UUID, str]
+) -> None:
+    proposal = detail.proposal
+    console.print(f"Proposal: {short_id(proposal.id)} ({proposal.id})")
+    console.print(f"  status: {proposal.status.value}")
+    console.print(f"  timezone: {proposal.window.timezone}")
+    console.print(
+        f"  window: {format_local(proposal.window.starts_at)} -> "
+        f"{format_local(proposal.window.ends_at)}"
+    )
+    console.print(f"  created: {format_local(proposal.created_at)}")
+    if detail.blocks:
+        table = Table(title="proposed blocks")
+        for column in ("Start", "End", "Task", "Title"):
+            table.add_column(column)
+        for block in detail.blocks:
+            table.add_row(
+                format_local(block.starts_at),
+                format_local(block.ends_at),
+                short_id(block.task_id),
+                titles.get(block.task_id, "-"),
+            )
+        console.print(table)
+    else:
+        console.print("  proposed blocks: none")
+    if detail.issues:
+        table = Table(title="planning issues")
+        for column in ("Code", "Task", "Message"):
+            table.add_column(column)
+        for issue in detail.issues:
+            table.add_row(
+                issue.code.value,
+                "-" if issue.task_id is None else short_id(issue.task_id),
+                issue.message,
+            )
+        console.print(table)
+    else:
+        console.print("  issues: none")
+    if show_hints:
+        console.print(f"Review with: pw plan show {short_id(proposal.id)}")
+        console.print(f"Apply with:  pw plan apply {short_id(proposal.id)}")
 
 
 async def _plan_cancel(services: Services, reference: str) -> PlanBlock:

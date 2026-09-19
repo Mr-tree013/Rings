@@ -17,10 +17,12 @@ from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
 from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
+from assistant.application.greedy_planner import GreedyPlanner
 from assistant.application.index_sync import IndexSyncService
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.paths import AppPaths
+from assistant.application.planner_service import PlannerService
 from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
@@ -31,6 +33,7 @@ from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.migrations import apply_migrations
+from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.work import SqliteWorkRepository
 
 
@@ -128,6 +131,27 @@ def work_service(database: Database, clock: Clock) -> WorkService:
     return WorkService(work_repository(database), commitment_repository(database), clock)
 
 
+def planning_repository(database: Database) -> SqlitePlanningRepository:
+    """Proposals, planning snapshots and the atomic apply."""
+    return SqlitePlanningRepository(database)
+
+
+def planner_service(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> PlannerService:
+    """The deterministic weekly planner over the configured planning preferences.
+
+    `config=None` means "this command did not need host configuration"; the planner then
+    reports `PlanningNotConfigured` instead of guessing a timezone.
+    """
+    return PlannerService(
+        planning_repository(database),
+        GreedyPlanner(),
+        None if config is None else config.planning,
+        clock,
+    )
+
+
 __all__ = [
     "AppPaths",
     "VaultManifestFile",
@@ -137,6 +161,8 @@ __all__ = [
     "commitment_repository",
     "config_loader",
     "knowledge_indexer",
+    "planner_service",
+    "planning_repository",
     "runtime_database",
     "search_service",
     "sync_service",

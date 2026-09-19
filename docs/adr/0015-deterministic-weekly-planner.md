@@ -7,7 +7,7 @@ instead of mutating plan blocks directly.
 
 ## Status
 
-Accepted (design frozen; implementation in progress — see "Implementation status")
+Accepted
 
 ## Context
 
@@ -76,6 +76,13 @@ Additional frozen details:
   the proposal window, and inserts the new planner blocks with their proposal id.
 - **Current week**: Monday 00:00 local → next Monday 00:00 local, with the effective start
   clamped to "now" so nothing is planned into the past.
+- **DST policy**: availability is expanded with `zoneinfo` and validated by a local → UTC →
+  local round trip, never by setting `tzinfo` and hoping. A wall time that does not exist
+  (spring-forward gap) is skipped rather than guessed. An ambiguous wall time (fall-back
+  repetition) uses `fold=0` for the start boundary and `fold=1` for the end boundary, so the
+  repeated hour stays inside availability. Every generated interval is normalised to UTC
+  before it leaves availability generation: two datetimes sharing one `ZoneInfo` would
+  otherwise be subtracted as wall clock, making a DST week look an hour longer than it is.
 
 ## Alternatives Considered
 
@@ -96,15 +103,20 @@ Additional frozen details:
 - **Allow applying a stale proposal**: silently overwrites newer deadlines, work sessions or
   manual plans. Rejected; the only path is a fresh proposal.
 
-## Implementation status
+## Consequences
 
-Delivered on this branch: planning preferences and IANA timezone validation, the planning domain
-(window, read model, issues, proposed blocks, proposal), half-open interval algebra, `PlanBlock`
-provenance (`manual` / `planner` + proposal id) with database constraints, and migration `0005`
-(proposal tables, `commitment_meta` revision baseline, rebuilt `plan_blocks`).
-
-Still to implement before Phase 3B is complete: commitment revision increments inside every
-planning-relevant mutation, the planning repository (atomic apply, stale fencing, supersede),
-the greedy planner and availability generation, `PlannerService`, and the CLI
-(`pw plan week|proposals|show|apply`, `pw task edit`).
-
+- Planning is reviewable: `pw plan week` only proposes, `pw plan show` replays the stored
+  proposal verbatim (never a recomputation), and `pw plan apply` is the single write path.
+- A stale proposal is inert. Every planning-relevant mutation bumps `commitment_meta.revision`
+  inside its own transaction, and apply refuses a proposal built from an older revision and
+  records `STALE` — so a plan can never quietly overwrite a newer deadline, work session or
+  manual block.
+- Manual plan blocks are user-owned. Apply replaces only `origin = 'planner'` blocks
+  intersecting the proposal window, and cancelled planner blocks stay as auditable history.
+- Effort stays honest. Only `WorkSession` rows reduce remaining effort; plan block duration
+  never counts as work, and reaching the estimate does not complete a task.
+- The scheduler is replaceable. `Planner` is a small synchronous port over immutable values, so
+  a future solver can be swapped in without touching services, storage or the CLI.
+- Costs of the greedy choice: it is not an optimiser (no travel, energy or fairness model), it
+  only plans into configured availability, and it requires estimates. Tasks without one are
+  reported as `MISSING_ESTIMATE` instead of being guessed at.

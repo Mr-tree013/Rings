@@ -7,29 +7,26 @@ database or a calendar service.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from assistant.domain.calendar_event import CalendarEvent
+from assistant.domain.deadline import Deadline
 from assistant.domain.errors import InvalidTimeInterval
-from assistant.domain.task import TaskId, TaskPriority
+from assistant.domain.plan_block import PlanBlock
+from assistant.domain.task import Task, TaskId, TaskPriority
 
 PlanProposalId = UUID
 """Stable identity of one plan proposal."""
-
-ProposedPlanBlockId = UUID
-"""Stable identity of one proposed block."""
 
 PlanningIssueId = UUID
 """Stable identity of one recorded planning issue."""
 
 
 def new_proposal_id() -> PlanProposalId:
-    return uuid4()
-
-
-def new_proposed_block_id() -> ProposedPlanBlockId:
     return uuid4()
 
 
@@ -82,6 +79,7 @@ class PlanningIssueCode(StrEnum):
     INSUFFICIENT_CAPACITY = "INSUFFICIENT_CAPACITY"
     BUFFER_VIOLATED = "BUFFER_VIOLATED"
     NO_AVAILABILITY = "NO_AVAILABILITY"
+    WINDOW_CAPACITY_EXHAUSTED = "WINDOW_CAPACITY_EXHAUSTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,13 +95,16 @@ class PlanningIssue:
 
 @dataclass(frozen=True, slots=True)
 class ProposedPlanBlock:
-    """A planned interval inside a proposal; not yet a real plan block."""
+    """A planned interval inside a proposal; not yet a real plan block.
+
+    Deliberately carries no identity: the pure planner emits only scheduling values, and the
+    persistence layer assigns row ids when the proposal is stored.
+    """
 
     task_id: TaskId
     starts_at: datetime
     ends_at: datetime
     ordinal: int
-    id: ProposedPlanBlockId = field(default_factory=new_proposed_block_id)
 
     def __post_init__(self) -> None:
         _require_aware(self.starts_at, "starts_at")
@@ -159,6 +160,15 @@ class PlanProposalDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanProposalSummary:
+    """A proposal plus how much it proposed, for list views."""
+
+    proposal: PlanProposal
+    block_count: int
+    issue_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class PlanResult:
     """What the pure planner produced for one request."""
 
@@ -166,20 +176,47 @@ class PlanResult:
     issues: tuple[PlanningIssue, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PlanningRequest:
+    """Everything the pure planner needs, and nothing it could use to reach the database."""
+
+    window: PlanningWindow
+    tasks: tuple[PlanningTask, ...]
+    availability: tuple[tuple[datetime, datetime], ...]
+    busy_intervals: tuple[tuple[datetime, datetime], ...]
+    min_block_minutes: int
+    max_block_minutes: int
+    deadline_buffer_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningSnapshot:
+    """Planner-relevant authoritative state, read from one consistent transaction."""
+
+    window: PlanningWindow
+    revision: int
+    open_tasks: tuple[Task, ...]
+    deadlines: Mapping[TaskId, Deadline]
+    actual_work_seconds: Mapping[TaskId, int]
+    active_calendar_events: tuple[CalendarEvent, ...]
+    active_manual_plan_blocks: tuple[PlanBlock, ...]
+    active_planner_plan_blocks: tuple[PlanBlock, ...]
+
+
 __all__ = [
     "PlanProposal",
     "PlanProposalDetail",
     "PlanProposalId",
     "PlanProposalStatus",
+    "PlanProposalSummary",
     "PlanResult",
     "PlanningIssue",
     "PlanningIssueCode",
+    "PlanningRequest",
+    "PlanningSnapshot",
     "PlanningTask",
     "PlanningWindow",
     "ProposedPlanBlock",
-    "ProposedPlanBlockId",
     "new_planning_issue_id",
     "new_proposal_id",
-    "new_proposed_block_id",
 ]
-

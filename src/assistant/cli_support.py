@@ -13,6 +13,7 @@ from typing import NoReturn
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 console = Console()
 error_console = Console(stderr=True)
@@ -21,8 +22,12 @@ ISO_EXAMPLE = "2026-09-21T10:00:00+08:00"
 
 
 def fail(message: str, code: int = 1) -> NoReturn:
-    """Report a user-facing failure and exit without a traceback."""
-    error_console.print(f"[red]{message}[/red]")
+    """Report a user-facing failure and exit without a traceback.
+
+    The message is escaped: error text often contains things like `[planning]`, which would
+    otherwise be swallowed as Rich markup.
+    """
+    error_console.print(f"[red]{escape(message)}[/red]")
     raise typer.Exit(code=code)
 
 
@@ -67,4 +72,3 @@ __all__ = [
     "parse_aware_datetime",
     "short_id",
 ]
-

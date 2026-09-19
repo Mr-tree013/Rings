@@ -27,6 +27,7 @@ from assistant.domain.errors import (
     DeadlineNotFound,
     DomainError,
     DuplicateCommitment,
+    InvalidPlanBlock,
     PlanBlockNotFound,
     StaleTaskUpdate,
     TaskNotFound,
@@ -35,6 +36,7 @@ from assistant.domain.errors import (
 from assistant.domain.plan_block import PlanBlock, PlanBlockId, PlanBlockOrigin
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.commitment_repository import CommitmentTransitionResult
+from assistant.store.commitment_revision import increment_revision
 from assistant.store.db import Database, transaction
 from assistant.store.errors import CommitmentStoreError
 from assistant.store.serialization import from_utc_iso, to_utc_iso
@@ -202,6 +204,7 @@ class SqliteCommitmentRepository:
                     )
             except sqlite3.IntegrityError as exc:
                 raise _translate_integrity_error(exc) from exc
+            increment_revision(connection)
         return task
 
     def _get_task_sync(self, task_id: TaskId) -> Task | None:
@@ -249,6 +252,7 @@ class SqliteCommitmentRepository:
             )
             if cursor.rowcount != 1:
                 raise StaleTaskUpdate(task.id, expected_updated_at)
+            increment_revision(connection)
         return task
 
     def _terminal_sync(
@@ -282,6 +286,7 @@ class SqliteCommitmentRepository:
                 _CANCEL_FUTURE_PLAN_BLOCKS_SQL,
                 (to_utc_iso(cutoff), to_utc_iso(cutoff), str(task.id), to_utc_iso(cutoff)),
             ).rowcount
+            increment_revision(connection)
             row = connection.execute(_SELECT_TASK_SQL, (str(task.id),)).fetchone()
         if row is None:  # pragma: no cover - defensive
             raise CommitmentStoreError(f"task {task.id} disappeared during its transition")
@@ -333,6 +338,7 @@ class SqliteCommitmentRepository:
                     (to_utc_iso(stored.due_at), to_utc_iso(stored.updated_at), str(stored.task_id)),
                 )
             self._touch_task(connection, deadline.task_id, at)
+            increment_revision(connection)
         return stored
 
     def _clear_deadline_sync(
@@ -346,17 +352,19 @@ class SqliteCommitmentRepository:
             if cursor.rowcount != 1:
                 raise DeadlineNotFound(task_id)
             self._touch_task(connection, task_id, at)
+            increment_revision(connection)
 
     def _add_calendar_event_sync(self, event: CalendarEvent) -> CalendarEvent:
         insert_sql = (
             f"INSERT INTO calendar_events ({_EVENT_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         try:
-            with self._database.connect() as connection:
+            with self._database.connect() as connection, transaction(connection):
                 connection.execute(
                     insert_sql,
                     _event_parameters(event),
                 )
+                increment_revision(connection)
         except sqlite3.IntegrityError as exc:
             raise _translate_integrity_error(exc) from exc
         return event
@@ -394,16 +402,22 @@ class SqliteCommitmentRepository:
                 "UPDATE calendar_events SET cancelled_at = ?, updated_at = ? WHERE id = ?",
                 (to_utc_iso(at), to_utc_iso(at), str(event_id)),
             )
+            increment_revision(connection)
         return cancelled
 
     def _add_plan_block_sync(self, block: PlanBlock) -> PlanBlock:
+        if block.origin is not PlanBlockOrigin.MANUAL:
+            raise InvalidPlanBlock(
+                "only the planner may create PLANNER blocks (via PlanningRepository)"
+            )
         try:
-            with self._database.connect() as connection:
+            with self._database.connect() as connection, transaction(connection):
                 connection.execute(
                     "INSERT INTO plan_blocks "
                     f"({_BLOCK_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     _block_parameters(block),
                 )
+                increment_revision(connection)
         except sqlite3.IntegrityError as exc:
             raise _translate_integrity_error(exc) from exc
         return block
@@ -448,6 +462,7 @@ class SqliteCommitmentRepository:
                 "UPDATE plan_blocks SET cancelled_at = ?, updated_at = ? WHERE id = ?",
                 (to_utc_iso(at), to_utc_iso(at), str(plan_block_id)),
             )
+            increment_revision(connection)
         return cancelled
 
     def _require_open_at_version(

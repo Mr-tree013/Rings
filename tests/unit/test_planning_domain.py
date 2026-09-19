@@ -237,12 +237,12 @@ def test_proposed_block_validation_and_duration() -> None:
     block = ProposedPlanBlock(task_id=uuid4(), starts_at=NOW, ends_at=LATER, ordinal=0)
 
     assert block.duration_minutes == 120
+    # The pure planner emits scheduling values only; row ids are assigned on persistence.
     assert {field.name for field in fields(ProposedPlanBlock)} == {
         "task_id",
         "starts_at",
         "ends_at",
         "ordinal",
-        "id",
     }
     with pytest.raises(InvalidTimeInterval):
         ProposedPlanBlock(task_id=uuid4(), starts_at=NOW, ends_at=NOW, ordinal=0)
@@ -277,6 +277,7 @@ def test_planning_issues_have_a_fixed_code_vocabulary() -> None:
         "INSUFFICIENT_CAPACITY",
         "BUFFER_VIOLATED",
         "NO_AVAILABILITY",
+        "WINDOW_CAPACITY_EXHAUSTED",
     }
     issue = PlanningIssue(code=PlanningIssueCode.BUFFER_VIOLATED, message="used buffer time")
     assert issue.task_id is None and issue.required_minutes is None
@@ -316,4 +317,3 @@ def test_clip_interval_returns_none_outside_the_bounds() -> None:
     assert clip_interval(
         (NOW, LATER), (NOW + timedelta(hours=1), LATER + timedelta(hours=1))
     ) == (NOW + timedelta(hours=1), LATER)
-

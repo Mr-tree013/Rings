@@ -51,6 +51,11 @@ class BusyInterval:
     starts_at: datetime
     ends_at: datetime
     title: str | None = None
+    origin: str | None = None
+    """For plan blocks: `manual` or `planner`; never set for calendar events."""
+
+    proposal_id: UUID | None = None
+    """For planner-generated plan blocks: the proposal that created them."""
 
     def __post_init__(self) -> None:
         for value, field_name in ((self.starts_at, "starts_at"), (self.ends_at, "ends_at")):
@@ -61,4 +66,3 @@ class BusyInterval:
 
 
 __all__ = ["BusyInterval", "BusyIntervalKind", "overlaps"]
-

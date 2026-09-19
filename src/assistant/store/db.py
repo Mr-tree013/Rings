@@ -129,6 +129,24 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
             connection.execute("COMMIT")
 
 
+@contextmanager
+def read_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Run a block inside one deferred transaction, for a consistent multi-query read.
+
+    In WAL mode the first read starts a snapshot that stays stable for the whole block, which
+    is what a planning snapshot needs: never a mix of task state from one revision and
+    calendar state from the next.
+    """
+    if connection.in_transaction:
+        raise DatabaseConfigurationError("nested transactions are not supported")
+    connection.execute("BEGIN DEFERRED")
+    try:
+        yield connection
+    finally:
+        if connection.in_transaction:
+            connection.execute("COMMIT")
+
+
 def _configure(
     connection: sqlite3.Connection,
     *,
@@ -159,5 +177,6 @@ __all__ = [
     "MEMORY_PATH",
     "REQUIRED_JOURNAL_MODE",
     "Database",
+    "read_transaction",
     "transaction",
 ]

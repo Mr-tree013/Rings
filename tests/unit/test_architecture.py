@@ -6,6 +6,7 @@ Covered rules:
 
 - the domain layer is pure (no storage, no adapters, no clock reads);
 - the application layer never reaches into the store;
+- the greedy planner stays pure: no ports, no store, no clock, no CLI;
 - only the store (and other infrastructure modules) may import `sqlite3`.
 """
 
@@ -205,3 +206,31 @@ def test_repository_public_api_is_async() -> None:
     for name in ("add", "get", "get_by_external_identity", "list_pending", "transition"):
         method = getattr(SqliteEventRepository, name)
         assert inspect.iscoroutinefunction(method), f"{name} must be async"
+
+
+def test_greedy_planner_stays_a_pure_scheduling_function() -> None:
+    planner = SOURCE_ROOT / "application" / "greedy_planner.py"
+    modules = _imported_modules(planner)
+    names = _imported_names(planner)
+    text = planner.read_text(encoding="utf-8")
+
+    forbidden_prefixes = (
+        "assistant.ports",
+        "assistant.store",
+        "assistant.adapters",
+        "assistant.bootstrap",
+        "assistant.cli",
+        "sqlite3",
+        "random",
+        "uuid",
+    )
+    violations = sorted(
+        imported
+        for imported in modules
+        if imported.startswith(forbidden_prefixes) or imported == "sqlite3"
+    )
+
+    assert not violations, f"the planner must not reach outside the domain: {violations}"
+    assert not any(name.endswith("Clock") for name in names), names
+    for forbidden in ("datetime.now(", "time.time(", "uuid4", "random."):
+        assert forbidden not in text, f"the planner must stay deterministic: {forbidden}"
