@@ -209,6 +209,21 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **A durable analysis with the same input fingerprint must be reused across EventWorker retries.**
   `(analyzer_version, input_fingerprint)` 相同即直接复用、不再调用模型；fingerprint 变化才允许
   原子替换。oversize（无正文）不得调用模型，只记录 `UNKNOWN` 分析。
+- **Incoming mail must never trigger personal-knowledge retrieval solely from mail content.**
+  只有用户在 `pw mail draft create` 上显式给出 `--context-query` 时才允许调用 Knowledge search；
+  没有 query 时 `mail_drafts.py` 里唯一的 knowledge 调用点必须走 `if query is None: return (),
+  ()` 分支，且不得把 mail body 当作检索 query（ADR-0022）。
+- **Mail reply recipients and reply subjects are deterministic local data, never
+  model-generated.** recipient 固定为 `Reply-To`（否则 `From`）解析出的 mailbox，subject 由纯函数
+  `reply_subject()` 派生；draft schema 里没有 `to`/`cc`/`bcc`/`subject` 字段。
+- **Reply drafting is explicit and local; generating a draft is not sending mail.**
+  只有 `pw mail draft create` 会构造带 provider 的 draft service；EventWorker / MailSync /
+  Scheduler / daemon startup 都不得创建 draft。本阶段没有 SMTP、没有 Approval、没有 ActionRequest。
+- **Missing personal facts must be surfaced for user input rather than hallucinated.**
+  模型只能写被 mail thread 或本次显式提供的 knowledge evidence 支持的个人事实；无法支持时写进
+  `needs_user_input`，不得编造。
+- **MailDraft edits use optimistic concurrency.** `UPDATE … WHERE id=? AND version=?`；版本不匹配
+  必须抛 `StaleMailDraftUpdate`，禁止静默覆盖；编辑不允许改 recipient。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -319,10 +334,19 @@ input fingerprint + 幂等复用（EventWorker retry 不再付费）、oversize 
 daemon `event-worker`（仅在同时配置 mail 与可用 model 时启动）、
 `pw mail threads|thread show|analysis`。仍不建 Task/Case、不起草、不发送、无 SMTP。
 
+**Phase 5C 已完成（仍是 0.4.0）**：durable reply drafts + explicit knowledge context（ADR-0022）：
+`Reply-To` 持久化与 stdlib 地址解析、deterministic recipient（`Reply-To` → `From`）与
+`reply_subject()`、durable `MailDraft`（origin / version / needs_user_input /
+generation_input_fingerprint）+ `mail_draft_sources`（仅 root/entry/chunk/logical URI/span）、
+closed draft schema（body / used_source_ids / needs_user_input）、本地 source-id 校验、
+**默认不检索个人知识**（只有显式 `--context-query` 才调用既有 bounded GroundedContext）、
+oversize 无正文直接拒绝、optimistic edit（CAS）、`pw mail drafts|draft create|show|edit`。
+仍然不发送、无 SMTP / Approval / ActionRequest、无 EventWorker 自动起草。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task / reply draft /
-SMTP 发送与审批 / site watcher / QQ 渠道 / eHall / browser / 个人估时学习 /
+mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task / SMTP 发送与审批 /
+site watcher / QQ 渠道 / eHall / browser / 个人估时学习 /
 agent tool loop / 多工具只读编排 / command execution boundary（`pw interpret --apply` 之类）/
 重复任务与重复事件 / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
 filesystem watcher 快速路径 / Web Server / Playwright /

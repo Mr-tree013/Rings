@@ -67,8 +67,14 @@ class MailContextMessage:
 class MailContext:
     """Everything one mail analysis needs, and nothing else."""
 
-    thread_id: MailThreadId
     current: MailContextMessage
+    thread_id: MailThreadId | None = None
+    """The stored thread, or `None` when the message has no membership yet.
+
+    A draft may be written for a message the daemon has not threaded, and creating a membership
+    would be a mail-state change a read-only path must not make — so `None` means "the context is
+    this message alone", not "an unknown thread".
+    """
     previous: tuple[MailContextMessage, ...] = ()
     planning_timezone: str | None = None
     context_truncated: bool = False
@@ -136,6 +142,25 @@ class MailContextBuilder:
     ) -> MailContext:
         """Return the same request bytes for the same stored state, every time."""
         thread = await self._intelligence.list_thread_messages(thread_id)
+        return self.assemble(message, thread_id=thread_id, thread=thread)
+
+    def build_standalone(self, message: MailMessage) -> MailContext:
+        """Build the context of a message that has no stored thread membership.
+
+        Used by paths that must not change mail state — a draft may be written for a message the
+        daemon has not threaded yet — so the context is the message itself and nothing else. The
+        thread identity is still recorded, as the single message it is.
+        """
+        return self.assemble(message, thread_id=None, thread=[message])
+
+    def assemble(
+        self,
+        message: MailMessage,
+        *,
+        thread_id: MailThreadId | None,
+        thread: list[MailMessage],
+    ) -> MailContext:
+        """Bound one ordered set of messages into the context the model may see."""
         # The thread arrives in conversation order, so "the previous messages" are the tail of
         # everything that is not the current one. Comparing timestamps instead would make the
         # history empty whenever two messages share a timestamp, which is exactly when the

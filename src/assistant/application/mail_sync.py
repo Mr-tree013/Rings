@@ -411,6 +411,7 @@ class MailSyncService:
             from_address=parsed.from_address,
             to_addresses=parsed.to_addresses,
             cc_addresses=parsed.cc_addresses,
+            reply_to_addresses=parsed.reply_to_addresses,
             date_header=parsed.date_header,
             sent_at=parsed.sent_at,
             body_text=parsed.body_text,

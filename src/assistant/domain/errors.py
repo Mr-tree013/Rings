@@ -620,6 +620,59 @@ class MailEventLinkMismatch(DomainError):
     """
 
 
+class InvalidMailDraft(DomainError):
+    """A reply draft, its recipients or its stored sources break an invariant."""
+
+
+class MailDraftNotFound(DomainError):
+    """No draft exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"mail draft {reference} does not exist")
+
+
+class MailReplyRecipientUnavailable(DomainError):
+    """A reply has nobody to go to: neither `Reply-To` nor `From` names a usable mailbox.
+
+    Raised before any model call, because a recipient is derived locally and a model is never
+    asked to invent one.
+    """
+
+
+class MailDraftSourceUnavailable(DomainError):
+    """The message a reply would answer has no readable body.
+
+    An oversize (header-only) message, or one whose body could not be extracted, is not a basis
+    for guessing what to write back.
+    """
+
+
+class MailDraftInvalidKnowledgeReference(DomainError):
+    """A draft cited a knowledge source that was not supplied in that exact request.
+
+    The method is the missing reference; the id is the model's claim about it.
+    """
+
+    def __init__(self, source_id: object) -> None:
+        self.source_id = source_id
+        super().__init__(
+            f"the draft cited {source_id}, which was not among the supplied knowledge sources"
+        )
+
+
+class StaleMailDraftUpdate(DomainError):
+    """An edit presented a draft version that is no longer current. The edit is refused."""
+
+    def __init__(self, draft_id: object, expected: int, actual: int) -> None:
+        self.draft_id = draft_id
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"mail draft {draft_id} is at version {actual}, but the edit expected {expected}"
+        )
+
+
 class InvalidMailAnalysis(DomainError):
     """A mail analysis, action candidate or thread record breaks its invariants."""
 
@@ -681,6 +734,7 @@ __all__ = [
     "InvalidInterpretationResult",
     "InvalidKnowledgeDocument",
     "InvalidMailAnalysis",
+    "InvalidMailDraft",
     "InvalidMailMessage",
     "InvalidMailboxState",
     "InvalidModelRequest",
@@ -706,11 +760,15 @@ __all__ = [
     "MailConfigurationError",
     "MailConnectionError",
     "MailCredentialsMissing",
+    "MailDraftInvalidKnowledgeReference",
+    "MailDraftNotFound",
+    "MailDraftSourceUnavailable",
     "MailEventLinkMismatch",
     "MailMessageNotFound",
     "MailProtocolError",
     "MailRawStorageError",
     "MailReconciliationConflict",
+    "MailReplyRecipientUnavailable",
     "MailThreadNotFound",
     "ModelAuthenticationError",
     "ModelBillingError",
@@ -737,6 +795,7 @@ __all__ = [
     "PlanningStateUnstable",
     "ScheduledJobNotFound",
     "StaleEventClaim",
+    "StaleMailDraftUpdate",
     "StalePlanProposal",
     "StaleScheduledJobClaim",
     "StaleTaskUpdate",

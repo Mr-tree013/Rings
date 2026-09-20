@@ -186,7 +186,7 @@ def status() -> None:
     table.add_row(
         "external inputs",
         "IMAP inbound mail (receive-only: sync, deterministic threading, structured "
-        "classification)",
+        "classification, explicit local reply drafts)",
     )
     table.add_row("agent execution", "[yellow]not implemented[/yellow]")
     table.add_row(
@@ -197,7 +197,7 @@ def status() -> None:
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
         "integrations",
-        "[yellow]not implemented[/yellow] (reply drafting, sending, cases, web, push, eHall)",
+        "[yellow]not implemented[/yellow] (sending, cases, web, push, eHall)",
     )
     console.print(table)
     console.print(

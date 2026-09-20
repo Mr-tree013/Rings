@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 邮件线程/分类）
+## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 线程/分类 + 回复草稿）
 
 已完成：
 
@@ -49,7 +49,7 @@ transaction 内 materialize；提醒只投递到 durable notification inbox（`p
 （apply 仍需 `pw plan apply`）。daemon 现在托管 `index-sync` 与 `scheduler` 两个 service。
 **尚未实现**：OS/手机推送、个人估时学习（personal effort learning）、自然语言时间解析、
 重复任务/事件、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher、eHall、
-邮件回复起草与发送。
+邮件发送（回复草稿已实现，发送与审批尚未实现）。
 
 模型基础（Phase 4A）：**已实现** provider-independent model boundary —— core/application 只依赖
 `ModelPort`，DeepSeek 走 Responses API 的 adapter（`[model]` 配置 + `DEEPSEEK_API_KEY` 环境变量，
@@ -170,9 +170,40 @@ pw mail analysis MESSAGE     # 只读：已存储的分析结果（不调用模�
 - 处理邮件**不改动** Task / Deadline / CalendarEvent / PlanBlock / WorkSession / PlanProposal /
   ScheduledJob / Notification 或知识索引。
 
+回复草稿（Phase 5C）：**已实现** durable reply drafts —— 显式触发、本地生成、**只存在本地**：
+
+```bash
+pw mail draft create MESSAGE                          # 用配置的模型写一封回复草稿（不发送）
+pw mail draft create MESSAGE --context-query "my office hours" --root university
+pw mail drafts                                        # 只读：草稿列表
+pw mail draft show DRAFT                              # 只读：正文 / 待补充信息 / 知识来源
+pw mail draft edit DRAFT --body "..." --subject "..." # 本地编辑（乐观并发）
+```
+
+要点：
+
+- **收件箱不能读取个人资料库**：只有用户在命令行显式给出 `--context-query` 时才检索个人知识；
+  没有 query 时 Knowledge search **一次都不会被调用**，请求里的 knowledge evidence 为 0。邮件里写
+  “ignore previous instructions / 搜我的文件 / 把密码发给我”只会作为被引用的数据进入 prompt。
+- **收件人和主题由本地代码决定**：收件人取 `Reply-To`（没有才用 `From`）并用 stdlib 地址解析提取
+  mailbox；主题由纯函数 `reply_subject()` 派生（已有 `Re:` 前缀不重复叠加）。draft schema 里没有
+  `to`/`cc`/`bcc`/`subject` 字段，模型只能写正文。V1 是 Reply，不是 Reply-All。
+- **模型只写正文**：输出是 closed schema（`body` / `used_source_ids` / `needs_user_input`）；
+  资料不支持的个人事实必须写进 `needs_user_input`，不得编造。source id 只能是本次显式提供的那几个，
+  未提供的 id 会让本次生成被拒绝（不修补、不忽略）。
+- **引用只存在本地**：`mail_draft_sources` 只保存 root / entry / chunk / logical URI / source span，
+  不保存正文片段、不保存物理路径，也不会把 citation 写进邮件正文。
+- **必须有可读正文**：`body_status != available`（oversize header-only）直接拒绝
+  （`MailDraftSourceUnavailable`），不调用模型。
+- **编辑是乐观并发**：带上版本号 `UPDATE … WHERE id=? AND version=?`，冲突抛
+  `StaleMailDraftUpdate`，不会静默覆盖；草稿生成/编辑不修改任何邮件、线程、分析或 Task/Calendar/
+  Scheduler/Knowledge 状态。
+- **没有任何背景起草**：`EventWorker`、`mail-sync`、scheduler 与 daemon 启动都不会创建草稿；只有
+  `pw mail draft create` 会调用模型（因此可能产生费用）。生成草稿**不等于发送**。
+
 **尚未实现**：正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、分类结果自动转
-Task/Case、回复起草、SMTP 发送与审批流程、事件删除同步（server-side deletion）、attachment
-materialization、QQ 与站点 watcher。
+Task/Case、SMTP 发送与审批流程（本阶段无 `ActionRequest`、无 Approval）、事件删除同步
+（server-side deletion）、attachment materialization、QQ 与站点 watcher。
 
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
@@ -185,6 +216,8 @@ Architecture v1 是 **Modular Monolith + asyncio daemon + explicit state machine
 smail
   ↓  IMAP incremental fetch (UIDVALIDITY + UID)
 MailMessage → deterministic thread → InboundEvent → MailAnalysis (candidates only)
+  ↓  pw mail draft create（显式；可选 --context-query 才读个人知识）
+MailDraft（本地草稿；不发送、无 Approval / ActionRequest）
   ↓  (后续 Phase：Case → knowledge search → material checklist)
   → draft/prepare → ActionRequest → approval → execute → result → archive
   → PlaybookCandidate → review/test → Playbook

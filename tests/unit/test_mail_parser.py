@@ -235,3 +235,36 @@ def test_an_enormous_header_is_truncated_before_it_reaches_the_database() -> Non
 
     assert parsed.subject is not None
     assert len(parsed.subject) == 2000
+
+
+def test_reply_to_is_parsed_as_a_mailbox_list() -> None:
+    """A display name may contain a comma, so the parts come from the address parser."""
+    parsed = parse_raw_message(
+        _build(
+            From="announce@lists.example.edu",
+            To="me@example.edu",
+            Reply_To='"Doe, Jane" <jane@example.edu>, second@example.edu',
+            Subject="thread",
+        )
+    )
+
+    assert parsed.reply_to_addresses == (
+        "Doe, Jane <jane@example.edu>",
+        "second@example.edu",
+    )
+
+
+def test_a_message_without_reply_to_has_no_reply_to_addresses() -> None:
+    parsed = parse_raw_message(_build(From="ada@example.edu", To="me@example.edu"))
+    header_only = parse_header_only_message(_build(From="ada@example.edu"))
+
+    assert parsed.reply_to_addresses == ()
+    assert header_only.reply_to_addresses == ()
+
+
+def test_an_empty_reply_to_header_is_not_an_address() -> None:
+    parsed = parse_raw_message(
+        _build(From="ada@example.edu", To="me@example.edu", Reply_To="   ")
+    )
+
+    assert parsed.reply_to_addresses == ()

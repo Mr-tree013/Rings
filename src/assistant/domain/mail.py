@@ -151,6 +151,7 @@ class ParsedMail:
     from_address: str | None = None
     to_addresses: tuple[str, ...] = ()
     cc_addresses: tuple[str, ...] = ()
+    reply_to_addresses: tuple[str, ...] = ()
     date_header: str | None = None
     sent_at: datetime | None = None
     body_text: str | None = None
@@ -207,6 +208,7 @@ class MailMessage:
     from_address: str | None = None
     to_addresses: tuple[str, ...] = ()
     cc_addresses: tuple[str, ...] = ()
+    reply_to_addresses: tuple[str, ...] = ()
     date_header: str | None = None
     sent_at: datetime | None = None
     body_text: str | None = None
@@ -236,6 +238,7 @@ class MailMessage:
         for addresses, field_name in (
             (self.to_addresses, "to_addresses"),
             (self.cc_addresses, "cc_addresses"),
+            (self.reply_to_addresses, "reply_to_addresses"),
         ):
             if len(addresses) > MAX_ADDRESSES:
                 raise InvalidMailMessage(f"{field_name} may hold at most {MAX_ADDRESSES} entries")

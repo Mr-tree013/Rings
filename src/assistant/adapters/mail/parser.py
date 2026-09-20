@@ -19,7 +19,7 @@ from datetime import datetime
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 
 from assistant.domain.mail import (
@@ -112,6 +112,7 @@ def parse_header_only_message(raw: bytes) -> ParsedMail:
         from_address=parsed.from_address,
         to_addresses=parsed.to_addresses,
         cc_addresses=parsed.cc_addresses,
+        reply_to_addresses=parsed.reply_to_addresses,
         date_header=parsed.date_header,
         sent_at=parsed.sent_at,
         body_text=None,
@@ -134,6 +135,7 @@ def _parse_message(message: Message) -> ParsedMail:
         from_address=_address(message.get("From")),
         to_addresses=_addresses(message.get_all("To", [])),
         cc_addresses=_addresses(message.get_all("Cc", [])),
+        reply_to_addresses=_reply_to_addresses(message.get_all("Reply-To", [])),
         date_header=date_header,
         sent_at=_sent_at(date_header, warnings),
         body_text=body_text,
@@ -168,6 +170,27 @@ def _addresses(values: Sequence[object]) -> tuple[str, ...]:
                 addresses.append(normalized)
             if len(addresses) == MAX_ADDRESSES:
                 return tuple(addresses)
+    return tuple(addresses)
+
+
+def _reply_to_addresses(values: Sequence[object]) -> tuple[str, ...]:
+    """`Reply-To` as displayed addresses, split by the stdlib address parser.
+
+    `Reply-To` is a mailbox list, and a display name may legitimately contain a comma
+    (`"Doe, Jane" <jane@example.edu>`), so the parts come from `email.utils.getaddresses`
+    rather than from splitting the header on separators.
+    """
+    addresses: list[str] = []
+    for name, address in getaddresses([str(value) for value in values]):
+        if not address:
+            continue
+        formatted = normalize_header_value(
+            address if not name else f"{name} <{address}>", limit=MAX_ADDRESS_CHARS
+        )
+        if formatted is not None and formatted not in addresses:
+            addresses.append(formatted)
+        if len(addresses) == MAX_ADDRESSES:
+            break
     return tuple(addresses)
 
 

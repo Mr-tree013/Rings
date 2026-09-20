@@ -38,9 +38,9 @@ from assistant.store.serialization import from_utc_iso, to_utc_iso
 
 MESSAGE_FIELDS = (
     "id, account_id, message_id_header, in_reply_to_header, references_json, subject, "
-    "from_address, to_addresses_json, cc_addresses_json, date_header, sent_at, body_text, "
-    "body_status, raw_sha256, content_fingerprint, raw_storage_key, size_bytes, parse_warnings, "
-    "first_seen_at, last_seen_at"
+    "from_address, to_addresses_json, cc_addresses_json, reply_to_addresses_json, date_header, "
+    "sent_at, body_text, body_status, raw_sha256, content_fingerprint, raw_storage_key, "
+    "size_bytes, parse_warnings, first_seen_at, last_seen_at"
 )
 
 LOCATION_FIELDS = (
@@ -246,7 +246,7 @@ class SqliteMailRepository:
     def _insert_message(self, connection: sqlite3.Connection, message: MailMessage) -> None:
         connection.execute(
             f"INSERT INTO mail_messages ({MESSAGE_FIELDS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             _message_parameters(message),
         )
 
@@ -487,6 +487,7 @@ def _message_parameters(message: MailMessage) -> tuple[object, ...]:
         message.from_address,
         _json_list(message.to_addresses),
         _json_list(message.cc_addresses),
+        _json_list(message.reply_to_addresses),
         message.date_header,
         None if message.sent_at is None else to_utc_iso(message.sent_at),
         message.body_text,
@@ -527,6 +528,7 @@ def row_to_message(row: sqlite3.Row) -> MailMessage:
             from_address=_optional_text(row["from_address"]),
             to_addresses=_parse_json_list(row["to_addresses_json"]),
             cc_addresses=_parse_json_list(row["cc_addresses_json"]),
+            reply_to_addresses=_parse_json_list(row["reply_to_addresses_json"]),
             date_header=_optional_text(row["date_header"]),
             sent_at=_optional_instant(row["sent_at"]),
             body_text=_optional_text(row["body_text"]),

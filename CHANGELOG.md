@@ -99,6 +99,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `pw mail threads`, `pw mail thread show` and `pw mail analysis` are read-only local views.
   `pw mail messages` and `pw mail show` now show the thread and the stored analysis category.
 
+- Durable reply drafts (ADR-0022): `pw mail draft create MESSAGE` writes a local reply draft with
+  the configured model, `pw mail drafts` / `pw mail draft show` inspect it, and
+  `pw mail draft edit DRAFT` changes its subject and/or body. A draft is local content: there is no
+  SMTP client, no approval, no `ActionRequest` and no send path anywhere in this phase.
+- Deterministic reply addressing: `Reply-To` is parsed with the stdlib address parser, persisted
+  on `mail_messages` (default `[]`, so existing rows are untouched) and preferred over `From`; the
+  resolver extracts strict mailboxes in header order and refuses a message with no usable address
+  before any model call. The reply subject is a pure function that preserves an existing `Re:`
+  prefix and never accumulates `Re: Re:`.
+- Explicit knowledge context: personal knowledge reaches a draft only when the user supplies
+  `--context-query`, and the single call into the index sits behind that guard — a message asking
+  to "search all my files" produces zero searches and zero evidence. Evidence reuses the existing
+  bounded `GroundedContext` boundary, `used_source_ids` is validated against exactly the supplied
+  ids (an unsupplied `S999` refuses the draft), and only identity and location are stored in
+  `mail_draft_sources` — never the excerpt and never a filesystem path.
+- Closed draft schema and local provenance: the model returns `body`, `used_source_ids` and
+  `needs_user_input` and nothing else, so it cannot address the message, name the thread, invent a
+  personal fact or send anything; unsupported personal facts come back as open questions instead
+  of prose. Each draft records an audit fingerprint of the prompt/schema versions, recipients,
+  subject, thread context, query and supplied evidence identity.
+- Optimistic draft editing: `UPDATE … WHERE id = ? AND version = ?` with `StaleMailDraftUpdate` on
+  a mismatch, a version bump and `origin = user_edited` on success, and recipients and generation
+  provenance preserved. Reading and editing need no provider at all, and nothing in the daemon,
+  the event worker or the sync path can create a draft.
+
 ## [0.4.0] - 2026-09-20
 
 Phase 4 (in progress): a model boundary the rest of the project can trust, and natural-language

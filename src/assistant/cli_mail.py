@@ -1,16 +1,20 @@
-"""`pw mail` — inbound mail inspection, analysis and an explicit sync (ADR-0020, ADR-0021).
+"""`pw mail` — inbound mail inspection, analysis, drafts and an explicit sync.
 
 Configuration and local state are shown without a network call: `pw mail accounts` reports which
 accounts exist and whether a credential is present (never the credential), `pw mail status`
 reads the stored cursors, `pw mail messages` / `pw mail show` read stored messages, and
 `pw mail threads`, `pw mail thread show` and `pw mail analysis` read the stored thread graph and
-the stored analysis. None of those calls a model or contacts a server.
+the stored analysis (ADR-0021). `pw mail drafts`, `pw mail draft show` and `pw mail draft edit`
+read and edit stored reply drafts (ADR-0022). None of those calls a model or contacts a server.
 
 `pw mail sync` is the only command here that talks to a server, and it says so in its help text:
-it connects to the configured IMAP servers and synchronizes mail. There is no command here that
-sends, drafts or answers mail, and none that re-runs an analysis: analyzing is the daemon's
-durable event worker's job, and a command that could trigger it would make model cost a side
-effect of reading a list.
+it connects to the configured IMAP servers and synchronizes mail. `pw mail draft create` is the
+only command here that calls a model, and it does so only because the user asked for a draft to
+be written; its help text says that too. Analyzing is the daemon's durable event worker's job,
+and a command that could trigger it would make model cost a side effect of reading a list.
+
+There is no command here that sends mail. A draft is local content, and this phase has no SMTP,
+no approval and no `ActionRequest`.
 """
 
 from __future__ import annotations
@@ -24,6 +28,11 @@ from rich.table import Table
 
 from assistant import bootstrap
 from assistant.adapters.mail.credentials import available_password
+from assistant.application.mail_draft_context import (
+    DEFAULT_DRAFT_CONTEXT_LIMIT,
+    MAX_DRAFT_CONTEXT_LIMIT,
+)
+from assistant.application.mail_drafts import MailDraftListing, MailDraftResult
 from assistant.application.mail_sync import (
     AccountSyncResult,
     AccountSyncStatus,
@@ -52,6 +61,7 @@ from assistant.domain.mail_analysis import (
     MailThreadMember,
     MailThreadSummary,
 )
+from assistant.domain.mail_draft import MailDraft, MailDraftSource
 from assistant.store.errors import StoreError
 
 mail_app = typer.Typer(
@@ -70,6 +80,9 @@ MAX_SUBJECT_PREVIEW_CHARS = 60
 
 MAX_BODY_PREVIEW_CHARS = 4000
 """How much of a body `pw mail show` prints before saying the rest is in the raw message."""
+
+MAX_DRAFT_LIST = 200
+"""How many drafts one list view may ask for."""
 
 
 def _load_config_or_fail() -> AssistantConfig:
@@ -564,10 +577,218 @@ def _subject_preview(subject: str | None) -> str:
     return collapsed[: MAX_SUBJECT_PREVIEW_CHARS - 1] + "\u2026"
 
 
+@mail_app.command("drafts")
+def mail_drafts(
+    limit: Annotated[int, typer.Option("--limit", help="How many drafts to show.")] = 20,
+) -> None:
+    """List local reply drafts. This never contacts a server or calls a model."""
+    if limit < 1:
+        fail("--limit must be a positive integer")
+    if limit > MAX_DRAFT_LIST:
+        fail(f"--limit must be at most {MAX_DRAFT_LIST}")
+    listed = _run(lambda: _list_drafts(limit))
+    if not listed:
+        console.print("no mail drafts")
+        return
+    table = Table(title="mail drafts")
+    for column in ("ID", "Updated", "To", "Subject", "Origin", "Needs input", "Sources"):
+        table.add_column(column)
+    for entry in listed:
+        draft = entry.draft
+        table.add_row(
+            short_id(draft.id),
+            format_local(draft.updated_at),
+            ", ".join(draft.to_addresses) or "-",
+            _subject_preview(draft.subject),
+            draft.origin.value,
+            str(len(draft.needs_user_input)),
+            str(entry.source_count),
+        )
+    console.print(table)
+    console.print("These are local drafts. Nothing was sent.")
+
+
+async def _list_drafts(limit: int) -> list[MailDraftListing]:
+    clock = bootstrap.system_clock()
+    database = bootstrap.runtime_database(clock)
+    return await bootstrap.mail_draft_service(clock, database).list_drafts(limit=limit)
+
+
+mail_draft_app = typer.Typer(
+    help="Local reply drafts: create, read and edit. Nothing here sends mail.",
+    no_args_is_help=True,
+)
+
+
+@mail_draft_app.command("create")
+def mail_draft_create(
+    reference: Annotated[str, typer.Argument(help="Message id or unique prefix to reply to.")],
+    context_query: Annotated[
+        str | None,
+        typer.Option(
+            "--context-query",
+            help=(
+                "Search your indexed personal sources for this query and let the model use the "
+                "result. Without it, no personal knowledge is read or sent."
+            ),
+        ),
+    ] = None,
+    root: Annotated[
+        str | None,
+        typer.Option("--root", help="Restrict the knowledge search to one storage root."),
+    ] = None,
+    context_limit: Annotated[
+        int,
+        typer.Option(
+            "--context-limit",
+            help=f"How many knowledge excerpts may be used (1..{MAX_DRAFT_CONTEXT_LIMIT}).",
+        ),
+    ] = DEFAULT_DRAFT_CONTEXT_LIMIT,
+) -> None:
+    """Write a reply draft with the configured model. This is not sending."""
+    if root is not None and not (context_query or "").strip():
+        fail("--root requires --context-query; without a query no knowledge is searched")
+    if not 1 <= context_limit <= MAX_DRAFT_CONTEXT_LIMIT:
+        fail(f"--context-limit must be between 1 and {MAX_DRAFT_CONTEXT_LIMIT}")
+    config = _load_config_or_fail()
+    result = _run(lambda: _create_draft(config, reference, context_query, root, context_limit))
+    _print_created_draft(result)
+
+
+async def _create_draft(
+    config: AssistantConfig,
+    reference: str,
+    context_query: str | None,
+    root: str | None,
+    context_limit: int,
+) -> MailDraftResult:
+    clock = bootstrap.system_clock()
+    database = bootstrap.runtime_database(clock)
+    message_id = await bootstrap.mail_repository(database).resolve_message_id(reference)
+    service = bootstrap.mail_draft_writer(config, clock, database)
+    return await service.create_reply_draft(
+        message_id,
+        context_query=context_query,
+        root_id=root,
+        context_limit=context_limit,
+    )
+
+
+def _print_created_draft(result: MailDraftResult) -> None:
+    draft = result.draft
+    console.print(f"[green]draft[/green] {draft.id}")
+    console.print(f"to: {', '.join(draft.to_addresses)}")
+    console.print(f"subject: {draft.subject}")
+    console.print(f"knowledge sources used: {len(result.sources)}")
+    if result.offline_roots:
+        console.print(
+            "offline roots (their content was not used): " + ", ".join(result.offline_roots)
+        )
+    console.print(f"open questions: {len(draft.needs_user_input)}")
+    _print_draft_body(draft)
+    _print_needs_input(draft)
+    _print_sources(result.sources)
+    console.print("[bold]This is a local draft. Nothing was sent.[/bold]")
+
+
+@mail_draft_app.command("show")
+def mail_draft_show(
+    reference: Annotated[str, typer.Argument(help="Draft id or unique prefix.")]
+) -> None:
+    """Show one local draft. This never calls a model."""
+    result, original = _run(lambda: _load_draft(reference))
+    draft = result.draft
+    table = Table(
+        title=f"mail draft {short_id(draft.id)}",
+        show_header=False,
+        title_justify="left",
+    )
+    table.add_row("Draft ID", str(draft.id))
+    table.add_row("Replying to", str(draft.reply_to_message_id))
+    if original is not None:
+        table.add_row("Original subject", original.subject or "-")
+        table.add_row("Originally from", original.from_address or "-")
+    table.add_row("To", ", ".join(draft.to_addresses))
+    table.add_row("Subject", draft.subject)
+    table.add_row("Version", str(draft.version))
+    table.add_row("Origin", draft.origin.value)
+    table.add_row("Created", format_local(draft.created_at))
+    table.add_row("Updated", format_local(draft.updated_at))
+    console.print(table)
+    _print_draft_body(draft)
+    _print_needs_input(draft)
+    _print_sources(result.sources)
+    console.print("[bold]This is a local draft. Nothing was sent.[/bold]")
+
+
+async def _load_draft(reference: str) -> tuple[MailDraftResult, MailMessage | None]:
+    clock = bootstrap.system_clock()
+    database = bootstrap.runtime_database(clock)
+    result = await bootstrap.mail_draft_service(clock, database).get_draft(reference)
+    original = await bootstrap.mail_repository(database).get_message(
+        result.draft.reply_to_message_id
+    )
+    return result, original
+
+
+@mail_draft_app.command("edit")
+def mail_draft_edit(
+    reference: Annotated[str, typer.Argument(help="Draft id or unique prefix.")],
+    subject: Annotated[
+        str | None, typer.Option("--subject", help="Replace the draft subject.")
+    ] = None,
+    body: Annotated[str | None, typer.Option("--body", help="Replace the draft body.")] = None,
+) -> None:
+    """Edit a local draft's subject and/or body. This never sends anything."""
+    if subject is None and body is None:
+        fail("an edit needs --subject or --body")
+    draft = _run(lambda: _edit_draft(reference, subject, body))
+    console.print(
+        f"[green]draft[/green] {draft.id} is now version {draft.version} "
+        f"({draft.origin.value})"
+    )
+    console.print("This is a local draft. Nothing was sent.")
+
+
+async def _edit_draft(reference: str, subject: str | None, body: str | None) -> MailDraft:
+    clock = bootstrap.system_clock()
+    database = bootstrap.runtime_database(clock)
+    service = bootstrap.mail_draft_service(clock, database)
+    return await service.edit_draft(reference, subject=subject, body=body)
+
+
+def _print_draft_body(draft: MailDraft) -> None:
+    console.print("[bold]Body[/bold]")
+    console.print(draft.body_text)
+
+
+def _print_needs_input(draft: MailDraft) -> None:
+    if not draft.needs_user_input:
+        return
+    console.print("[bold]Needs user input[/bold]")
+    for item in draft.needs_user_input:
+        console.print(f"- {item}")
+    console.print(
+        "[dim]The model could not support these from the supplied material; "
+        "answer them in the body rather than letting a draft guess.[/dim]"
+    )
+
+
+def _print_sources(sources: tuple[MailDraftSource, ...]) -> None:
+    if not sources:
+        console.print("Knowledge sources: none (no context query was supplied).")
+        return
+    console.print("[bold]Knowledge sources[/bold]")
+    for position, source in enumerate(sources, start=1):
+        # Resolved locally from the stored provenance; never from model output.
+        console.print(f"[{position}] {source.logical_uri} \u2014 {source.source_span.describe()}")
+
+
 def register(app: typer.Typer) -> None:
     """Register the `pw mail` group on the root app."""
     app.add_typer(mail_app, name="mail")
     mail_app.add_typer(mail_thread_app, name="thread")
+    mail_app.add_typer(mail_draft_app, name="draft")
 
 
 __all__ = ["mail_app", "register"]

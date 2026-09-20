@@ -498,6 +498,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0006_scheduler_notifications.sql",
         "0007_inbound_mail.sql",
         "0008_mail_intelligence.sql",
+        "0009_mail_reply_drafts.sql",
     ]
 
 
@@ -830,3 +831,181 @@ def test_the_mail_analysis_schema_has_nowhere_to_put_an_action() -> None:
         "event_start",
         "other",
     ]
+
+
+DRAFT_MODULES = (
+    "application/mail_drafts.py",
+    "application/mail_draft_context.py",
+    "application/mail_draft_schema.py",
+    "application/mail_draft_prompt.py",
+    "domain/mail_draft.py",
+    "ports/mail_draft_repository.py",
+)
+
+NOTHING_THAT_COULD_SEND = (
+    "smtplib",
+    "sendmail",
+    "email.mime",
+)
+
+
+def test_the_draft_path_cannot_reach_a_transport_or_a_mutation_service() -> None:
+    """Drafting writes drafts. It cannot send, schedule, or change a commitment."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in DRAFT_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                *NOTHING_THAT_COULD_SEND,
+                "assistant.store",
+                "assistant.adapters",
+                "assistant.application.task_service",
+                "assistant.application.calendar_service",
+                "assistant.application.work_service",
+                "assistant.application.planner_service",
+                "assistant.application.scheduler_service",
+                "assistant.application.interpreter",
+                "assistant.application.mail_sync",
+                "assistant.application.event_worker",
+            )
+        )
+        or imported in {"sqlite3", "httpx", "smtplib", "socket"}
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_draft_path_has_no_sending_or_tool_machinery() -> None:
+    forbidden = (
+        "smtplib",
+        "send_mail",
+        "sendmail",
+        "send_message",
+        "tool_registry",
+        "tool_choice",
+        "function_call",
+        "tool_call",
+        "agent_loop",
+        "subprocess",
+        "os.system",
+        "eval(",
+        "exec(",
+    )
+    offenders: list[str] = []
+    for relative in DRAFT_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        offenders.extend(
+            f"{relative} mentions {needle}" for needle in forbidden if needle in text
+        )
+
+    assert not offenders, offenders
+
+
+def test_the_recipient_resolver_cannot_reach_a_model() -> None:
+    """Who a reply goes to is derived from headers. No provider is involved at all."""
+    module = SOURCE_ROOT / "domain" / "mail_draft.py"
+    offenders = [
+        imported
+        for imported in _imported_modules(module)
+        if imported.startswith(
+            ("assistant.ports", "assistant.adapters", "assistant.store", "assistant.application")
+        )
+    ]
+
+    assert not offenders, offenders
+    text = module.read_text(encoding="utf-8")
+    for forbidden in ("ModelPort", "ModelRequest", "chat", "complete("):
+        assert forbidden not in text, forbidden
+
+
+def test_the_draft_schema_has_nowhere_to_put_a_recipient_or_a_send() -> None:
+    from assistant.application.mail_draft_schema import MAIL_REPLY_DRAFT_SCHEMA_V1
+
+    schema = MAIL_REPLY_DRAFT_SCHEMA_V1.schema
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert sorted(schema["properties"]) == ["body", "needs_user_input", "used_source_ids"]
+    assert sorted(schema["required"]) == sorted(schema["properties"])
+
+
+def test_personal_knowledge_is_reachable_only_from_an_explicit_query() -> None:
+    """The one call into the index sits behind `if query is None: return (), ()`.
+
+    Checked structurally, because "no email may trigger a search" is a property of the code's
+    shape, not a promise in a comment.
+    """
+    module = SOURCE_ROOT / "application" / "mail_drafts.py"
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def enclosing_function(node: ast.AST) -> str | None:
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return None
+
+    knowledge_calls = {
+        enclosing_function(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "build"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_knowledge"
+    }
+    assert knowledge_calls == {"_knowledge_evidence"}
+
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_knowledge_evidence"
+    )
+    body = [
+        statement
+        for statement in function.body
+        if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+    ]
+    guard = body[0]
+    assert isinstance(guard, ast.If)
+    assert ast.unparse(guard.test) == "query is None"
+    assert len(guard.body) == 1 and isinstance(guard.body[0], ast.Return)
+
+
+def test_nothing_outside_the_cli_can_create_a_draft() -> None:
+    """No event, no sync round, no schedule and no daemon startup may trigger drafting."""
+    forbidden = ("MailDraftService", "mail_draft_service", "mail_draft_writer", "MailDraft")
+    watched = (
+        "daemon/app.py",
+        "daemon/supervisor.py",
+        "application/event_worker.py",
+        "application/mail_sync.py",
+        "application/mail_event_handler.py",
+        "application/scheduler_service.py",
+        "application/index_sync.py",
+    )
+    offenders = [
+        f"{relative} mentions {needle}"
+        for relative in watched
+        for needle in forbidden
+        if needle in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, offenders
+    assert "mail_draft_writer" in (SOURCE_ROOT / "cli_mail.py").read_text(encoding="utf-8")
+
+
+def test_no_sending_approval_or_action_request_capability_exists() -> None:
+    """The vocabulary of acting on the user's behalf is absent, not merely disabled."""
+    forbidden = {"smtplib", "ActionRequest", "Approval", "Outbox", "send_mail", "ehall"}
+    offenders = [
+        f"{path.relative_to(SOURCE_ROOT)} names {name}"
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for name in _identifiers(path) & forbidden
+    ]
+
+    assert not offenders, offenders

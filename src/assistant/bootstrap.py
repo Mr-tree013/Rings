@@ -36,6 +36,7 @@ from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.mail_context import MailContextBuilder
+from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_event_handler import (
     MAIL_EVENT_TYPE,
     InboundEventDispatcher,
@@ -73,6 +74,7 @@ from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.mail import SqliteMailRepository
+from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
@@ -105,6 +107,11 @@ def mail_repository(database: Database) -> SqliteMailRepository:
 def mail_intelligence_repository(database: Database) -> SqliteMailIntelligenceRepository:
     """Durable mail threads and analyses."""
     return SqliteMailIntelligenceRepository(database)
+
+
+def mail_draft_repository(database: Database) -> SqliteMailDraftRepository:
+    """Durable local reply drafts and their knowledge provenance."""
+    return SqliteMailDraftRepository(database)
 
 
 def raw_mail_store() -> RawMailStore:
@@ -451,6 +458,79 @@ def mail_event_worker(
     )
 
 
+def mail_draft_service(
+    clock: Clock,
+    database: Database,
+    *,
+    knowledge: GroundedContextBuilder | None = None,
+) -> MailDraftService:
+    """Reading and editing stored drafts. Local state only: no provider is constructed.
+
+    Nothing in the daemon builds this service, so no mail, no event and no schedule can create a
+    draft — or read the personal index — on its own.
+    """
+    return _mail_draft_service(clock, database, None, knowledge=knowledge)
+
+
+def mail_draft_writer(
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
+    knowledge: GroundedContextBuilder | None = None,
+) -> MailDraftService:
+    """The same service, with the configured provider attached so a draft can be written.
+
+    Only `pw mail draft create` builds this, and only because the user asked for a draft.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    return _mail_draft_service(
+        clock,
+        database,
+        StructuredModel(model if model is not None else model_adapter(config)),
+        knowledge=knowledge,
+        config=config,
+        reasoning_effort=settings.reasoning_effort,
+        max_output_tokens=settings.max_output_tokens,
+    )
+
+
+def _mail_draft_service(
+    clock: Clock,
+    database: Database,
+    model: StructuredModel | None,
+    *,
+    knowledge: GroundedContextBuilder | None = None,
+    config: AssistantConfig | None = None,
+    reasoning_effort: str = "low",
+    max_output_tokens: int = 4096,
+) -> MailDraftService:
+    mail = mail_repository(database)
+    intelligence = mail_intelligence_repository(database)
+    return MailDraftService(
+        mail,
+        intelligence,
+        mail_draft_repository(database),
+        MailContextBuilder(
+            mail,
+            intelligence,
+            planning_timezone=(
+                None if config is None or config.planning is None else config.planning.timezone
+            ),
+        ),
+        knowledge if knowledge is not None else grounded_context_builder(clock, database),
+        model,
+        clock,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=max_output_tokens,
+    )
+
+
 def grounded_context_builder(
     clock: Clock, database: Database
 ) -> GroundedContextBuilder:
@@ -531,6 +611,9 @@ __all__ = [
     "knowledge_indexer",
     "mail_analysis_available",
     "mail_context_builder",
+    "mail_draft_repository",
+    "mail_draft_service",
+    "mail_draft_writer",
     "mail_event_handler",
     "mail_event_worker",
     "mail_intelligence_repository",
