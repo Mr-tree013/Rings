@@ -252,7 +252,7 @@ async def test_entries_are_scoped_per_root(
         clock,
         snapshot(entry("shared/report.pdf")),
         root=StorageRoot(root_id="university", kind=StorageKind.LOCAL, label="University"),
-        physical_path="/home/mrtree/University",
+        physical_path="/home/user/University",
     )
 
     vault_entry = await repository.get_by_location(

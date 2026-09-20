@@ -1,5 +1,6 @@
 # Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -17,15 +18,26 @@ htmlcov/
 # Secrets and credential material — never commit
 .env
 .env.*
+!.env.example
 secrets/
 *.pem
 *.key
+*.gab
 
 # Runtime state (lives in ~/.local/share/growing-assistant, never in the repo)
 state/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Growing Assistant runtime artifacts, wherever a data root happens to sit
+mail/raw/
+web/snapshots/
+ehall/nju-profile/
 
 # Personal Vault must stay physically outside the repository (ADR-0004)
 vault/
@@ -36,4 +48,3 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-
