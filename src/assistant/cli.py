@@ -29,6 +29,7 @@ from rich.table import Table
 from assistant import (
     __version__,
     bootstrap,
+    cli_ask,
     cli_commitments,
     cli_interpreter,
     cli_model,
@@ -81,6 +82,7 @@ cli_commitments.register(app)
 cli_scheduler.register(app)
 cli_model.register(app)
 cli_interpreter.register(app)
+cli_ask.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -151,7 +153,9 @@ def status() -> None:
     table = Table(title="growing-assistant status", show_header=False, title_justify="left")
     table.add_row("version", __version__)
     table.add_row("core", "durable event pipeline (ingest, claim, retry, dead letter)")
-    table.add_row("knowledge", "configured storage + per-root full-text index")
+    table.add_row(
+        "knowledge", "configured storage + per-root full-text index + grounded answers"
+    )
     table.add_row("commitments", "durable tasks, deadlines, calendar events, plan blocks, work")
     table.add_row("planning", "deterministic weekly proposals (review before apply)")
     table.add_row(
@@ -159,6 +163,7 @@ def status() -> None:
     )
     table.add_row("interpreter", "natural-language command preview (never executes)")
     table.add_row("execution", "structured CLI confirmation required")
+    table.add_row("agent execution", "[yellow]not implemented[/yellow]")
     table.add_row(
         "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
     )

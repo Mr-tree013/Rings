@@ -182,7 +182,12 @@ class KnowledgeDocumentState:
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeSearchHit:
-    """One content hit inside one root's index."""
+    """One content hit inside one root's index.
+
+    `snippet` is the short excerpt the search CLI shows; `content` is the indexed chunk itself,
+    which is what a source-grounded answer must quote from. Both come from the same row: the
+    index never has to re-read the original file to explain itself.
+    """
 
     entry_id: UUID
     chunk_id: UUID
@@ -192,6 +197,7 @@ class KnowledgeSearchHit:
     snippet: str
     source_span: SourceSpan
     rank: float
+    content: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +209,26 @@ class MergedKnowledgeHit:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeContextHit:
+    """A content hit with the root it came from and its full indexed text."""
+
+    root_id: str
+    entry_id: UUID
+    chunk_id: UUID
+    ordinal: int
+    logical_uri: StorageUri
+    source_span: SourceSpan
+    content: str
+    score: float
+
+    def __post_init__(self) -> None:
+        if not self.root_id.strip():
+            raise InvalidKnowledgeDocument("a context hit needs a root id")
+        if not self.content.strip():
+            raise InvalidKnowledgeDocument("a context hit needs indexed content")
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeSearchResult:
     """Everything one search produced, clearly separated by confidence."""
 
@@ -211,6 +237,24 @@ class KnowledgeSearchResult:
     metadata_hits: tuple[CatalogEntry, ...]
     offline_roots: tuple[str, ...]
     identity_mismatches: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeContextSearchResult:
+    """A search whose content hits carry their indexed text, for answer grounding.
+
+    `metadata_hits` are file-name matches with no readable text; they are useful as a hint and
+    are never evidence for what a document says. `offline_roots` names roots whose content could
+    not be searched at all.
+    """
+
+    query: str
+    content_hits: tuple[KnowledgeContextHit, ...]
+    metadata_hits: tuple[CatalogEntry, ...]
+    offline_roots: tuple[str, ...]
+    identity_mismatches: tuple[str, ...]
+    derived_queries: tuple[str, ...] = ()
+    """The queries actually issued, in order: the question itself, then any keyword fallback."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +278,8 @@ __all__ = [
     "ExtractedChunk",
     "ExtractedDocument",
     "ExtractorInfo",
+    "KnowledgeContextHit",
+    "KnowledgeContextSearchResult",
     "KnowledgeDocumentState",
     "KnowledgeIndexRunResult",
     "KnowledgeIndexStatus",

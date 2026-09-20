@@ -475,3 +475,81 @@ def test_no_migration_was_added_for_this_phase() -> None:
 
     assert migrations[-1] == "0006_scheduler_notifications.sql"
     assert not [name for name in migrations if name.startswith("0007")]
+
+
+GROUNDED_MODULES = (
+    "application/grounded_answer.py",
+    "application/grounded_context.py",
+    "application/grounded_answer_schema.py",
+    "application/grounded_answer_prompt.py",
+)
+
+
+def test_the_grounded_answer_path_cannot_reach_a_mutation_service() -> None:
+    """Knowledge answers are read-only: no service that could change anything is imported."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in GROUNDED_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.store",
+                "assistant.adapters",
+                "assistant.application.task_service",
+                "assistant.application.calendar_service",
+                "assistant.application.work_service",
+                "assistant.application.planner_service",
+                "assistant.application.scheduler_service",
+                "assistant.application.interpreter",
+                "sqlite3",
+                "httpx",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_grounded_answer_path_has_no_tool_or_execution_machinery() -> None:
+    forbidden = (
+        "tool_registry",
+        "tool_choice",
+        "function_call",
+        "tool_call",
+        "agent_loop",
+        "subprocess",
+        "os.system",
+    )
+    offenders: list[str] = []
+    for relative in GROUNDED_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        offenders.extend(
+            f"{relative} mentions {needle}" for needle in forbidden if needle in text
+        )
+
+    assert not offenders, offenders
+
+
+def test_source_metadata_is_never_taken_from_model_output() -> None:
+    """Citations carry ids only; paths, pages and lines are resolved from local evidence."""
+    parser = (SOURCE_ROOT / "application" / "grounded_answer.py").read_text(encoding="utf-8")
+
+    assert "logical_uri" not in parser
+    assert "page_number" not in parser
+    assert "line_start" not in parser
+    schema = (
+        SOURCE_ROOT / "application" / "grounded_answer_schema.py"
+    ).read_text(encoding="utf-8")
+    for forbidden in ("logical_uri", "page_number", "line_start", "root_id", "filename"):
+        assert forbidden not in schema
+
+
+def test_the_grounded_answer_path_does_not_read_credentials_or_the_environment() -> None:
+    offenders = [
+        relative
+        for relative in GROUNDED_MODULES
+        if "os.environ" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        or "DEEPSEEK" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, offenders

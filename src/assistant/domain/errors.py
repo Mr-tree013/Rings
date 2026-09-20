@@ -545,6 +545,26 @@ class InterpreterSemanticError(DomainError):
     """
 
 
+class InvalidGroundedAnswer(DomainError):
+    """A grounded-answer value was built with values that break its invariants."""
+
+
+class GroundedAnswerInputTooLong(DomainError):
+    """The question is longer than the grounded-answer path accepts."""
+
+
+class GroundedAnswerSemanticError(DomainError):
+    """A schema-valid grounded answer is not a usable answer."""
+
+
+class GroundedAnswerInvalidCitation(GroundedAnswerSemanticError):
+    """An answer cited a source that was not supplied in the exact model request.
+
+    A subclass of the semantic error because it *is* one: the answer was well formed and still
+    unusable, and repairing it is not an option.
+    """
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -567,6 +587,9 @@ __all__ = [
     "EventNotFound",
     "FileChangedDuringExtraction",
     "Fts5Unavailable",
+    "GroundedAnswerInputTooLong",
+    "GroundedAnswerInvalidCitation",
+    "GroundedAnswerSemanticError",
     "InterpreterInputTooLong",
     "InterpreterInvalidReference",
     "InterpreterSemanticError",
@@ -578,6 +601,7 @@ __all__ = [
     "InvalidDeadline",
     "InvalidEventClaim",
     "InvalidEventTransition",
+    "InvalidGroundedAnswer",
     "InvalidInboundEvent",
     "InvalidInterpretationResult",
     "InvalidKnowledgeDocument",

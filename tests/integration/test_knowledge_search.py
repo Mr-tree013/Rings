@@ -207,3 +207,73 @@ async def test_snippets_are_bounded(wiring: Wiring, tmp_path: Path) -> None:
     for merged in result.content_hits:
         assert len(merged.hit.snippet) <= 310
 
+
+async def test_context_search_returns_full_chunk_text_with_its_root(
+    wiring: Wiring, tmp_path: Path
+) -> None:
+    """The grounded-answer read path: the indexed chunk itself, plus the root it came from."""
+    await _prepare_two_roots(wiring, tmp_path)
+
+    result = await wiring.search.search_context("alpha", limit=10)
+    again = await wiring.search.search_context("alpha", limit=10)
+
+    assert [str(hit.logical_uri) for hit in result.content_hits] == [
+        "local://university/notes/compilers.md",
+        "vault://archive-main/courses/alpha-notes.md",
+    ]
+    assert [hit.root_id for hit in result.content_hits] == ["university", "archive-main"]
+    assert all("alpha" in hit.content for hit in result.content_hits)
+    assert result.derived_queries == ("alpha",)  # a keyword matches verbatim, no fallback
+    assert [hit.chunk_id for hit in result.content_hits] == [
+        hit.chunk_id for hit in again.content_hits
+    ]
+
+
+async def test_context_search_answers_a_natural_language_question(
+    wiring: Wiring, tmp_path: Path
+) -> None:
+    """A whole sentence misses as a phrase, so the same question is searched as keywords."""
+    local = tmp_path / "documents" / "university"
+    _write(
+        local / "notes" / "notice.md",
+        "Registration matters here.\nThe registration deadline is October 23.\n",
+    )
+    await wiring.catalog_service.scan_local(
+        root_id="university", label="University", path=local
+    )
+    await wiring.indexer.index_root("university")
+
+    result = await wiring.search.search_context(
+        "What is the registration deadline for my course?", limit=5
+    )
+
+    assert [str(hit.logical_uri) for hit in result.content_hits] == [
+        "local://university/notes/notice.md"
+    ]
+    assert "October 23" in result.content_hits[0].content
+    assert result.derived_queries[0] == (
+        "What is the registration deadline for my course?"
+    )
+    assert result.derived_queries[1:] == ("registration", "deadline", "course")
+
+
+async def test_context_search_keyword_fallback_stays_deterministic(
+    wiring: Wiring, tmp_path: Path
+) -> None:
+    local = tmp_path / "documents" / "university"
+    _write(local / "notes" / "notice.md", "the registration deadline is October 23\n")
+    _write(local / "notes" / "other.md", "an unrelated note about deadlines\n")
+    await wiring.catalog_service.scan_local(
+        root_id="university", label="University", path=local
+    )
+    await wiring.indexer.index_root("university")
+
+    first = await wiring.search.search_context("when is the registration deadline?", limit=5)
+    second = await wiring.search.search_context(
+        "when is the registration deadline?", limit=5
+    )
+
+    assert [hit.chunk_id for hit in first.content_hits] == [
+        hit.chunk_id for hit in second.content_hits
+    ]
+    assert first.derived_queries == second.derived_queries

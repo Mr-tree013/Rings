@@ -13,13 +13,17 @@ with Reciprocal Rank Fusion over positions.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
 from assistant.domain.catalog import CatalogRoot
 from assistant.domain.errors import InvalidVaultManifest, VaultNotInitialized
 from assistant.domain.knowledge import (
+    KnowledgeContextHit,
+    KnowledgeContextSearchResult,
     KnowledgeSearchHit,
     KnowledgeSearchResult,
     MergedKnowledgeHit,
@@ -35,6 +39,64 @@ RRF_K = 60
 MAX_SEARCH_LIMIT = 100
 CANDIDATE_MULTIPLIER = 2
 """Per-root candidates fetched before fusion, so the merged top-N has enough to choose from."""
+
+KEYWORD_MIN_CHARS = 3
+"""Shortest token worth searching: the index's trigram tokenizer cannot match less."""
+
+MAX_KEYWORD_TOKENS = 8
+"""How many tokens the deterministic fallback may search, in question order."""
+
+_KEYWORD_STOPWORDS = frozenset(
+    (
+        "about", "after", "again", "against", "all", "also", "and", "any", "are", "because",
+        "been", "before", "being", "between", "both", "but", "can", "could", "did", "does",
+        "doing", "done", "during", "each", "few", "for", "from", "further", "had", "has",
+        "have", "having", "how", "into", "its", "itself", "just", "like", "made", "make",
+        "many", "more", "most", "much", "must", "not", "now", "off", "once", "only", "other",
+        "our", "out", "over", "own", "same", "should", "some", "such", "than", "that", "the",
+        "their", "them", "then", "there", "these", "they", "this", "those", "through",
+        "under", "until", "very", "was", "were", "what", "when", "where", "which", "while",
+        "who", "whom", "why", "will", "with", "would", "you", "your", "yours",
+    )
+)
+"""Function words a question carries but a document rarely repeats meaningfully."""
+
+
+def derive_keyword_tokens(query: str) -> tuple[str, ...]:
+    """Derive deterministic search tokens from plain text.
+
+    Retrieval has to survive a natural-language question. The index matches phrases, so the
+    whole sentence is tried first; when that finds nothing, these tokens are searched
+    individually. The derivation is local, fixed and model-free: lowercase, split on anything
+    that is not a letter or digit, drop stopwords and anything shorter than the index's trigram
+    minimum, deduplicate, and keep the question's own order.
+    """
+    words = re.findall(r"[^\W_]+", query.lower())
+    tokens: list[str] = []
+    for word in words:
+        if len(word) < KEYWORD_MIN_CHARS or word in _KEYWORD_STOPWORDS:
+            continue
+        if word not in tokens:
+            tokens.append(word)
+        if len(tokens) == MAX_KEYWORD_TOKENS:
+            break
+    return tuple(tokens)
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectedRankings:
+    """One pass over the target roots: their rankings, plus what could not be searched."""
+
+    rankings: tuple[tuple[str, list[KnowledgeSearchHit]], ...]
+    offline_roots: tuple[str, ...]
+    identity_mismatches: tuple[str, ...]
+
+
+def _validate_query(query: str, limit: int) -> None:
+    if not query.strip():
+        raise ValueError("query must not be blank")
+    if not 1 <= limit <= MAX_SEARCH_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_SEARCH_LIMIT}")
 
 
 def reciprocal_rank_fusion(
@@ -85,12 +147,88 @@ class KnowledgeSearchService:
         Raises:
             ValueError: the query is blank, or the limit is outside 1..100.
         """
-        if not query.strip():
-            raise ValueError("query must not be blank")
-        if not 1 <= limit <= MAX_SEARCH_LIMIT:
-            raise ValueError(f"limit must be between 1 and {MAX_SEARCH_LIMIT}")
+        _validate_query(query, limit)
+        collected = await self._collect((query,), root_id=root_id, limit=limit)
+        metadata_hits = await self._catalog.search_metadata(
+            query, limit=limit, root_id=root_id, include_missing=False
+        )
+        return KnowledgeSearchResult(
+            query=query,
+            content_hits=tuple(
+                reciprocal_rank_fusion(
+                    [hits for _, hits in collected.rankings], limit=limit, k=self._rrf_k
+                )
+            ),
+            metadata_hits=tuple(metadata_hits),
+            offline_roots=collected.offline_roots,
+            identity_mismatches=collected.identity_mismatches,
+        )
+
+    async def search_context(
+        self, query: str, *, root_id: str | None = None, limit: int = 8
+    ) -> KnowledgeContextSearchResult:
+        """Search content, returning each fused hit's full indexed text and its root.
+
+        This is the read path a source-grounded answer uses: it needs the chunk the index
+        actually holds, not a snippet, and it needs to say which root the chunk came from.
+        Metadata-only matches are returned separately because they are not evidence.
+
+        A natural-language question is tried verbatim first; if that phrase matches nothing, the
+        same question is searched as its own keywords. Both steps are local and deterministic —
+        no model writes, expands or rewrites a query.
+
+        Raises:
+            ValueError: the query is blank, or the limit is outside 1..100.
+        """
+        _validate_query(query, limit)
+        cleaned = query.strip()
+        collected = await self._collect((cleaned,), root_id=root_id, limit=limit)
+        derived: tuple[str, ...] = (cleaned,)
+        if not any(hits for _, hits in collected.rankings):
+            tokens = derive_keyword_tokens(cleaned)
+            if tokens:
+                fallback = await self._collect(tokens, root_id=root_id, limit=limit)
+                if any(hits for _, hits in fallback.rankings):
+                    collected = fallback
+                    derived = (cleaned, *tokens)
+        root_by_chunk: dict[UUID, str] = {}
+        for root_id_value, hits in collected.rankings:
+            for hit in hits:
+                root_by_chunk.setdefault(hit.chunk_id, root_id_value)
+        merged = reciprocal_rank_fusion(
+            [hits for _, hits in collected.rankings], limit=limit, k=self._rrf_k
+        )
+        content_hits = tuple(
+            KnowledgeContextHit(
+                root_id=root_by_chunk[item.hit.chunk_id],
+                entry_id=item.hit.entry_id,
+                chunk_id=item.hit.chunk_id,
+                ordinal=item.hit.ordinal,
+                logical_uri=item.hit.logical_uri,
+                source_span=item.hit.source_span,
+                content=item.hit.content,
+                score=item.score,
+            )
+            for item in merged
+        )
+        metadata_hits = await self._catalog.search_metadata(
+            query, limit=limit, root_id=root_id, include_missing=False
+        )
+        return KnowledgeContextSearchResult(
+            query=query,
+            derived_queries=derived,
+            content_hits=content_hits,
+            metadata_hits=tuple(metadata_hits),
+            offline_roots=collected.offline_roots,
+            identity_mismatches=collected.identity_mismatches,
+        )
+
+    async def _collect(
+        self, queries: Sequence[str], *, root_id: str | None, limit: int
+    ) -> _CollectedRankings:
+        """Walk the target roots once, keeping each query's ranking and the problems found."""
         roots = await self._target_roots(root_id)
-        rankings: list[list[KnowledgeSearchHit]] = []
+        rankings: list[tuple[str, list[KnowledgeSearchHit]]] = []
         offline: list[str] = []
         mismatches: list[str] = []
         for root in roots:
@@ -103,20 +241,12 @@ class KnowledgeSearchService:
             index = await self._indexes.open(root, create=False)
             if index is None:
                 continue
-            rankings.append(
-                await index.search(
-                    query, limit=limit * self._candidate_multiplier
-                )
-            )
-        metadata_hits = await self._catalog.search_metadata(
-            query, limit=limit, root_id=root_id, include_missing=False
-        )
-        return KnowledgeSearchResult(
-            query=query,
-            content_hits=tuple(
-                reciprocal_rank_fusion(rankings, limit=limit, k=self._rrf_k)
-            ),
-            metadata_hits=tuple(metadata_hits),
+            for query in queries:
+                hits = await index.search(query, limit=limit * self._candidate_multiplier)
+                if hits:
+                    rankings.append((root.root.root_id, hits))
+        return _CollectedRankings(
+            rankings=tuple(rankings),
             offline_roots=tuple(offline),
             identity_mismatches=tuple(mismatches),
         )
@@ -151,4 +281,3 @@ __all__ = [
     "KnowledgeSearchService",
     "reciprocal_rank_fusion",
 ]
-

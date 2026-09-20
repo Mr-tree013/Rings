@@ -21,6 +21,8 @@ from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
 from assistant.application.greedy_planner import GreedyPlanner
+from assistant.application.grounded_answer import GroundedAnswerService
+from assistant.application.grounded_context import GroundedContextBuilder
 from assistant.application.index_sync import IndexSyncService
 from assistant.application.interpreter import InterpreterService
 from assistant.application.interpreter_context import InterpreterContextBuilder
@@ -273,6 +275,33 @@ def structured_model(config: AssistantConfig | None) -> StructuredModel:
     return StructuredModel(model_adapter(config))
 
 
+def grounded_context_builder(
+    clock: Clock, database: Database
+) -> GroundedContextBuilder:
+    """The read-only evidence builder: deterministic search plus the bounded budget."""
+    return GroundedContextBuilder(search_service(clock, database))
+
+
+def grounded_answer_service(
+    context_builder: GroundedContextBuilder,
+    config: AssistantConfig | None,
+    *,
+    model: ModelPort | None = None,
+) -> GroundedAnswerService:
+    """The grounded-answer service over the configured adapter.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    return GroundedAnswerService(
+        context_builder,
+        StructuredModel(model if model is not None else model_adapter(config)),
+        settings,
+    )
+
+
 def interpreter_service(
     database: Database,
     clock: Clock,
@@ -319,6 +348,8 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "grounded_answer_service",
+    "grounded_context_builder",
     "interpreter_service",
     "knowledge_indexer",
     "model_adapter",

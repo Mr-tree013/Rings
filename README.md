@@ -80,6 +80,34 @@ notification、scheduler payload 都不会发送。** 模型给出的 task UUID 
 **尚未实现**：knowledge-grounded answering（RAG）、agent tool loop、conversation memory、
 command execution boundary（把 draft 正式变成执行的边界）、mail/eHall/browser、把 model 接入 daemon。
 
+基于来源的个人知识问答（Phase 4C）：**已实现** `pw ask` —— 只根据你自己已索引的资料回答，
+每句话都必须带 citation，来源路径/页码/行号由本地解析：
+
+```bash
+pw ask "What is the deadline for my SE lab?"
+# Answer
+# The submission deadline is October 23 at 23:59. [S1]
+#
+# Sources
+# [S1] local://university/notice.md - lines 18-31
+# No changes were made.
+```
+
+- Answers are based only on indexed personal sources；检索是本地确定性的（问题原样先查，
+  phrase 不命中时按本地关键词回退；没有模型生成 query、没有 embedding/reranking）。
+- Every answer segment must cite indexed evidence；模型只能引用本次请求里给它的 `S1..Sn`，
+  引用不存在的 id 会被本地拒绝（不会展示成功答案）。
+- Source paths/page/line references are resolved locally；模型永远不会输出 URI/页码/行号。
+- Retrieved excerpts are sent to the configured model provider（会发送问题 + 有上限的正文片段，
+  可能产生费用；每条 chunk 最多 4000 字符、总预算 24000 字符）。task description、WorkSession、
+  Calendar、Notification、Scheduler payload、文件绝对路径都不会发送。
+- Offline archive content cannot be used until connected；offline root 会在输出里提示，不会被
+  当作证据。
+- `pw ask` is read-only；它不修改文件、不写 index、不创建任何 durable state，也不执行命令。
+- `pw search` 仍然是不调用模型的本地搜索。
+**尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
+conversation memory、answer persistence / FactCandidate、web search、mail/eHall/browser。
+
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
 

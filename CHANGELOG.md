@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Source-grounded knowledge answers (ADR-0019): `pw ask "…"` answers only from indexed personal
+  sources, with every answer segment citing evidence the user can check. The command is
+  read-only: it does not modify files, does not write the index, creates no durable state, and
+  executes nothing.
+- Deterministic local retrieval for questions: the question is searched verbatim first, and when
+  that phrase matches nothing it is split locally into its own keywords (stopwords and
+  sub-trigram tokens dropped, deduplicated, in question order) which are searched individually
+  and fused by reciprocal rank. No model writes, expands or reranks a query, and
+  `derived_queries` records exactly what was issued.
+- Bounded evidence context: full indexed chunk text (not snippets) with its logical URI and
+  `SourceSpan`, deduplicated by `(root_id, chunk_id)`, numbered `S1..Sn` in retrieval-rank order,
+  capped per chunk (4000 characters, deterministic prefix with `content_truncated`) and in total
+  (24000 characters). Physical paths are never sent, and neither are task, calendar, work,
+  notification or scheduler payloads.
+- Strict grounded-answer schema: one answered branch (1-12 segments, each citing 1-8 supplied
+  source ids) and one insufficient-evidence branch (no segments, short reason), closed to extra
+  fields, with no place for a path, page, line, confidence or rationale. Every citation is then
+  validated against the exact evidence supplied in that request — an invented `S999` is refused,
+  never repaired.
+- Local source resolution and rendering: the answer is displayed with locally appended citation
+  markers, and the `Sources` section lists only the evidence actually cited, once each, in
+  first-citation order as `[S1] <logical URI> - page N | lines X-Y`.
+- Metadata-only matches and offline roots are reported separately and never treated as evidence:
+  a matching file name is not a statement about a file's contents, and an unplugged vault's
+  content is unavailable rather than guessed. Zero evidence means no provider call at all, and
+  there is no general-knowledge fallback.
+
 ## [0.4.0] - 2026-09-20
 
 Phase 4 (in progress): a model boundary the rest of the project can trust, and natural-language

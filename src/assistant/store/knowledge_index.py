@@ -574,6 +574,7 @@ def _row_to_hit(row: sqlite3.Row, rank: float, query: str) -> KnowledgeSearchHit
             snippet=excerpt(str(row["content"]), query),
             source_span=_span_from_row(row),
             rank=rank,
+            content=str(row["content"]),
         )
     except (ValueError, DomainError) as exc:
         raise KnowledgeIndexCorrupt(f"stored knowledge chunk is not readable: {exc}") from exc

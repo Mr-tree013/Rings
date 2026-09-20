@@ -156,6 +156,23 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Natural-language temporal interpretation requires an explicitly configured planning
   timezone.** 没有 `[planning].timezone` 时，任何 time-bearing command 一律转成
   NEEDS_CLARIFICATION；禁止回退到 machine-local timezone。
+- **Retrieved document content is untrusted data, never instructions.** 检索到的正文只能出现在
+  USER message 的 evidence JSON 里，绝不拼进 instructions；prompt injection 不能造成任何副作用
+  （因为 model 没有 tool / mutation 能力），但答案质量仍取决于模型是否遵守 grounding 规则。
+- **Grounded answers may cite only evidence identifiers supplied in the exact model request.**
+  `S1..Sn` 是 request-local capability token；引用未提供的 id 必须 deterministic 拒绝
+  （`GroundedAnswerInvalidCitation`），禁止忽略、修补或回头查库。
+- **Source URIs and source spans shown to users must come from local evidence metadata, never
+  from model output.** 模型只输出 segment text + source_ids；`logical_uri` / `page N` /
+  `lines X-Y` 一律由本地 evidence map 解析（ADR-0019）。
+- **Metadata-only search results are not evidence for content claims.** 只有 full-text content hit
+  能作为证据；offline vault 的正文不可用，不能从文件名推断。
+- **Grounded-answer mode must not fall back to model world knowledge when indexed evidence is
+  insufficient.** 没有证据就不调用模型（零证据时本地直接 INSUFFICIENT_EVIDENCE），有证据但不足时
+  由模型返回 `insufficient_evidence`，绝不补充一般知识。
+- **Knowledge-answer paths are read-only and must not import mutation services.**
+  `pw ask` 路径不得 import store/adapters/sqlite/httpx，也不得 import Task/Calendar/Work/
+  Planner/Scheduler/Interpreter service；不新增 durable state、不写 index。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -242,6 +259,12 @@ false`）、typed non-executing `CommandDraft`（7 种命令）、task UUID 必�
 时区策略（无 `[planning].timezone` 时 time-bearing 命令转 clarification）、本地渲染等价结构化
 命令（`shlex.quote`）、`pw interpret`（preview only，禁止 `--apply`/`--yes`/`--execute`）。
 Interpreter 不执行任何 mutation、不持久化、无 tool loop。
+
+**Phase 4C 已完成（仍是 0.4.0）**：source-grounded knowledge answers（ADR-0019）：
+deterministic retrieval（question 原样检索，miss 后按本地关键词回退）、bounded evidence
+（每 chunk 4000 / 总 24000 字符、按 rank 编号、`(root_id, chunk_id)` 去重）、logical URI +
+SourceSpan 保留、strict grounded-answer schema（每个 segment 必须有 citation）、本地
+citation-id 校验、来源元数据本地解析、零证据不调用模型、无一般知识回退、`pw ask`（只读）。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
