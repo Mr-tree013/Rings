@@ -1470,6 +1470,10 @@ class ConversationError(DomainError):
     """Base class for every conversation-runtime failure."""
 
 
+class RecurringRuleNotFound(DomainError):
+    """No such weekly recurring rule."""
+
+
 class InvalidConversationThread(ConversationError):
     """A thread would be stored in a state the domain does not allow."""
 
@@ -1714,6 +1718,7 @@ __all__ = [
     "PlaybookSourceIntegrityError",
     "PlaybookSourceNotEligible",
     "PlaybookSourceUnsupported",
+    "RecurringRuleNotFound",
     "RestoreDestinationRejected",
     "ScheduledJobNotFound",
     "StaleCaseUpdate",

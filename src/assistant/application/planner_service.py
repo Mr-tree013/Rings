@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from assistant.application.planning_availability import generate_availability
 from assistant.application.planning_effort import compute_remaining_effort
 from assistant.application.planning_fingerprint import planning_fingerprint
+from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.domain.config import PlanningConfig
 from assistant.domain.errors import (
     PlanningNotConfigured,
@@ -55,12 +56,14 @@ class PlannerService:
         clock: Clock,
         *,
         max_attempts: int = MAX_PLANNING_ATTEMPTS,
+        recurring: RecurringCalendarService | None = None,
     ) -> None:
         self._planning = planning
         self._planner = planner
         self._config = config
         self._clock = clock
         self._max_attempts = max(1, max_attempts)
+        self._recurring = recurring
 
     @property
     def config(self) -> PlanningConfig | None:
@@ -101,6 +104,23 @@ class PlannerService:
             )
         return self._config
 
+    async def _recurring_busy(
+        self, window: PlanningWindow
+    ) -> tuple[tuple[datetime, datetime], ...]:
+        """Derived weekly commitments inside one window, as busy time (ADR-0036 §6).
+
+        The model never sees this and never chooses it: the deterministic planner is simply told
+        that a class is already taken, so it cannot place a plan block over one.
+        """
+        if self._recurring is None:
+            return ()
+        occurrences = await self._recurring.expand_range(
+            window_start=window.starts_at, window_end=window.ends_at
+        )
+        return tuple(
+            (occurrence.starts_at, occurrence.ends_at) for occurrence in occurrences
+        )
+
     async def create_week_proposal(self, *, next_week: bool = False) -> PlanProposalDetail:
         """Create a proposal for the current (or next) local week."""
         return await self.create_proposal(self.week_window(next_week=next_week))
@@ -120,7 +140,7 @@ class PlannerService:
                 window=window,
                 tasks=tasks,
                 availability=generate_availability(window, config),
-                busy_intervals=busy_intervals(snapshot),
+                busy_intervals=busy_intervals(snapshot, await self._recurring_busy(window)),
                 min_block_minutes=config.min_block_minutes,
                 max_block_minutes=config.max_block_minutes,
                 deadline_buffer_minutes=config.deadline_buffer_minutes,
@@ -274,7 +294,10 @@ def planning_tasks(
     return tuple(tasks), tuple(issues)
 
 
-def busy_intervals(snapshot: PlanningSnapshot) -> tuple[Interval, ...]:
+def busy_intervals(
+    snapshot: PlanningSnapshot,
+    extra: tuple[tuple[datetime, datetime], ...] = (),
+) -> tuple[Interval, ...]:
     """Busy time for planning: calendar events plus *manual* plan blocks, merged.
 
     Deadlines never appear, work sessions never appear, and existing planner blocks are
@@ -282,7 +305,11 @@ def busy_intervals(snapshot: PlanningSnapshot) -> tuple[Interval, ...]:
     """
     return tuple(
         merge_intervals(
-            [(event.starts_at, event.ends_at) for event in snapshot.active_calendar_events]
+            [
+                (occurrence_start, occurrence_end)
+                for occurrence_start, occurrence_end in extra
+            ]
+            + [(event.starts_at, event.ends_at) for event in snapshot.active_calendar_events]
             + [
                 (block.starts_at, block.ends_at)
                 for block in snapshot.active_manual_plan_blocks
