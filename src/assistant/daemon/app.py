@@ -54,14 +54,17 @@ def build_services(
 
     `index-sync` keeps derived views current; `scheduler` runs durable reminders and rolling
     replans; `mail-sync` receives inbound mail when at least one account is configured;
-    `event-worker` analyzes that mail — but only when the host can actually analyze it; and
-    `mobile-web` serves the same-LAN control plane when `[mobile] enabled = true`. Each one is its
-    own supervisor, so a crashed web server cannot take the mail pipeline down with it.
+    `web-watch` observes the configured public pages; `mobile-web` serves the same-LAN control
+    plane when `[mobile] enabled = true`; and `event-worker` analyzes what arrived — mail, web
+    changes and pasted text — but only when the host can actually analyze it. Each one is its own
+    supervisor, so a crashed web server cannot take the mail pipeline down with it.
 
-    The last condition is the important one. A worker that cannot reach a provider would
-    dead-letter every received event, so a host with mail accounts but no usable model keeps
-    receiving mail and accumulating `RECEIVED` events instead. Configuring a model and
-    restarting drains that backlog; nothing is lost in the meantime.
+    The last condition is the important one, and it is about the model rather than about mail. A
+    worker that cannot reach a provider would dead-letter every received event, so a host with no
+    usable model keeps receiving mail, watching pages and storing pasted text while accumulating
+    `RECEIVED` events instead. Configuring a model and restarting drains that backlog; nothing is
+    lost in the meantime, and a machine with no mail account at all still gets its manual input
+    and page changes analyzed.
     """
     services: list[AsyncService] = [
         bootstrap.sync_service(config, clock, database),
@@ -69,10 +72,12 @@ def build_services(
     ]
     if config.mail.enabled_accounts:
         services.append(bootstrap.mail_sync_service(config, clock, database))
-        if bootstrap.mail_analysis_available(config, model=model):
-            services.append(bootstrap.mail_event_worker(config, clock, database, model=model))
+    if config.watchers.enabled_targets:
+        services.append(bootstrap.web_watch_service(config, clock, database))
     if config.mobile.enabled:
         services.append(bootstrap.mobile_web_service(config, clock, database))
+    if bootstrap.mail_analysis_available(config, model=model):
+        services.append(bootstrap.mail_event_worker(config, clock, database, model=model))
     return services
 
 

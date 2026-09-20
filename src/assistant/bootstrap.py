@@ -13,6 +13,8 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
+import httpx
+
 from assistant.adapters.config.toml_config import TomlConfigLoader
 from assistant.adapters.content.registry import SuffixExtractorRegistry
 from assistant.adapters.ehall.executor import EHallCertificateExecutor
@@ -42,6 +44,8 @@ from assistant.adapters.security.tokens import (
 from assistant.adapters.system_clock import SystemClock
 from assistant.adapters.web.app import WebDependencies
 from assistant.adapters.web.server import MobileWebService
+from assistant.adapters.web_watch.http_source import HttpWebSource
+from assistant.adapters.web_watch.snapshot_store import WebSnapshotStore
 from assistant.application.action_execution import ActionExecutionService
 from assistant.application.action_service import ActionService
 from assistant.application.approval_service import ApprovalService
@@ -73,7 +77,16 @@ from assistant.application.mail_send_reconciliation import (
 from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.mail_threading import MailThreadLinker
+from assistant.application.manual_input_service import ManualInputService
 from assistant.application.mobile_auth import MobileAuthService
+from assistant.application.observation_context import ObservationContextBuilder
+from assistant.application.observation_event_handler import (
+    MANUAL_EVENT_TYPE,
+    ObservationInboundEventHandler,
+)
+from assistant.application.observation_event_handler import (
+    WEB_EVENT_TYPE as OBSERVATION_WEB_EVENT_TYPE,
+)
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.playbook_replay import PlaybookReplayRegistry
@@ -84,6 +97,7 @@ from assistant.application.scheduler_service import SchedulerService
 from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.structured_model import StructuredModel
 from assistant.application.task_service import TaskService
+from assistant.application.web_watch import WebWatchService
 from assistant.application.work_service import WorkService
 from assistant.domain.action import ActionType
 from assistant.domain.config import (
@@ -97,14 +111,18 @@ from assistant.domain.config import (
 )
 from assistant.domain.deadline import Deadline
 from assistant.domain.errors import (
+    InvalidAssistantConfig,
     MailConfigurationError,
     ModelCredentialsMissing,
     ModelNotConfigured,
 )
 from assistant.ports.action_executor import ActionExecutor
 from assistant.ports.clock import Clock
+from assistant.ports.event_handler import EventHandler
+from assistant.ports.interval_waiter import IntervalWaiter
 from assistant.ports.mail_source import MailSource
 from assistant.ports.model import ModelPort
+from assistant.ports.web_source import WebSource
 from assistant.store.actions import SqliteActionRepository
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
@@ -117,11 +135,14 @@ from assistant.store.mail import SqliteMailRepository
 from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.mail_send import SqliteMailSendRepository
+from assistant.store.manual_inputs import SqliteManualInputRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.mobile_sessions import SqliteMobileSessionRepository
+from assistant.store.observation_analyses import SqliteObservationAnalysisRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.playbooks import SqlitePlaybookRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
+from assistant.store.web_watch import SqliteWebWatchRepository
 from assistant.store.work import SqliteWorkRepository
 
 
@@ -203,6 +224,112 @@ def playbook_service(clock: Clock, database: Database) -> PlaybookService:
 def action_service(clock: Clock, database: Database) -> ActionService:
     """Read-only views of actions, their approvals and their executions."""
     return ActionService(action_repository(database), clock)
+
+
+def web_snapshot_store() -> WebSnapshotStore:
+    """Content-addressed storage for normalized watcher text (ADR-0029)."""
+    return WebSnapshotStore(AppPaths.resolve().runtime)
+
+
+def web_source() -> HttpWebSource:
+    """The one implementation of `WebSource`: no cookies, no redirects, public hosts only.
+
+    `trust_env=False` is deliberate: an ambient `HTTPS_PROXY` or a CA override in the environment
+    would silently send a watcher somewhere else, and a watcher is supposed to talk to exactly the
+    page the host configured.
+    """
+    return HttpWebSource(
+        lambda: httpx.AsyncClient(trust_env=False),
+        web_snapshot_store(),
+    )
+
+
+def web_watch_repository(database: Database) -> SqliteWebWatchRepository:
+    """Durable watcher state, versioned observations and their event links."""
+    return SqliteWebWatchRepository(database)
+
+
+def web_watch_service(
+    config: AssistantConfig,
+    clock: Clock,
+    database: Database,
+    *,
+    source: WebSource | None = None,
+    waiter: IntervalWaiter | None = None,
+) -> WebWatchService:
+    """The daemon's watcher service over the configured targets.
+
+    Raises:
+        InvalidAssistantConfig: the host configured no enabled watcher targets.
+    """
+    if not config.watchers.enabled_targets:
+        raise InvalidAssistantConfig("no web watcher targets are configured")
+    return WebWatchService(
+        source if source is not None else web_source(),
+        web_watch_repository(database),
+        SqliteEventRepository(database, clock),
+        clock,
+        config.watchers,
+        waiter=waiter if waiter is not None else AsyncioIntervalWaiter(),
+    )
+
+
+def manual_input_repository(database: Database) -> SqliteManualInputRepository:
+    """Durable manual input and its links to the event inbox."""
+    return SqliteManualInputRepository(database)
+
+
+def manual_input_service(clock: Clock, database: Database) -> ManualInputService:
+    """Storing pasted text and queueing it for analysis.
+
+    Composed for the `pw ingest` commands and for nothing else: no worker, no daemon service and no
+    web route can create a manual input on someone's behalf.
+    """
+    return ManualInputService(
+        manual_input_repository(database),
+        SqliteEventRepository(database, clock),
+        clock,
+    )
+
+
+def observation_analysis_repository(
+    database: Database,
+) -> SqliteObservationAnalysisRepository:
+    """Durable analyses of web changes and manual input."""
+    return SqliteObservationAnalysisRepository(database)
+
+
+def observation_context_builder(database: Database) -> ObservationContextBuilder:
+    """The bounded untrusted context a web/manual analysis may see."""
+    return ObservationContextBuilder(
+        web_snapshot_store(), web_watch_repository(database)
+    )
+
+
+def observation_event_handler(
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
+) -> ObservationInboundEventHandler:
+    """The handler that classifies a web change or a manual input. Nothing else.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    return ObservationInboundEventHandler(
+        web_watch_repository(database),
+        manual_input_repository(database),
+        observation_analysis_repository(database),
+        observation_context_builder(database),
+        StructuredModel(model if model is not None else model_adapter(config)),
+        clock,
+        reasoning_effort=settings.reasoning_effort,
+        max_output_tokens=settings.max_output_tokens,
+    )
 
 
 def approval_service(clock: Clock, database: Database) -> ApprovalService:
@@ -798,16 +925,29 @@ def mail_event_worker(
     model: ModelPort | None = None,
     worker_id: str = "event-worker",
 ) -> EventWorker:
-    """The durable worker that turns received mail into analyses.
+    """The durable worker that turns received events into analyses.
+
+    Three event types are dispatched here, one handler each: inbound mail, a change on a watched
+    page, and text a person pasted in. The map is explicit — an unknown event type is dead-lettered
+    rather than silently accepted — and every handler can write exactly one kind of durable state
+    (an analysis), because nothing they import can write another.
 
     Raises:
         ModelNotConfigured: no `[model]` section.
         ModelCredentialsMissing: the environment holds no credential.
     """
-    handler = mail_event_handler(config, clock, database, model=model)
+    handlers: dict[str, EventHandler] = {
+        MAIL_EVENT_TYPE: mail_event_handler(config, clock, database, model=model),
+        OBSERVATION_WEB_EVENT_TYPE: observation_event_handler(
+            config, clock, database, model=model
+        ),
+        MANUAL_EVENT_TYPE: observation_event_handler(
+            config, clock, database, model=model
+        ),
+    }
     return EventWorker(
         SqliteEventRepository(database, clock),
-        InboundEventDispatcher({MAIL_EVENT_TYPE: handler}),
+        InboundEventDispatcher(handlers),
         clock,
         RetryPolicy(),
         worker_id=worker_id,
@@ -991,12 +1131,17 @@ __all__ = [
     "mail_send_status_service",
     "mail_source",
     "mail_sync_service",
+    "manual_input_repository",
+    "manual_input_service",
     "mobile_auth_service",
     "mobile_session_repository",
     "mobile_web_dependencies",
     "mobile_web_service",
     "model_adapter",
     "model_api_key",
+    "observation_analysis_repository",
+    "observation_context_builder",
+    "observation_event_handler",
     "planner_service",
     "planning_repository",
     "playbook_replay_registry",
@@ -1015,6 +1160,10 @@ __all__ = [
     "sync_service",
     "system_clock",
     "task_service",
+    "web_snapshot_store",
+    "web_source",
+    "web_watch_repository",
+    "web_watch_service",
     "work_repository",
     "work_service",
 ]

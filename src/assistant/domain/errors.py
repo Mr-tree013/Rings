@@ -1267,6 +1267,133 @@ class PlaybookCandidateNotTested(DomainError):
         )
 
 
+class InvalidWebTarget(DomainError):
+    """A configured watcher target breaks its invariants (bad id, unusable URL)."""
+
+
+class WebWatchUnsafeUrl(DomainError):
+    """A watcher URL is not something this project is willing to call.
+
+    V1 accepts only `https` URLs with no credentials, no IP-literal host and the default port: a
+    watcher is a fixed public page, not a generic HTTP client.
+    """
+
+    def __init__(self, url: object, reason: str) -> None:
+        self.url = url
+        self.reason = reason
+        super().__init__(f"watcher URL {url!r} is refused: {reason}")
+
+
+class WebWatchUnsafeAddress(DomainError):
+    """A watcher hostname resolved to an address that is not a public one."""
+
+    def __init__(self, host: str, address: str, reason: str) -> None:
+        self.host = host
+        self.address = address
+        self.reason = reason
+        super().__init__(
+            f"watcher host {host!r} resolves to {address!r}, which is {reason}"
+        )
+
+
+class WebWatchRedirectNotAllowed(DomainError):
+    """The server answered with a redirect. Watchers never follow one."""
+
+    def __init__(self, url: str, status: int, location: str | None) -> None:
+        self.url = url
+        self.status = status
+        self.location = location
+        super().__init__(
+            f"watcher target {url!r} answered {status}"
+            + (f" and wants to redirect to {location!r}" if location else "")
+            + "; redirects are not followed — configure the final URL instead"
+        )
+
+
+class WebWatchUnsupportedContentType(DomainError):
+    """A watcher response is not one of the three content types this phase understands."""
+
+    def __init__(self, content_type: object) -> None:
+        self.content_type = content_type
+        super().__init__(
+            f"watcher responses must be text/html, text/plain or application/json "
+            f"(got {content_type!r})"
+        )
+
+
+class WebWatchResponseTooLarge(DomainError):
+    """A watcher response exceeded the configured byte budget while streaming."""
+
+    def __init__(self, url: str, limit: int) -> None:
+        self.url = url
+        self.limit = limit
+        super().__init__(
+            f"the response from {url!r} exceeded {limit} bytes and was abandoned"
+        )
+
+
+class WebWatchRequestFailed(DomainError):
+    """A watcher request failed: a network error, a timeout or an unusable status."""
+
+    def __init__(self, url: str, reason: str) -> None:
+        self.url = url
+        self.reason = reason
+        super().__init__(f"could not fetch watcher target {url!r}: {reason}")
+
+
+class WebObservationNotFound(DomainError):
+    """No web observation exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"web observation {reference} does not exist")
+
+
+class WebTargetNotFound(DomainError):
+    """No configured watcher target has that id."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"no watcher target is configured with id {reference!r}")
+
+
+class InvalidManualInput(DomainError):
+    """Manual input breaks its invariants (blank text, too long, unknown source)."""
+
+
+class ManualInputNotFound(DomainError):
+    """No manual input exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"manual input {reference} does not exist")
+
+
+class InvalidObservationAnalysis(DomainError):
+    """A structured observation analysis breaks its schema or its invariants."""
+
+
+class ObservationAnalysisNotFound(DomainError):
+    """No analysis exists for the requested inbound event."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"no observation analysis exists for {reference}")
+
+
+class ObservationEventLinkMismatch(DomainError):
+    """An observation or manual input is not linked to the event that claims it."""
+
+    def __init__(self, event_id: object, reason: str) -> None:
+        self.event_id = event_id
+        self.reason = reason
+        super().__init__(f"event {event_id} does not name its source: {reason}")
+
+
+class WebSnapshotStorageError(DomainError):
+    """A normalized snapshot could not be written or verified against its content address."""
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1343,10 +1470,12 @@ __all__ = [
     "InvalidMailDraft",
     "InvalidMailMessage",
     "InvalidMailboxState",
+    "InvalidManualInput",
     "InvalidMobileSecurity",
     "InvalidModelRequest",
     "InvalidModelSchema",
     "InvalidNotification",
+    "InvalidObservationAnalysis",
     "InvalidPlanBlock",
     "InvalidPlaybook",
     "InvalidPlaybookCandidate",
@@ -1363,6 +1492,7 @@ __all__ = [
     "InvalidTaskTransition",
     "InvalidTimeInterval",
     "InvalidVaultManifest",
+    "InvalidWebTarget",
     "InvalidWorkSession",
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
@@ -1402,6 +1532,8 @@ __all__ = [
     "ModelTransientError",
     "ModelUnavailable",
     "NotificationNotFound",
+    "ObservationAnalysisNotFound",
+    "ObservationEventLinkMismatch",
     "PermanentEventError",
     "PermanentScheduledJobError",
     "PlanBlockNotActive",
@@ -1439,5 +1571,14 @@ __all__ = [
     "UnsafeStorageRoot",
     "VaultAlreadyInitialized",
     "VaultNotInitialized",
+    "WebObservationNotFound",
+    "WebSnapshotStorageError",
+    "WebTargetNotFound",
+    "WebWatchRedirectNotAllowed",
+    "WebWatchRequestFailed",
+    "WebWatchResponseTooLarge",
+    "WebWatchUnsafeAddress",
+    "WebWatchUnsafeUrl",
+    "WebWatchUnsupportedContentType",
     "WorkSessionNotFound",
 ]

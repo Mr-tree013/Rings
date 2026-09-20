@@ -35,12 +35,14 @@ from assistant import (
     cli_commitments,
     cli_ehall,
     cli_facts,
+    cli_ingest,
     cli_interpreter,
     cli_mail,
     cli_mobile,
     cli_model,
     cli_playbooks,
     cli_scheduler,
+    cli_watch,
 )
 from assistant.adapters.ehall.session import session_state
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
@@ -104,6 +106,8 @@ cli_ehall.register(app)
 cli_mobile.register(app)
 cli_facts.register(app)
 cli_playbooks.register(app)
+cli_watch.register(app)
+cli_ingest.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""

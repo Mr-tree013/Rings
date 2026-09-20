@@ -23,11 +23,17 @@ from assistant.domain.errors import (
     InvalidAssistantConfig,
     InvalidMailMessage,
     InvalidStorageRoot,
+    InvalidWebTarget,
+    WebWatchUnsafeUrl,
 )
 from assistant.domain.mail import validate_account_id
 from assistant.domain.mail_draft import mailbox_address
 from assistant.domain.mobile import MobileBindMode
 from assistant.domain.storage import StorageKind, validate_root_id
+from assistant.domain.web_watch import (
+    validate_target_id,
+    validate_watch_url,
+)
 
 CONFIG_FORMAT_VERSION: Final[int] = 1
 DEFAULT_INDEX_INTERVAL_SECONDS: Final[int] = 300
@@ -59,6 +65,7 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "mail",
         "ehall",
         "mobile",
+        "watchers",
     }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
@@ -108,6 +115,16 @@ MIN_MOBILE_PORT: Final[int] = 1024
 MAX_MOBILE_PORT: Final[int] = 65535
 MOBILE_BIND_MODES: Final[tuple[str, ...]] = ("loopback", "lan")
 _KNOWN_MOBILE_KEYS = frozenset({"enabled", "bind", "port"})
+_KNOWN_WATCHER_KEYS = frozenset(
+    {
+        "poll_interval_seconds",
+        "timeout_seconds",
+        "max_response_bytes",
+        "full_fetch_every",
+        "web",
+    }
+)
+_KNOWN_WEB_TARGET_KEYS = frozenset({"id", "url", "enabled"})
 
 DEFAULT_EHALL_ENABLED: Final[bool] = False
 DEFAULT_EHALL_TIMEOUT_SECONDS: Final[int] = 30
@@ -139,6 +156,22 @@ MAX_MAIL_MAX_MESSAGE_BYTES: Final[int] = 100 * 1024 * 1024
 DEFAULT_MAIL_TIMEOUT_SECONDS: Final[int] = 30
 MIN_MAIL_TIMEOUT_SECONDS: Final[int] = 10
 MAX_MAIL_TIMEOUT_SECONDS: Final[int] = 300
+
+DEFAULT_WATCHER_POLL_SECONDS: Final[int] = 300
+MIN_WATCHER_POLL_SECONDS: Final[int] = 10
+MAX_WATCHER_POLL_SECONDS: Final[int] = 86400
+
+DEFAULT_WATCHER_TIMEOUT_SECONDS: Final[int] = 20
+MIN_WATCHER_TIMEOUT_SECONDS: Final[int] = 1
+MAX_WATCHER_TIMEOUT_SECONDS: Final[int] = 120
+
+DEFAULT_WATCHER_MAX_RESPONSE_BYTES: Final[int] = 2 * 1024 * 1024
+MIN_WATCHER_MAX_RESPONSE_BYTES: Final[int] = 1024
+MAX_WATCHER_MAX_RESPONSE_BYTES: Final[int] = 32 * 1024 * 1024
+
+DEFAULT_WATCHER_FULL_FETCH_EVERY: Final[int] = 24
+MIN_WATCHER_FULL_FETCH_EVERY: Final[int] = 1
+MAX_WATCHER_FULL_FETCH_EVERY: Final[int] = 1000
 
 SUPPORTED_MODEL_PROVIDERS: Final[tuple[str, ...]] = ("deepseek",)
 DEFAULT_MODEL_PROVIDER: Final[str] = "deepseek"
@@ -645,6 +678,79 @@ class MobileConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WebTargetConfig:
+    """One configured public page a watcher may observe.
+
+    The URL is *configuration*, never a model's choice, and it is validated here rather than at
+    fetch time: HTTPS only, no credentials in the URL, no IP-literal host and no explicit port. A
+    watcher is a fixed public page, not a generic HTTP client.
+    """
+
+    id: str
+    url: str
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        try:
+            object.__setattr__(self, "id", validate_target_id(self.id))
+        except InvalidWebTarget as exc:
+            raise InvalidAssistantConfig(str(exc)) from exc
+        try:
+            object.__setattr__(self, "url", validate_watch_url(self.url))
+        except WebWatchUnsafeUrl as exc:
+            raise InvalidAssistantConfig(f"watcher {self.id!r}: {exc.reason}") from exc
+        if not isinstance(self.enabled, bool):
+            raise InvalidAssistantConfig("a watcher target's enabled flag must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class WatchersConfig:
+    """How often configured pages are checked, and what may be fetched."""
+
+    web: tuple[WebTargetConfig, ...] = ()
+    poll_interval_seconds: int = DEFAULT_WATCHER_POLL_SECONDS
+    timeout_seconds: int = DEFAULT_WATCHER_TIMEOUT_SECONDS
+    max_response_bytes: int = DEFAULT_WATCHER_MAX_RESPONSE_BYTES
+    full_fetch_every: int = DEFAULT_WATCHER_FULL_FETCH_EVERY
+
+    def __post_init__(self) -> None:
+        seen: set[str] = set()
+        for target in self.web:
+            if target.id in seen:
+                raise InvalidAssistantConfig(f"duplicate watcher target id {target.id!r}")
+            seen.add(target.id)
+        _validate_range(
+            "watchers.poll_interval_seconds",
+            self.poll_interval_seconds,
+            MIN_WATCHER_POLL_SECONDS,
+            MAX_WATCHER_POLL_SECONDS,
+        )
+        _validate_range(
+            "watchers.timeout_seconds",
+            self.timeout_seconds,
+            MIN_WATCHER_TIMEOUT_SECONDS,
+            MAX_WATCHER_TIMEOUT_SECONDS,
+        )
+        _validate_range(
+            "watchers.max_response_bytes",
+            self.max_response_bytes,
+            MIN_WATCHER_MAX_RESPONSE_BYTES,
+            MAX_WATCHER_MAX_RESPONSE_BYTES,
+        )
+        _validate_range(
+            "watchers.full_fetch_every",
+            self.full_fetch_every,
+            MIN_WATCHER_FULL_FETCH_EVERY,
+            MAX_WATCHER_FULL_FETCH_EVERY,
+        )
+
+    @property
+    def enabled_targets(self) -> tuple[WebTargetConfig, ...]:
+        """The targets the daemon should watch."""
+        return tuple(target for target in self.web if target.enabled)
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantConfig:
     """The whole host configuration."""
 
@@ -657,6 +763,7 @@ class AssistantConfig:
     mail: MailConfig = field(default_factory=MailConfig)
     ehall: EHallConfig = field(default_factory=lambda: EHallConfig())
     mobile: MobileConfig = field(default_factory=lambda: MobileConfig())
+    watchers: WatchersConfig = field(default_factory=lambda: WatchersConfig())
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -698,6 +805,7 @@ class AssistantConfig:
             mail=_parse_mail(data.get("mail")),
             ehall=_parse_ehall(data.get("ehall")),
             mobile=_parse_mobile(data.get("mobile")),
+            watchers=_parse_watchers(data.get("watchers")),
             format_version=format_version,
         )
 
@@ -922,6 +1030,63 @@ def _parse_mobile(value: object) -> MobileConfig:
     if not isinstance(port, int) or isinstance(port, bool):
         raise InvalidAssistantConfig("mobile.port must be an integer")
     return MobileConfig(enabled=enabled, bind=bind.strip(), port=port)
+
+
+def _parse_watchers(value: object) -> WatchersConfig:
+    """Parse `[watchers]`. Each `[[watchers.web]]` URL is validated, never trusted."""
+    if value is None:
+        return WatchersConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[watchers] must be a table")
+    unknown = sorted(set(value) - _KNOWN_WATCHER_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [watchers] keys: {', '.join(unknown)}")
+    entries = value.get("web", ())
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise InvalidAssistantConfig("[[watchers.web]] must be a list of tables")
+    targets: list[WebTargetConfig] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise InvalidAssistantConfig("each [[watchers.web]] entry must be a table")
+        entry_unknown = sorted(set(entry) - _KNOWN_WEB_TARGET_KEYS)
+        if entry_unknown:
+            raise InvalidAssistantConfig(
+                f"unknown watcher target keys: {', '.join(entry_unknown)}"
+            )
+        target_id = entry.get("id")
+        url = entry.get("url")
+        if not isinstance(target_id, str):
+            raise InvalidAssistantConfig("a watcher target needs a string id")
+        if not isinstance(url, str):
+            raise InvalidAssistantConfig("a watcher target needs a string url")
+        enabled = entry.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise InvalidAssistantConfig("a watcher target's enabled flag must be a boolean")
+        targets.append(
+            WebTargetConfig(id=target_id.strip(), url=url.strip(), enabled=enabled)
+        )
+    return WatchersConfig(
+        web=tuple(targets),
+        poll_interval_seconds=_watcher_int(
+            value, "poll_interval_seconds", DEFAULT_WATCHER_POLL_SECONDS
+        ),
+        timeout_seconds=_watcher_int(
+            value, "timeout_seconds", DEFAULT_WATCHER_TIMEOUT_SECONDS
+        ),
+        max_response_bytes=_watcher_int(
+            value, "max_response_bytes", DEFAULT_WATCHER_MAX_RESPONSE_BYTES
+        ),
+        full_fetch_every=_watcher_int(
+            value, "full_fetch_every", DEFAULT_WATCHER_FULL_FETCH_EVERY
+        ),
+    )
+
+
+def _watcher_int(value: Mapping[str, object], key: str, default: int) -> int:
+    raw = value.get(key, default)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise InvalidAssistantConfig(f"watchers.{key} must be an integer")
+    return raw
 
 
 def _parse_ehall(value: object) -> EHallConfig:

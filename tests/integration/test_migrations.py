@@ -100,7 +100,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
 
     assert [migration.version for migration in applied] == [
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012", "0013", "0014",
+        "0010", "0011", "0012", "0013", "0014", "0015",
     ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
@@ -117,6 +117,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
         "0012_mobile_web.sql",
         "0013_learning_facts.sql",
         "0014_playbooks.sql",
+        "0015_inbound_observations.sql",
     ]
 
 
@@ -142,8 +143,234 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
+
+
+def test_upgrade_adds_the_observation_tables(tmp_path: Path, clock: FakeClock) -> None:
+    """0015 adds watcher state, observations, manual input and analyses, preserving old rows."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
+        "0006_scheduler_notifications.sql",
+        "0007_inbound_mail.sql",
+        "0008_mail_intelligence.sql",
+        "0009_mail_reply_drafts.sql",
+        "0010_case_action_approval.sql",
+        "0011_approved_mail_send.sql",
+        "0012_mobile_web.sql",
+        "0013_learning_facts.sql",
+        "0014_playbooks.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    apply_migrations(database, clock=clock, directory=legacy_directory)
+
+    event_id = str(uuid4())
+    with database.connect() as connection:
+        connection.execute(RAW_INSERT, _raw_event(event_id))
+        connection.execute(
+            "INSERT INTO mail_messages (id, account_id, message_id_header, references_json, "
+            "to_addresses_json, cc_addresses_json, reply_to_addresses_json, body_status, "
+            "content_fingerprint, size_bytes, parse_warnings, first_seen_at, last_seen_at) "
+            "VALUES (?, 'smail', '<a@example.edu>', '[]', '[]', '[]', '[]', 'available', ?, "
+            "10, 0, ?, ?)",
+            (str(uuid4()), "a" * 64, NOW, NOW),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0015"]
+    assert {
+        "web_watch_state",
+        "web_observations",
+        "web_observation_event_links",
+        "manual_inputs",
+        "manual_input_event_links",
+        "observation_analyses",
+    } <= _table_names(database)
+    with database.connect() as connection:
+        events = connection.execute("SELECT count(*) AS total FROM inbound_events").fetchone()
+        messages = connection.execute("SELECT count(*) AS total FROM mail_messages").fetchone()
+    assert events["total"] == 1 and messages["total"] == 1
+
+    _assert_observation_constraints(database, event_id=event_id)
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == (
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
+        "0011", "0012", "0013", "0014", "0015",
+    )
+
+
+def _raw_event(event_id: str) -> dict[str, object]:
+    values: dict[str, object] = {
+        "id": event_id,
+        "source": "cli",
+        "external_id": None,
+        "event_type": "local.note",
+        "content": None,
+        "received_at": NOW,
+        "status": "RECEIVED",
+        "attempts": 0,
+        "last_error": None,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    return values
+
+
+def _assert_observation_constraints(database: Database, *, event_id: str) -> None:
+    """§48: the schema refuses a bad hash, a bad status, a bad counter and a dangling reference."""
+    observation_id = str(uuid4())
+    insert_observation = (
+        "INSERT INTO web_observations (id, target_id, url, content_sha256, storage_key, "
+        "previous_observation_id, is_baseline, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    with database.connect() as connection:
+        connection.execute(
+            insert_observation,
+            (
+                observation_id,
+                "course-notices",
+                "https://example.edu/notices",
+                "a" * 64,
+                "web/snapshots/aa/aaa.txt",
+                None,
+                1,
+                NOW,
+            ),
+        )
+        # A baseline cannot claim to replace something; a change must name what it replaced.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_observation,
+                (
+                    str(uuid4()),
+                    "course-notices",
+                    "https://example.edu/notices",
+                    "b" * 64,
+                    "web/snapshots/bb/bbb.txt",
+                    observation_id,
+                    1,
+                    NOW,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_observation,
+                (
+                    str(uuid4()),
+                    "course-notices",
+                    "https://example.edu/notices",
+                    "b" * 64,
+                    "web/snapshots/bb/bbb.txt",
+                    None,
+                    0,
+                    NOW,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_observation,
+                (
+                    str(uuid4()),
+                    "course-notices",
+                    "https://example.edu/notices",
+                    "short",
+                    "web/snapshots/bb/bbb.txt",
+                    None,
+                    1,
+                    NOW,
+                ),
+            )
+        # The state points at real observations and refuses a negative counter.
+        connection.execute(
+            "INSERT INTO web_watch_state (target_id, url, content_sha256, "
+            "latest_observation_id, etag, last_modified, checks_since_full, last_checked_at, "
+            "last_changed_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, 0, ?, NULL, ?)",
+            (
+                "course-notices",
+                "https://example.edu/notices",
+                "a" * 64,
+                observation_id,
+                NOW,
+                NOW,
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                "UPDATE web_watch_state SET checks_since_full = -1 WHERE target_id = ?",
+                ("course-notices",),
+            )
+        # The bridge rows point at real events and real sources.
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                "INSERT INTO web_observation_event_links "
+                "(observation_id, inbound_event_id, linked_at) VALUES (?, ?, ?)",
+                (observation_id, str(uuid4()), NOW),
+            )
+        connection.execute(
+            "INSERT INTO web_observation_event_links "
+            "(observation_id, inbound_event_id, linked_at) VALUES (?, ?, ?)",
+            (observation_id, event_id, NOW),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                "INSERT INTO web_observation_event_links "
+                "(observation_id, inbound_event_id, linked_at) VALUES (?, ?, ?)",
+                (observation_id, event_id, NOW),
+            )
+        # Manual input is a closed source vocabulary with bounded text.
+        connection.execute(
+            "INSERT INTO manual_inputs (id, source, text, content_sha256, created_at) "
+            "VALUES (?, 'qq-forward', 'a note', ?, ?)",
+            (str(uuid4()), "c" * 64, NOW),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                "INSERT INTO manual_inputs (id, source, text, content_sha256, created_at) "
+                "VALUES (?, 'shell', 'a note', ?, ?)",
+                (str(uuid4()), "c" * 64, NOW),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                "INSERT INTO manual_inputs (id, source, text, content_sha256, created_at) "
+                "VALUES (?, 'manual', '   ', ?, ?)",
+                (str(uuid4()), "c" * 64, NOW),
+            )
+        # One analysis per event, with a closed category vocabulary and a bounded summary.
+        connection.execute(
+            "INSERT INTO observation_analyses (id, inbound_event_id, source_kind, "
+            "analyzer_version, input_fingerprint, category, summary, action_candidates_json, "
+            "created_at, updated_at) VALUES (?, ?, 'manual.input.received', 1, ?, 'ignore', "
+            "'nothing to do', '[]', ?, ?)",
+            (str(uuid4()), event_id, "d" * 64, NOW, NOW),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                "INSERT INTO observation_analyses (id, inbound_event_id, source_kind, "
+                "analyzer_version, input_fingerprint, category, summary, "
+                "action_candidates_json, created_at, updated_at) VALUES (?, ?, "
+                "'manual.input.received', 1, ?, 'ignore', 'again', '[]', ?, ?)",
+                (str(uuid4()), event_id, "e" * 64, NOW, NOW),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                "INSERT INTO observation_analyses (id, inbound_event_id, source_kind, "
+                "analyzer_version, input_fingerprint, category, summary, "
+                "action_candidates_json, created_at, updated_at) VALUES (?, ?, "
+                "'manual.input.received', 1, ?, 'urgent', 'x', '[]', ?, ?)",
+                (str(uuid4()), str(uuid4()), "f" * 64, NOW, NOW),
+            )
 
 
 def test_upgrade_adds_the_playbook_tables(tmp_path: Path, clock: FakeClock) -> None:
@@ -213,7 +440,7 @@ def test_upgrade_adds_the_playbook_tables(tmp_path: Path, clock: FakeClock) -> N
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0014"]
+    assert [migration.version for migration in applied] == ["0014", "0015"]
     assert {
         "playbook_candidates",
         "playbook_replay_tests",
@@ -232,7 +459,7 @@ def test_upgrade_adds_the_playbook_tables(tmp_path: Path, clock: FakeClock) -> N
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -632,7 +859,7 @@ def test_upgrade_adds_the_learning_tables(tmp_path: Path, clock: FakeClock) -> N
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0013", "0014"]
+    assert [migration.version for migration in applied] == ["0013", "0014", "0015"]
     assert {"corrections", "fact_candidates", "confirmed_facts"} <= _table_names(database)
     assert "confirmed_facts_current_idx" in _index_names(database)
     with database.connect() as connection:
@@ -647,7 +874,7 @@ def test_upgrade_adds_the_learning_tables(tmp_path: Path, clock: FakeClock) -> N
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -792,7 +1019,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0012", "0013", "0014"]
+    assert [migration.version for migration in applied] == ["0012", "0013", "0014", "0015"]
     assert {"mobile_pairing_tokens", "mobile_sessions"} <= _table_names(database)
     assert {
         "mobile_pairing_tokens_hash_idx",
@@ -809,7 +1036,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012", "0013", "0014",
+        "0010", "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -903,7 +1130,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014"
+        "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"
     ]
     with database.connect() as connection:
         names = {
@@ -928,7 +1155,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1022,7 +1249,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0008", "0009", "0010", "0011", "0012", "0013", "0014"
+        "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"
     ]
     with database.connect() as connection:
         names = {
@@ -1043,7 +1270,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1160,7 +1387,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0009", "0010", "0011", "0012", "0013", "0014"
+        "0009", "0010", "0011", "0012", "0013", "0014", "0015"
     ]
     with database.connect() as connection:
         names = {
@@ -1186,7 +1413,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1318,7 +1545,9 @@ def test_upgrade_adds_the_case_action_approval_tables(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0010", "0011", "0012", "0013", "0014"]
+    assert [migration.version for migration in applied] == [
+        "0010", "0011", "0012", "0013", "0014", "0015"
+    ]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -1342,7 +1571,7 @@ def test_upgrade_adds_the_case_action_approval_tables(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1579,7 +1808,7 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0011", "0012", "0013", "0014"]
+    assert [migration.version for migration in applied] == ["0011", "0012", "0013", "0014", "0015"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -1602,7 +1831,7 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1731,7 +1960,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014"
+        "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"
     ]
     with database.connect() as connection:
         tables = {
@@ -1758,7 +1987,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -1999,7 +2228,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     assert [migration.version for migration in applied] == [
         "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012", "0013", "0014",
+        "0010", "0011", "0012", "0013", "0014", "0015",
     ]
     with database.connect() as connection:
         migrated = connection.execute(
@@ -2065,7 +2294,7 @@ def test_upgrade_from_0001_preserves_existing_events(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -2137,7 +2366,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     assert [migration.version for migration in applied] == [
         "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012",
-        "0013", "0014",
+        "0013", "0014", "0015",
     ]
     with database.connect() as connection:
         event_row = connection.execute(
@@ -2221,7 +2450,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -2278,7 +2507,8 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014"
+        "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012",
+        "0013", "0014", "0015",
     ]
     with database.connect() as connection:
         stored_event = connection.execute(
@@ -2332,7 +2562,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )
 
 
@@ -2371,7 +2601,7 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014"
+        "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"
     ]
     with database.connect() as connection:
         block = connection.execute(
@@ -2431,5 +2661,5 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014",
+        "0011", "0012", "0013", "0014", "0015",
     )

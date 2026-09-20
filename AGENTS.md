@@ -372,6 +372,31 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   playbook 路径不 import `ModelPort` / `StructuredModel` / provider adapter；EventWorker / Scheduler /
   MailAnalysis / MailDispatch / ActionExecution / Interpreter / GroundedAnswer / mobile web 都不能
   import 或调用 playbook service。创建与晋升入口只有 `pw playbook` → `PlaybookService`。
+- **Watcher URLs are explicit configuration, never model-generated.**
+  `[[watchers.web]]` 的 `id`/`url` 是唯一来源：URL 只接受 `https://`、不允许 userinfo、不允许
+  IP-literal host、不允许显式端口；模型/CLI/事件都不能指定 URL，也没有 `pw watch fetch <url>`。
+- **Web watchers are public HTTPS read-only observers, not generic HTTP tools.**
+  没有 cookie、没有认证、没有 JavaScript、没有浏览器、不跟随 redirect（3xx = `WebWatchRedirectNotAllowed`）；
+  fetch 前解析 hostname 并要求**每个** resolved address 都是 public（`is_global`），
+  否则 `WebWatchUnsafeAddress`。响应流式读取并在 `max_response_bytes` 硬停止；
+  只接受 text/html、text/plain、application/json。
+- **Initial watcher fetch establishes a baseline and does not emit a change event.**
+  第一次成功 fetch 只写 snapshot + baseline observation + state（**不发事件**）；只有 normalized content
+  hash 变化才产生 change observation 与一条 `web.page.changed`；configured URL 变化 = 重新建立 baseline。
+- **HTTP validators are optimizations; periodic unconditional fetches preserve correctness.**
+  `checks_since_full < full_fetch_every` 时才可发送 `If-None-Match`/`If-Modified-Since`；达到阈值即强制
+  unconditional GET 并清零计数。永远 304 的服务器**不能**隐藏变化（有测试锁定）。
+- **Web/manual content is untrusted data.**
+  page 文本与粘贴文本都以 quoted JSON 数据进入 prompt，永不拼进 instructions；analysis context
+  不附带 Knowledge / Facts / Tasks / Calendar / mail / Playbooks / Actions，web diff 也**不含 URL**。
+- **Watcher/manual analysis may classify and extract candidates only; it must not mutate commitments, facts, playbooks or actions.**
+  `ObservationInboundEventHandler` 只写 `observation_analyses`（event 状态由 EventWorker 推进）：
+  不建 Task/Deadline/CalendarEvent/Case/ActionRequest/FactCandidate/PlaybookCandidate/Notification，
+  也没有任何 import 能做到（architecture + no-mutation 测试锁定）。schema 里没有放 command/task/url/tool 的字段。
+- **Manual input is persisted before EventInbox bridging.**
+  `pw ingest text` 先写 `manual_inputs` 再幂等 ingest `manual.input.received`（`external_id =
+  manual-input:<uuid>`，content 只含 `manual_input_id` 与 `source`）；两个 crash window 都由每轮 bounded
+  repair 修复。source 只有 `manual` / `qq-forward` / `other` 三个名字，不含可执行语义。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -565,18 +590,41 @@ candidate 只能来自明确 SUCCEEDED 的 run（创建时重新读取 action/ru
 `pw playbook candidates|candidate add|show|test|promote|reject` 与 `pw playbooks|playbook show|retire`。
 **本阶段不做实例化、不做参数化、不执行、不创建 Approval，也无任何 model/后台参与。**
 
+**Phase 8A 已完成（仍是 0.7.0）**：durable web watchers + manual inbound observation（ADR-0029）：
+migration 0015（`web_watch_state` / `web_observations` / `web_observation_event_links` /
+`manual_inputs` / `manual_input_event_links` / `observation_analyses`）、
+`[watchers]` + `[[watchers.web]]` 配置（id grammar + HTTPS-only URL 校验）、
+`WebSource` port + `HttpWebSource`（无 cookie/认证/JS/浏览器、不跟随 redirect、resolver 检查每个
+resolved address 为 public、流式 byte cap、ETag/Last-Modified 仅作优化 + `full_fetch_every` 强制
+unconditional）、stdlib HTML 抽取 + deterministic normalization + `sha256` 内容身份、
+content-addressed snapshot store（`web/snapshots/<prefix>/<sha>.txt`）、baseline 语义（不发事件）、
+change observation + 幂等 `web.page.changed` bridge（含两个 crash window 的 bounded repair）、
+`ManualInput`（text/source/hash）+ `pw ingest text|list|show`（先持久化再 ingest
+`manual.input.received`）、deterministic change context（difflib + 预算）与 bounded manual context、
+closed analysis schema（category / summary / action_candidates，deadline ≠ event-start）、
+`ObservationInboundEventHandler`（web + manual 两型，fingerprint 幂等复用，permanent vs retryable
+model 错误分类）、`observation_analyses` durable 审计、daemon `web-watch` service（target 级隔离）、
+worker 启动条件改为「有可用 model」、`pw watch targets|status|sync|observations|observation show`。
+**本阶段无 Task/Case/Fact/Playbook/Action/Approval/Notification 自动创建，无 generic HTTP/browser
+能力，无模型生成 URL。**
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
 agent / 公网部署与 cloud relay / VPN 集成 / 第三方登录 / 手机推送（APNs/FCM/Web Push）/
 mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
-site watcher / QQ 渠道 / 个人估时学习 / agent tool loop / 多工具只读编排 /
+个人估时学习 / agent tool loop / 多工具只读编排 /
 command execution boundary（`pw interpret --apply` 之类）/ 重复任务与重复事件 /
 embedding 与向量检索 / OCR / Office 文档与压缩包展开 / filesystem watcher 快速路径 /
 移动端执行动作（手机永不执行，执行只在 host 上 `pw action execute`）/
 approval token 之外的动作审批扩展 / Windows Task Scheduler 配置 /
 把 Playbook 实例化成新的 `ActionRequest`（Phase 7B 明确不做）/ playbook 参数化与模板推断 /
-workflow 自动晋升 / 用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（另行评审）。
+workflow 自动晋升 / 用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（另行评审）/
+把 web/manual analysis 的候选自动转成 Task/Case/Action / QQ 协议/客户端自动接入 /
+需要登录、需要 JavaScript 渲染或使用非默认端口的站点（Phase 8A 只观察公开 HTTPS 页面）。
+
+（site watcher 与 QQ 转发文本的**入口**已在 Phase 8A 实现：`[watchers]` + `pw watch`、
+`pw ingest text --source qq-forward`；上一条列的是它们的自动化与扩展部分。）
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
 Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）

@@ -513,6 +513,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0012_mobile_web.sql",
         "0013_learning_facts.sql",
         "0014_playbooks.sql",
+        "0015_inbound_observations.sql",
     ]
 
 
@@ -1983,3 +1984,256 @@ def test_the_web_surface_has_no_playbook_route() -> None:
     text = (SOURCE_ROOT / "adapters" / "web" / "app.py").read_text(encoding="utf-8")
     for forbidden in ("/api/playbooks", "playbook", "Playbook"):
         assert forbidden not in text, forbidden
+
+
+WATCH_MODULES = (
+    "domain/web_watch.py",
+    "domain/manual_input.py",
+    "domain/observation_analysis.py",
+    "ports/web_source.py",
+    "ports/web_watch_repository.py",
+    "ports/manual_input_repository.py",
+    "ports/observation_analysis_repository.py",
+    "ports/content_snapshot_store.py",
+    "store/web_watch.py",
+    "store/manual_inputs.py",
+    "store/observation_analyses.py",
+    "application/web_watch.py",
+    "application/manual_input_service.py",
+    "application/observation_context.py",
+    "application/observation_analysis.py",
+    "application/observation_analysis_prompt.py",
+    "application/observation_analysis_schema.py",
+    "application/observation_event_handler.py",
+    "adapters/web_watch/http_source.py",
+    "adapters/web_watch/snapshot_store.py",
+    "adapters/web_watch/extractor.py",
+    "cli_watch.py",
+    "cli_ingest.py",
+)
+
+HTTP_BOUNDARY_MODULES = (
+    "adapters/web_watch/http_source.py",
+    "adapters/web_watch/snapshot_store.py",
+    "adapters/web_watch/extractor.py",
+)
+"""The only place in the watcher path that may open a connection or read a file."""
+
+WATCH_APPLICATION_MODULES = (
+    "application/web_watch.py",
+    "application/manual_input_service.py",
+    "application/observation_context.py",
+    "application/observation_analysis.py",
+    "application/observation_analysis_prompt.py",
+    "application/observation_analysis_schema.py",
+    "application/observation_event_handler.py",
+)
+
+MUTATION_MODULES = (
+    "assistant.application.task_service",
+    "assistant.application.calendar_service",
+    "assistant.application.planner_service",
+    "assistant.application.scheduler_service",
+    "assistant.application.work_service",
+    "assistant.application.case_service",
+    "assistant.application.action_service",
+    "assistant.application.action_execution",
+    "assistant.application.approval_service",
+    "assistant.application.learning_service",
+    "assistant.application.playbook_service",
+    "assistant.application.mail_drafts",
+    "assistant.application.mail_send_actions",
+    "assistant.application.ehall_certificate",
+)
+"""Services that can change durable state or perform an external side effect."""
+
+
+def test_http_and_sockets_live_only_in_the_watcher_adapter() -> None:
+    """§46: `httpx` and `socket` are the adapter's business, not the core's."""
+    forbidden = ("httpx", "socket", "ssl", "requests", "selenium", "playwright")
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in WATCH_MODULES
+        if relative not in HTTP_BOUNDARY_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden) or imported in set(forbidden)
+    ]
+
+    assert not offenders, offenders
+    adapters = [
+        relative
+        for relative in WATCH_MODULES
+        if relative.startswith("adapters/web_watch/")
+        and any(
+            imported.startswith(("httpx", "socket"))
+            for imported in _imported_modules(SOURCE_ROOT / relative)
+        )
+    ]
+    assert "adapters/web_watch/http_source.py" in adapters
+
+
+def test_the_watch_application_path_reaches_no_store_no_model_adapter_and_no_mutation() -> None:
+    """§46: the application layer speaks to ports, and to nothing that can change the world."""
+    forbidden = (
+        "assistant.store",
+        "assistant.adapters",
+        "sqlite3",
+        "httpx",
+        *MUTATION_MODULES,
+    )
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in WATCH_APPLICATION_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden) or imported in set(forbidden)
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_watch_domain_stays_pure() -> None:
+    """The values are pure: no clock reads, no storage, no framework, no network."""
+    domain_modules = (
+        "domain/web_watch.py",
+        "domain/manual_input.py",
+        "domain/observation_analysis.py",
+    )
+    for relative in domain_modules:
+        path = SOURCE_ROOT / relative
+        text = path.read_text(encoding="utf-8")
+        assert "datetime.now(" not in text, relative
+        for imported in _imported_modules(path):
+            assert not imported.startswith(
+                ("assistant.store", "assistant.adapters", "assistant.application", "sqlite3")
+            ), f"{relative} imports {imported}"
+            assert imported not in {"socket", "httpx", "ssl"}, f"{relative} imports {imported}"
+
+
+def test_a_watcher_url_never_comes_from_a_model() -> None:
+    """§2: the URL is configuration. Nothing in the model path can name a watcher target."""
+    watched = (
+        "application/interpreter.py",
+        "application/interpreter_context.py",
+        "application/grounded_answer.py",
+        "application/mail_event_handler.py",
+        "application/observation_event_handler.py",
+        "application/structured_model.py",
+        "adapters/model/deepseek.py",
+        "ports/model.py",
+    )
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in watched
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(("assistant.adapters.web_watch", "assistant.ports.web_source"))
+    ]
+
+    assert not offenders, offenders
+    # The handler sends a document built from stored content; it has no fetch capability at all.
+    handler = SOURCE_ROOT / "application" / "observation_event_handler.py"
+    assert not _identifiers(handler) & {
+        "fetch",
+        "WebSource",
+        "HttpWebSource",
+        "httpx",
+        "get",
+        "post",
+    }
+
+
+def test_no_generic_http_tool_exists_in_the_watcher_path() -> None:
+    """§9: the interface takes a configured target, never an arbitrary URL from a caller."""
+    banned_identifiers = {
+        "HttpTool",
+        "fetch_url",
+        "fetch_arbitrary_url",
+        "BrowserTool",
+        "open_url",
+        "request_url",
+    }
+    offenders = [
+        f"{_relative(path)} names {name}"
+        for path in _source_modules()
+        for name in _identifiers(path) & banned_identifiers
+    ]
+    assert not offenders, offenders
+    port = (SOURCE_ROOT / "ports" / "web_source.py").read_text(encoding="utf-8")
+    assert "class WebSource(Protocol)" in port
+    assert "def fetch(self, request: WebFetchRequest)" in port
+
+
+def test_observation_analysis_cannot_create_work_or_facts_or_actions() -> None:
+    """§32: one handler, one durable output — and no import that could write another."""
+    handler = _imported_modules(SOURCE_ROOT / "application" / "observation_event_handler.py")
+
+    for imported in handler:
+        assert not imported.startswith(MUTATION_MODULES), imported
+    identifiers = _identifiers(SOURCE_ROOT / "application" / "observation_event_handler.py")
+    for forbidden in (
+        "Task",
+        "Case",
+        "Deadline",
+        "CalendarEvent",
+        "FactCandidate",
+        "ConfirmedFact",
+        "Playbook",
+        "PlaybookCandidate",
+        "ActionRequest",
+        "Approval",
+        "ExecutionRun",
+        "Notification",
+        "ScheduledJob",
+    ):
+        assert forbidden not in identifiers, forbidden
+
+
+def test_background_paths_still_cannot_promote_facts_or_playbooks() -> None:
+    """The new event types add no authority to the workers that process them."""
+    watched = [
+        *BACKGROUND_MODULES,
+        "application/observation_event_handler.py",
+        "application/web_watch.py",
+        "application/manual_input_service.py",
+    ]
+    offenders = [
+        f"{relative} reaches {name}"
+        for relative in watched
+        for name in (
+            _identifiers(SOURCE_ROOT / relative)
+            | {
+                imported.split(".")[-1]
+                for imported in _imported_modules(SOURCE_ROOT / relative)
+            }
+        )
+        if name in PLAYBOOK_IDENTIFIERS
+        or name in FACT_IDENTIFIERS
+        or name in {"learning_service", "playbook_service"}
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_watcher_daemon_service_is_supervised_like_any_other() -> None:
+    """§34: one more service in the list, started only when targets are configured."""
+    app_module = (SOURCE_ROOT / "daemon" / "app.py").read_text(encoding="utf-8")
+    assert "web_watch_service" in app_module
+    assert "config.watchers.enabled_targets" in app_module
+    service = (SOURCE_ROOT / "application" / "web_watch.py").read_text(encoding="utf-8")
+    assert 'name = "web-watch"' in service
+    assert "run_forever" in service
+
+
+def test_the_event_worker_dispatches_exactly_three_event_types() -> None:
+    """Mail, a watched page and pasted text — and an unknown type is still refused."""
+    text = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
+    start = text.index("def mail_event_worker")
+    end = text.index("def mail_draft_service")
+    worker = text[start:end]
+
+    assert "MAIL_EVENT_TYPE" in worker
+    assert "OBSERVATION_WEB_EVENT_TYPE" in worker
+    assert "MANUAL_EVENT_TYPE" in worker
+    dispatcher = (SOURCE_ROOT / "application" / "mail_event_handler.py").read_text(
+        encoding="utf-8"
+    )
+    assert "no handler is registered for event type" in dispatcher

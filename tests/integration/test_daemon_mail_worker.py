@@ -123,17 +123,31 @@ async def test_a_configured_model_starts_the_event_worker(
     ]
 
 
-async def test_the_worker_is_absent_without_mail_accounts(
+async def test_the_worker_starts_without_mail_accounts_once_a_model_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """§31 of Phase 8A: the worker's precondition is a usable model, not a mail account.
+
+    Mail is no longer the only thing that produces events — a watched page and `pw ingest text`
+    do too — so a host with no mail account still needs something to analyze them. Without a model
+    the worker is still absent, and the events simply stay `RECEIVED`.
+    """
     _isolate(monkeypatch, tmp_path)
     clock = bootstrap.system_clock()
     config = replace(await load_config(), model=ModelConfig(), mail=MailConfig())
     database = bootstrap.runtime_database(clock)
 
-    services = build_services(config, clock, database, model=FakeModelAdapter())
+    with_model = build_services(config, clock, database, model=FakeModelAdapter())
+    without_model = build_services(
+        replace(config, model=None), clock, database, model=None
+    )
 
-    assert [service.name for service in services] == ["index-sync", "scheduler"]
+    assert [service.name for service in with_model] == [
+        "index-sync",
+        "scheduler",
+        "event-worker",
+    ]
+    assert [service.name for service in without_model] == ["index-sync", "scheduler"]
 
 
 async def test_a_received_mail_is_analyzed_by_the_daemon(

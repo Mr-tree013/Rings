@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Phase 8A (observation): the assistant can watch a page it was told to watch and can be handed
+text by a person, turning both into durable, versioned observations that feed one bounded
+analysis — without a generic HTTP client, without a browser, and without creating any work.
+
+### Added
+
+- Durable web observation (ADR-0029): `[watchers]` with `[[watchers.web]]` targets, each an id and a
+  fixed HTTPS URL. Only `https://` is accepted, with no credentials, no IP-literal host and no
+  explicit port; the model never chooses a URL, and there is no command that fetches an arbitrary
+  one. Before a request the hostname is resolved and every address must be public — loopback,
+  private, link-local, multicast, reserved and shared carrier-grade space are refused — and
+  redirects are never followed (`304` is the only 3xx accepted).
+- Read-only, bounded fetching: no cookies, no authentication, no JavaScript, no browser (and no use
+  of the eHall Playwright capability), a finite timeout, a streaming `max_response_bytes` cap that
+  abandons a response without writing a snapshot, and three content types (`text/html`,
+  `text/plain`, `application/json`). Deterministic extraction drops `script`, `style` and
+  `noscript`, never fetches a sub-resource, decodes invalid UTF-8 with replacement, and normalizes
+  line by line so the same page always hashes the same; the normalized text is stored
+  content-addressed under `web/snapshots/` and only the relative key reaches the database.
+- Baseline semantics and honest reconciliation: the first successful fetch writes a snapshot and a
+  baseline observation and emits **no** event; only a later content-hash change produces a change
+  observation that names its predecessor, bridged to exactly one `web.page.changed` event whose
+  payload is `{observation_id, target_id}` — never the page. `ETag`/`Last-Modified` are used only
+  as an optimization: every `full_fetch_every` checks forces an unconditional fetch, so a server
+  that answers `304` forever cannot hide a change. Both bridge crash windows are repaired by a
+  bounded round, including rounds with no change at all.
+- Manual input (ADR-0029): `pw ingest text TEXT --source manual|qq-forward|other` stores the text
+  durably first and then queues one `manual.input.received` event naming `{manual_input_id,
+  source}`. `pw ingest list` and `pw ingest show` read it back. The command calls no model and says
+  what may happen next instead.
+- One bounded analysis for both: a deterministic `difflib` change context (`target_id`, previous and
+  current hashes, `added_text`, `removed_text`, `current_excerpt`, capped at 3000/3000/6000 and
+  12000 total) or a quoted manual document (`source`, `input_source`, `text` capped at 12000). No
+  knowledge, facts, tasks, calendar, mail or playbooks are attached, and no URL is ever sent. The
+  closed schema returns only `category`, `summary` and `action_candidates`; a candidate that claims
+  a deadline or an event start must carry the text it was read from or an instant with an explicit
+  offset, and a deadline is never rewritten into an event start.
+- `observation_analyses` is keyed by `inbound_event_id UNIQUE` and stores the analyzer version plus
+  a fingerprint over the versions, the event identity, the source identities and the exact bounded
+  context, so a retried `EventWorker` event reuses its analysis and does not call the provider
+  again. The handler imports no service that could create a task, case, fact, playbook, action or
+  approval, and a no-mutation test proves that only the analysis table grows.
+- `web-watch` as one more supervised daemon service, started only when a target is enabled, with
+  per-target failure isolation. `event-worker` now starts whenever a usable model is configured —
+  manual input and watched pages produce events with no mail account — and without a model the
+  observations and events stay durable and `RECEIVED` rather than being discarded.
+- `pw watch targets|status|sync|observations|observation show`, where only `sync` uses the network
+  and every other view reads local state. Observation output shows hashes, a bounded preview and
+  the analysis, and never a filesystem path.
+
 ## [0.7.0] - 2026-09-20
 
 Phase 7 (learning): the assistant can now remember — about the person, and about the work. Facts

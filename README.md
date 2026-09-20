@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.7.0（可审计的邮件工作流 + 白名单 eHall 事务 + 手机控制面 + 人工确认的事实与 Playbook）
+## 当前状态：v0.7.0（邮件 + eHall + 手机控制面 + 人工确认的事实与 Playbook + 网页/手工观察）
 
 已完成：
 
@@ -491,12 +491,76 @@ pw playbook retire <PLAYBOOK>
 - **审计永远保留**：被拒绝的候选与被退休的 Playbook 都不删除，replay test 逐条追加
   （只保存 contract version、input fingerprint 与 bounded issue codes，不保存 payload 正文）。
 
+网页观察与手工输入（Phase 8A）：**已实现** 「配置好的公开页面 + 你粘贴进来的文本」都会变成
+durable、可版本化的观察，并进入同一套 bounded analysis —— 不引入通用 HTTP 客户端，也不创建任何任务：
+
+```toml
+# ~/.config/growing-assistant/config.toml
+[watchers]
+poll_interval_seconds = 300
+timeout_seconds = 20
+max_response_bytes = 2097152
+full_fetch_every = 24
+
+[[watchers.web]]
+id = "course-notices"
+url = "https://example.edu/notices"
+enabled = true
+```
+
+```bash
+# 观察配置好的页面（只有 sync 会联网）
+pw watch targets
+pw watch sync                 # 单个目标：pw watch sync --target course-notices
+pw watch status
+pw watch observations
+pw watch observation show OBSERVATION
+
+# 把一段文本交给助手（例如转发的 QQ 消息）
+pw ingest text "Forwarded QQ notice..." --source qq-forward
+pw ingest list
+pw ingest show INPUT
+```
+
+要点：
+
+- **URL 只来自配置**：只接受 `https://`，不允许 userinfo、IP-literal host 或显式端口；没有
+  `pw watch fetch <url>` 这样的命令，模型也不能选 URL。fetch 前会解析 hostname 并要求**每个**
+  解析结果都是公网地址（loopback / private / link-local / multicast / reserved / CGNAT 一律拒绝）。
+- **不跟随跳转、不登录、不渲染 JS**：任何 3xx（`304` 除外）都是 `WebWatchRedirectNotAllowed`，
+  用户需要配置最终 URL；没有 cookie、没有认证、没有浏览器（也不使用 eHall 的 Playwright）。
+- **响应有上限**：流式读取，超过 `max_response_bytes` 立即放弃且**不写 snapshot**；只接受
+  `text/html`、`text/plain`、`application/json`，PDF/图片/压缩包不会被下载。
+- **首次抓取只是 baseline**：写入 snapshot + baseline observation + state，**不产生事件**，
+  所以打开 watcher 不会把整站历史当成「新变化」；只有 normalized content hash 变化才产生
+  `web.page.changed`。配置的 URL 改了 = 重新建立 baseline。
+- **HTTP validator 只是优化**：只有 `checks_since_full < full_fetch_every` 时才带
+  `If-None-Match`/`If-Modified-Since`；每满 `full_fetch_every` 次强制完整抓取，因此「永远 304」
+  的服务器藏不住变化。
+- **内容身份是 hash**：HTML 用 stdlib parser 抽取（丢弃 `script`/`style`/`noscript`，不下载任何子资源），
+  CRLF→LF、逐行去尾空格、折叠多余空行后再 `sha256`；文本存在
+  `~/.local/share/growing-assistant/web/snapshots/<prefix>/<sha>.txt`，数据库只存 relative key。
+- **事件只带身份**：`web.page.changed` 的 payload 只有 `{observation_id, target_id}`，
+  `manual.input.received` 只有 `{manual_input_id, source}` —— 页面正文和你粘贴的文本不会进事件表。
+- **手工输入先落库再排队**：`pw ingest text` 先写 `manual_inputs`，再幂等 ingest 事件，然后告诉你
+  「如果配置了 model 且 assistantd 在跑，这段文本可能被发送给 provider 做分类」——它自己**不调用模型**。
+- **分析只做分类与候选**：web/manual 内容都是 untrusted quoted data（prompt 里明确写出），
+  context 只包含 bounded diff 或 bounded 文本，**不附带** Knowledge / Facts / Tasks / mail / Playbooks，
+  也**不含 URL**；输出 schema 只有 category / summary / action_candidates（deadline 与 event-start 分开）。
+  watcher/manual analysis 可能把 bounded 内容发给配置的 model provider，但不会自动创建
+  Task/Case/Action/Approval/Fact/Playbook/Notification。
+- **crash 安全**：observation 先提交、事件后 ingest、link 最后写；两个 crash window 都由每轮 bounded
+  repair 修复（即使这一轮没有任何页面变化）。一个目标失败只影响它自己，daemon 的其它 service 照常运行。
+- **没有 model 时不丢数据**：没有可用 model 时 `event-worker` 不启动，观察与事件保持 durable 的
+  `RECEIVED` 状态，配置好 provider 后会被处理；`web-watch` 只在有 enabled target 时才加入 daemon。
+
 **尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
 公网部署 / cloud relay / VPN / 第三方登录、手机推送（APNs / FCM / Web Push）、
 手机端执行动作（执行只在 host 上发生）、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
 分类结果自动转 Task/Case、事件删除同步（server-side deletion）、attachment materialization、
-QQ 与站点 watcher、个人估时学习、把 Playbook 实例化为新 action（参数化 / 模板推断 / 自动晋升）、
-用已确认事实自动填表或自动注入 model/mail context。
+QQ 协议/客户端自动接入、个人估时学习、把 Playbook 实例化为新 action（参数化 / 模板推断 / 自动晋升）、
+用已确认事实自动填表或自动注入 model/mail context、把 web/manual 分析候选自动转成 Task/Case/Action、
+需要登录或渲染 JavaScript 的站点（Phase 8A 只观察公开 HTTPS 页面）。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
 
