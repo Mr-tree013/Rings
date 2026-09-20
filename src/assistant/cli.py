@@ -39,7 +39,12 @@ from assistant import (
     cli_scheduler,
 )
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
-from assistant.adapters.mail.credentials import available_password as available_mail_password
+from assistant.adapters.mail.credentials import (
+    available_password as available_mail_password,
+)
+from assistant.adapters.mail.credentials import (
+    available_smtp_password,
+)
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
 from assistant.cli_support import console, error_console, fail
 from assistant.domain.catalog import CatalogScanResult
@@ -137,7 +142,12 @@ def _model_diagnostic(config: AssistantConfig) -> tuple[str, str]:
 def _mail_diagnostics(
     config: AssistantConfig,
 ) -> tuple[str, list[tuple[str, str]]]:
-    """Report configured mail accounts and credential presence. Never contacts a server."""
+    """Report configured mail accounts and credential presence. Never contacts a server.
+
+    Inbound and outbound capabilities are reported separately, because an account can legitimately
+    be receive-only. A configured sender without a credential *is* a problem worth failing on: the
+    user asked for something this host cannot do yet.
+    """
     accounts = config.mail.accounts
     if not accounts:
         return "not configured", []
@@ -148,6 +158,15 @@ def _mail_diagnostics(
             continue
         present = available_mail_password(account.id) is not None
         rows.append((account.id, "present" if present else "[red]missing[/red]"))
+        if account.smtp_configured:
+            rows.append(
+                (
+                    f"{account.id} smtp",
+                    "present"
+                    if available_smtp_password(account.id)
+                    else "[red]missing[/red]",
+                )
+            )
     return f"{len(accounts)} configured", rows
 
 
@@ -205,7 +224,7 @@ def status() -> None:
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
         "integrations",
-        "[yellow]not implemented[/yellow] (SMTP sending, web, push, eHall, browser)",
+        "[yellow]not implemented[/yellow] (eHall, browser, web, push)",
     )
     console.print(table)
     console.print(
@@ -295,8 +314,12 @@ def doctor() -> None:
             f"model is configured but {bootstrap.MODEL_API_KEY_ENV} is missing from the "
             "environment"
         )
-    if mail_rows[1] and any("missing" in value for _, value in mail_rows[1]):
-        _fail("a mail account is enabled but its credential is missing from the environment")
+    missing = [label for label, value in mail_rows[1] if "missing" in value]
+    if missing:
+        _fail(
+            "an enabled mail capability has no credential in the environment: "
+            + ", ".join(missing)
+        )
 
     console.print("[green]environment looks usable[/green]")
 

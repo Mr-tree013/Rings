@@ -97,7 +97,7 @@ class ActionService:
 
     async def approval_state_of(self, action: ActionRequest) -> ApprovalState:
         """The approval word for one action, computed from the stored records."""
-        return _approval_state(
+        return approval_state(
             await self._actions.latest_approval(action.id), self._clock.now()
         )
 
@@ -105,14 +105,14 @@ class ActionService:
         approval = await self._actions.latest_approval(action.id)
         return ActionOverview(
             action=action,
-            approval_state=_approval_state(approval, self._clock.now()),
+            approval_state=approval_state(approval, self._clock.now()),
             approval=approval,
             execution=await self._actions.latest_execution(action.id),
             execution_count=await self._actions.count_executions(action.id),
         )
 
 
-def _approval_state(approval: ApprovalRecord | None, now: datetime) -> ApprovalState:
+def approval_state(approval: ApprovalRecord | None, now: datetime) -> ApprovalState:
     """One word for the authority an approval still carries."""
     if approval is None:
         return ApprovalState.NONE
@@ -140,5 +140,6 @@ __all__ = [
     "ActionOverview",
     "ActionService",
     "ApprovalState",
+    "approval_state",
     "execution_summary",
 ]

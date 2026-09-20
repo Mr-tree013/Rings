@@ -42,6 +42,7 @@ from assistant.application.case_service import CaseService
 from assistant.cli_support import console, fail, format_local, short_id
 from assistant.domain.action import ActionRequest
 from assistant.domain.approval import ApprovalChallengeIssued, ApprovalRecord
+from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import (
     ActionExecutionUnknown,
     ActionFingerprintMismatch,
@@ -56,6 +57,7 @@ from assistant.domain.errors import (
     CapabilityUnavailable,
     DomainError,
     InvalidApprovalToken,
+    InvalidAssistantConfig,
 )
 from assistant.store.errors import StoreError
 
@@ -101,6 +103,14 @@ def _run[T](action: Callable[[], Coroutine[Any, Any, T]]) -> T:
         fail(str(exc))
     except StoreError as exc:
         fail(f"action store failure: {exc}")
+
+
+def _load_config_or_fail() -> AssistantConfig:
+    """Load the host configuration, or fail with a readable message."""
+    try:
+        return asyncio.run(bootstrap.config_loader().load())
+    except InvalidAssistantConfig as exc:
+        fail(f"invalid configuration: {exc}", code=2)
 
 
 async def _action_service() -> ActionService:
@@ -273,7 +283,8 @@ def action_execute(
     reference: Annotated[str, typer.Argument(help="Action id or unique prefix.")]
 ) -> None:
     """Execute an approved action, if this deployment has a capability for it."""
-    action, result = _run(lambda: _execute(reference))
+    config = _load_config_or_fail()
+    action, result = _run(lambda: _execute(config, reference))
     console.print(f"action: {action.id} ({action.action_type.value})")
     console.print(f"execution: {result.status.value}")
     if result.run.error_summary:
@@ -281,12 +292,14 @@ def action_execute(
     console.print(f"action status: {result.action_status}")
 
 
-async def _execute(reference: str) -> tuple[ActionRequest, ExecutionResult]:
+async def _execute(
+    config: AssistantConfig, reference: str
+) -> tuple[ActionRequest, ExecutionResult]:
     services = await _action_service()
     action = await services.require_action(reference)
     clock = bootstrap.system_clock()
     service: ActionExecutionService = bootstrap.action_execution_service(
-        clock, bootstrap.runtime_database(clock)
+        config, clock, bootstrap.runtime_database(clock)
     )
     return action, await service.execute(action.id)
 

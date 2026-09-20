@@ -46,6 +46,7 @@ class FakeActionExecutor:
     outcome: ExecutionOutcome = field(default_factory=ExecutionOutcome.succeeded)
     error: BaseException | None = None
     block: bool = False
+    supported: bool = True
     calls: list[ActionRequest] = field(default_factory=list)
     started: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -82,10 +83,20 @@ class FakeActionExecutor:
         self.block = True
         return self
 
+    def script_unsupported(self) -> FakeActionExecutor:
+        """Make the preflight answer "this deployment cannot perform that"."""
+        self.supported = False
+        return self
+
     @property
     def call_count(self) -> int:
         """How many times an execution actually reached the executor."""
         return len(self.calls)
+
+    def supports(self, action: ActionRequest) -> bool:
+        """The preflight: scripted, and offline in every case."""
+        del action
+        return self.supported
 
     async def execute(self, action: ActionRequest) -> ExecutionOutcome:
         self.calls.append(action)

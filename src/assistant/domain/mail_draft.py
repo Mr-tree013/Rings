@@ -23,7 +23,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from email.utils import parseaddr
 from enum import StrEnum
@@ -223,6 +223,7 @@ class MailDraft:
     id: MailDraftId = field(default_factory=new_mail_draft_id)
     thread_id: MailThreadId | None = None
     needs_user_input: tuple[str, ...] = ()
+    needs_user_input_acknowledged_at: datetime | None = None
     origin: MailDraftOrigin = MailDraftOrigin.MODEL_GENERATED
     version: int = 1
     prompt_version: int = PROMPT_VERSION
@@ -277,11 +278,45 @@ class MailDraft:
         for value, name in ((self.created_at, "created_at"), (self.updated_at, "updated_at")):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise InvalidMailDraft(f"{name} must be timezone-aware")
+        if self.needs_user_input_acknowledged_at is not None:
+            acknowledged = self.needs_user_input_acknowledged_at
+            if acknowledged.tzinfo is None or acknowledged.utcoffset() is None:
+                raise InvalidMailDraft(
+                    "needs_user_input_acknowledged_at must be timezone-aware"
+                )
 
     @property
     def is_edited(self) -> bool:
         """Whether a person has touched this draft's body or subject."""
         return self.origin is MailDraftOrigin.USER_EDITED
+
+    @property
+    def send_blocked_by_user_input(self) -> bool:
+        """Whether open questions still stand between this draft and an approval.
+
+        A draft the model asked questions about may not be sent until a person says they have read
+        those questions — otherwise the questions are decoration, and the reply goes out with the
+        gaps nobody looked at.
+        """
+        return bool(self.needs_user_input) and self.needs_user_input_acknowledged_at is None
+
+    def acknowledge_user_input(self, at: datetime) -> MailDraft:
+        """Record that a person has reviewed the open questions.
+
+        The questions themselves are kept: they are the record of what was uncertain when the
+        draft was written. The version advances, because the acknowledgement is part of what a
+        later send was prepared from.
+        """
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise InvalidMailDraft("at must be timezone-aware")
+        if not self.needs_user_input:
+            raise InvalidMailDraft("this draft has no open questions to acknowledge")
+        return replace(
+            self,
+            needs_user_input_acknowledged_at=at,
+            version=self.version + 1,
+            updated_at=at,
+        )
 
 
 @dataclass(frozen=True, slots=True)

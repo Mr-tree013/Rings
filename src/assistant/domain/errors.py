@@ -673,6 +673,75 @@ class StaleMailDraftUpdate(DomainError):
         )
 
 
+class InvalidMailSend(DomainError):
+    """An outbound send payload, its link or its reconciliation breaks an invariant."""
+
+
+class MailDraftNeedsUserInput(DomainError):
+    """A draft still carries unanswered questions, so it cannot be prepared for sending.
+
+    The user has to read them (`pw mail draft acknowledge`) or edit the body before an exact
+    action can be produced. This is checked before anything is created, so a refusal costs nothing.
+    """
+
+    def __init__(self, draft_id: object) -> None:
+        self.draft_id = draft_id
+        super().__init__(
+            f"mail draft {draft_id} has open questions the user has not acknowledged; "
+            "review them with `pw mail draft show` and acknowledge with "
+            "`pw mail draft acknowledge`"
+        )
+
+
+class MailSendNotConfigured(DomainError):
+    """The draft's account has no usable outbound SMTP configuration.
+
+    A receive-only account is legitimate; it just cannot send. No action is created.
+    """
+
+    def __init__(self, account_id: object, reason: str) -> None:
+        self.account_id = account_id
+        self.reason = reason
+        super().__init__(
+            f"mail account {account_id!r} cannot send: {reason}"
+        )
+
+
+class MailSendAlreadyPrepared(DomainError):
+    """This exact draft version already has a prepared (or cancelled) send action.
+
+    Re-preparing requires advancing the draft first — an edit or an acknowledgement — so that one
+    version can never accumulate two approvals for the same letter.
+    """
+
+    def __init__(self, draft_id: object, draft_version: int, action_id: object) -> None:
+        self.draft_id = draft_id
+        self.draft_version = draft_version
+        self.action_id = action_id
+        super().__init__(
+            f"mail draft {draft_id} version {draft_version} already has action {action_id}; "
+            "edit or acknowledge the draft to advance its version before preparing another send"
+        )
+
+
+class CaseNotOpen(DomainError):
+    """A terminal case cannot receive new work."""
+
+    def __init__(self, case_id: object, status: object) -> None:
+        self.case_id = case_id
+        self.status = status
+        super().__init__(f"case {case_id} is {status} and cannot receive a new action")
+
+
+class MailSendNotReconcilable(DomainError):
+    """The action is not in a state where a Sent-folder lookup means anything."""
+
+    def __init__(self, action_id: object, reason: str) -> None:
+        self.action_id = action_id
+        self.reason = reason
+        super().__init__(f"mail send {action_id} cannot be reconciled: {reason}")
+
+
 class InvalidMailAnalysis(DomainError):
     """A mail analysis, action candidate or thread record breaks its invariants."""
 
@@ -881,6 +950,7 @@ __all__ = [
     "CalendarEventNotFound",
     "CapabilityUnavailable",
     "CaseNotFound",
+    "CaseNotOpen",
     "ConfiguredRootNotFound",
     "ContentExtractionError",
     "ContentTooLarge",

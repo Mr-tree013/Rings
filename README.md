@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 6 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 线程/分类 + 回复草稿 + 审批/执行边界）
+## 当前状态：v0.5.0（完整的可审计邮件工作流：收信 → 线程 → 分类 → 草稿 → 人工审批 → SMTP 发送 → 不确定结果对账）
 
 已完成：
 
@@ -21,8 +21,9 @@
 不启动 `event-worker`：一个连不上 provider 的 worker 只会把每封邮件 dead-letter，而停在
 `RECEIVED` 的积压可以在配置好 model 后继续处理。
 
-**没有任何真实外部副作用能力**：Phase 6A 的 action/approval/execution 边界已经落地，但
-executor 注册表为空，所以今天没有任何 action 能被真正执行（也没有 SMTP / eHall / browser）。
+**唯一真实的外部副作用是「经人工批准的 SMTP 发送」**：executor 注册表只包含 `mail.send`，
+且只有在该账号配置了 SMTP 时才注册。daemon 自身不会发送任何邮件——发送只能由
+`pw action execute` 经过一次已消费的人工 approval 完成（eHall / browser 不存在）。
 
 **尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
 因此变更检测有一个有界延迟（默认 300 秒，可配置到 10 秒）。
@@ -51,8 +52,7 @@ transaction 内 materialize；提醒只投递到 durable notification inbox（`p
 后台 job：**只产生新的 `PENDING` proposal 并发 `PLAN_READY` 通知，绝不自动 apply**
 （apply 仍需 `pw plan apply`）。daemon 现在托管 `index-sync` 与 `scheduler` 两个 service。
 **尚未实现**：OS/手机推送、个人估时学习（personal effort learning）、自然语言时间解析、
-重复任务/事件、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher、eHall、
-邮件发送（回复草稿已实现，发送与审批尚未实现）。
+重复任务/事件、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher、eHall。
 
 模型基础（Phase 4A）：**已实现** provider-independent model boundary —— core/application 只依赖
 `ModelPort`，DeepSeek 走 Responses API 的 adapter（`[model]` 配置 + `DEEPSEEK_API_KEY` 环境变量，
@@ -243,10 +243,65 @@ pw action cancel ACTION        # 取消，使其永远不能被执行
   `--force`/`--approve-all`，并且没有 `pw action create`（ActionRequest 只能由 typed factory 或
   应用 API 准备）。
 
-**尚未实现**：SMTP executor（Phase 6B）、eHall executor、browser executor、mobile approval UI、
-正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、分类结果自动转 Task/Case、
-事件删除同步（server-side deletion）、attachment materialization、QQ 与站点 watcher。
+已审批的 SMTP 发送（Phase 6B）：**已实现** 从草稿到一个被批准、可审计的 outbound message：
 
+```bash
+# 1. 先有一封草稿（可能带未解决的疑问）
+pw mail draft create MESSAGE
+pw mail draft show DRAFT
+pw mail draft edit DRAFT --body "..."
+pw mail draft acknowledge DRAFT        # 有 open questions 时必须先 acknowledge（编辑后需重新 acknowledge）
+
+# 2. 把某个 draft version 冻结成一个 exact action
+pw case add "回复导师"
+pw mail send prepare DRAFT --case CASE
+
+# 3. 人工审批链（与 Phase 6A 完全相同，没有第二套 approval 命令）
+pw action show ACTION
+pw action challenge ACTION
+pw action approve ACTION TOKEN
+pw action execute ACTION
+
+# 4. 只在结果不确定时，用 Sent 邮箱确认
+pw mail send show ACTION
+pw mail send reconcile ACTION
+```
+
+要点：
+
+- **批准的就是发出的**：`prepare` 把该 draft version 的 From / To / Subject / body / Date /
+  Message-ID / reply headers 冻结成 immutable `ActionRequest` payload，指纹覆盖全部字段；
+  执行时发送的字节只能来自这个 payload（绝不重新读取 draft）。之后编辑草稿只影响新 action，
+  旧 approval 永不转移；`pw mail send show` 会明确提示
+  “Prepared from draft version: N / Current draft version: M / WARNING: draft changed”。
+- **一个 draft version 只能有一个 send action**：`mail_send_links` 的
+  `UNIQUE(draft_id, draft_version)` 与 `UNIQUE(rfc_message_id)` 在 DB 层保证；想重新 prepare
+  必须先 edit/acknowledge 推进版本。
+- **Message-ID 在 approve 之前就已确定**：`<128-bit random>@<sender domain>`，同时出现在
+  payload、fingerprint、真正的 SMTP 字节和 Sent 搜索里，重试/对账时绝不重新生成。
+- **TLS-only、凭据只在环境变量**：`smtp_security` 只接受 `starttls` / `ssl`（没有 plain、
+  没有 skip verification）；SMTP 密码是 `GROWING_ASSISTANT_MAIL_<ID>_SMTP_PASSWORD`
+  （与 IMAP 密码分开），不写库、不写日志、不进 payload。
+- **能力检查发生在消费 approval 之前**：executor 的 `supports()` 是纯 offline 检查
+  （账号配置 + 凭据 + payload 可读）。缺凭据时 `pw action execute` 返回
+  `CapabilityUnavailable`，**approval 不被消费、不创建 execution run**。
+  prepare 本身不需要凭据，所以可以先准备、审阅、批准，再补凭据。
+- **明确的失败 vs 不确定**：SMTP 阶段被显式跟踪。认证失败 / 发件人被拒 / 收件人全被拒 /
+  DATA 被明确拒收 → `FAILED`（approval 已消费，重试需重新人工 approve）；DATA 之后连接断开、
+  超时或协议不明 → `UNKNOWN`，且**永不自动重发**。
+- **Sent 对账是只读的三值判断**：只搜配置的 Sent mailbox 里那个 exact Message-ID，并对候选项
+  做精确 header 比较（服务端返回 `<x@example>` 而我们要 `<x@example.evil>` 不算命中）。
+  `FOUND` 可以把 `RUNNING`/`UNKNOWN` 提升为 `SUCCEEDED`（同一 transaction 内 run / action /
+  审计行）；`NOT_FOUND` **不代表没发出去**；`AMBIGUOUS` 不任选 UID；`UNAVAILABLE` 保持原状。
+  历史对账记录永不删除，而且没有任何 resend 命令。
+- **没有任何后台发送路径**：daemon / EventWorker / Scheduler / MailSync / MailAnalysis /
+  MailEventHandler / MailDraftService / Interpreter / GroundedAnswer 都没有 SMTP 能力，
+  `smtplib` 只出现在 `adapters/mail/smtp.py`；发送只能经 `ActionExecutionService` +
+  一次已消费的人工 approval。
+
+**尚未实现**：eHall executor、browser executor、mobile approval UI、正文索引/问答（把邮件正文
+送进 knowledge index）、thread 回溯修复、分类结果自动转 Task/Case、事件删除同步
+（server-side deletion）、attachment materialization、QQ 与站点 watcher。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
 
@@ -261,8 +316,9 @@ MailMessage → deterministic thread → InboundEvent → MailAnalysis (candidat
   ↓  pw mail draft create（显式；可选 --context-query 才读个人知识）
 MailDraft（本地草稿；不发送）
   ↓  (后续 Phase：Case → knowledge search → material checklist)
-  → draft/prepare → ActionRequest（immutable + fingerprint）
-  → Approval（人类、exact fingerprint、single-use）→ execute（executor 能力集为空）
+  → pw mail send prepare → ActionRequest（immutable + Message-ID + fingerprint）
+  → Approval（人类、exact fingerprint、single-use）→ SMTP over TLS（FAILED / SUCCEEDED / UNKNOWN）
+  → pw mail send reconcile（只读 Sent 对账，永不重发）
   → result → archive → PlaybookCandidate → review/test → Playbook
 ```
 

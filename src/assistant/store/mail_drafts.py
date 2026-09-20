@@ -18,6 +18,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Sequence
+from datetime import datetime
 from typing import NoReturn
 from uuid import UUID
 
@@ -38,8 +39,8 @@ from assistant.store.serialization import from_utc_iso, to_utc_iso
 
 _DRAFT_FIELDS = (
     "id, account_id, thread_id, reply_to_message_id, to_addresses_json, subject, body_text, "
-    "needs_user_input_json, origin, version, generation_input_fingerprint, prompt_version, "
-    "created_at, updated_at"
+    "needs_user_input_json, needs_user_input_acknowledged_at, origin, version, "
+    "generation_input_fingerprint, prompt_version, created_at, updated_at"
 )
 
 _SOURCE_FIELDS = "draft_id, ordinal, root_id, entry_id, chunk_id, logical_uri, source_span_json"
@@ -103,7 +104,7 @@ class SqliteMailDraftRepository:
             with self._database.connect() as connection, transaction(connection):
                 connection.execute(
                     f"INSERT INTO mail_drafts ({_DRAFT_FIELDS}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     _draft_parameters(draft),
                 )
                 for source in sources:
@@ -181,12 +182,16 @@ class SqliteMailDraftRepository:
             with self._database.connect() as connection, transaction(connection):
                 cursor = connection.execute(
                     "UPDATE mail_drafts SET subject = ?, body_text = ?, "
-                    "needs_user_input_json = ?, origin = ?, version = ?, updated_at = ? "
+                    "needs_user_input_json = ?, needs_user_input_acknowledged_at = ?, "
+                    "origin = ?, version = ?, updated_at = ? "
                     "WHERE id = ? AND version = ?",
                     (
                         draft.subject,
                         draft.body_text,
                         json.dumps(list(draft.needs_user_input), ensure_ascii=False),
+                        None
+                        if draft.needs_user_input_acknowledged_at is None
+                        else to_utc_iso(draft.needs_user_input_acknowledged_at),
                         str(draft.origin),
                         draft.version,
                         to_utc_iso(draft.updated_at),
@@ -234,6 +239,9 @@ def _draft_parameters(draft: MailDraft) -> tuple[object, ...]:
         draft.subject,
         draft.body_text,
         json.dumps(list(draft.needs_user_input), ensure_ascii=False),
+        None
+        if draft.needs_user_input_acknowledged_at is None
+        else to_utc_iso(draft.needs_user_input_acknowledged_at),
         str(draft.origin),
         draft.version,
         draft.generation_input_fingerprint,
@@ -255,6 +263,9 @@ def _row_to_draft(row: sqlite3.Row) -> MailDraft:
             subject=str(row["subject"]),
             body_text=str(row["body_text"]),
             needs_user_input=_parse_json_list(row["needs_user_input_json"], "open questions"),
+            needs_user_input_acknowledged_at=_optional_instant(
+                row["needs_user_input_acknowledged_at"]
+            ),
             origin=MailDraftOrigin(str(row["origin"])),
             version=int(row["version"]),
             generation_input_fingerprint=str(row["generation_input_fingerprint"]),
@@ -282,6 +293,11 @@ def _row_to_source(row: sqlite3.Row) -> MailDraftSource:
             "source_span": decoded,
         },
     )
+
+
+def _optional_instant(value: object) -> datetime | None:
+    """Decode an optional stored instant."""
+    return None if value is None else from_utc_iso(str(value))
 
 
 def _parse_json_list(raw: object, what: str) -> tuple[str, ...]:

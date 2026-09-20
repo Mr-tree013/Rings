@@ -245,6 +245,26 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Models and autonomous workers have no code path to create Approval records.**
   Interpreter / GroundedAnswer / MailAnalysis / MailEventHandler / MailDraftService / EventWorker /
   Scheduler 都不得 import ApprovalService；ApprovalService 也不得依赖 ModelPort/StructuredModel。
+- **SMTP delivery uses an exact immutable ActionRequest snapshot.**
+  `pw mail send prepare` 把某个 draft version 冻结成 payload；执行时发送的字节只能来自该 payload，
+  绝不重新读取 draft。draft 之后被编辑只影响新 action，旧 approval 不会转移。
+- **A stable RFC Message-ID is created before approval and is part of the approved payload.**
+  Message-ID 在 prepare 时生成（>=128 bits + sender domain）、写入 payload/fingerprint/发出的字节，
+  Sent 对账也只用这一个值；重试或对账时禁止重新生成。
+- **SMTP delivery is never automatically retried after an ambiguous result.**
+  DATA 之后连接断开/超时/协议不明 → `UNKNOWN`；不得自动重发，也不得因为
+  `NOT_FOUND` 就重发。唯一的重发路径是人工取消 action、推进 draft、重新 prepare 并重新 approve。
+- **Sent-folder absence is not proof that a message was not sent.**
+  `NOT_FOUND` 只记录审计行，execution 状态保持不变；`AMBIGUOUS`（两个 exact match）不得任选 UID；
+  Sent 不可读 → `UNAVAILABLE`，同样不改变状态。
+- **Mail sending can only occur through ActionExecutionService with an exact consumed human
+  Approval.** SMTP capability 只注册在 `registered_action_executors(config)`，只有
+  `pw action execute` 会经过它；发送前先跑纯 offline `executor.supports(action)`，不满足则
+  `CapabilityUnavailable` 且**不消费 approval**。
+- **Draft/model/background workers have no SMTP capability.**
+  daemon / EventWorker / Scheduler / MailSync / MailAnalysis / MailEventHandler / MailDraftService /
+  Interpreter / GroundedAnswer 都不得 import SMTP executor 或 mail-send services；
+  `smtplib` 只允许出现在 `adapters/mail/smtp.py`。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -373,12 +393,23 @@ DB 只存 hash、TTL 600s、single-use）、`Approval`（exact fingerprint 绑�
 RUNNING 同 transaction）、并发 fencing、UNKNOWN/崩溃语义（不自动 retry）、`ActionExecutor` port +
 **空的 production capability set**、`pw cases|case add|show|done|cancel` 与
 `pw actions|action show|challenge|approve|execute|cancel`。仍然不发送、无 SMTP/eHall/browser。
+
+**Phase 6B 已完成（v0.5.0）**：approved SMTP delivery + ambiguous-result reconciliation
+（ADR-0024）：draft `needs_user_input` acknowledgement（`pw mail draft acknowledge`，编辑后重置）、
+可选且必须完整有效的 SMTP config（starttls/ssl，无 plain/verify_tls=false）、
+`GROWING_ASSISTANT_MAIL_<ID>_SMTP_PASSWORD` 环境凭据、immutable `MailSendPayload`
+（canonical + 冻结的 From/To/Subject/body/Date/Message-ID/reply headers）、
+prepare 时生成稳定 RFC Message-ID、`mail_send_links`（一个 draft version 最多一个 send action）、
+`pw mail send prepare|show|reconcile` + `pw mail sends`、`mail.send` executor 的 offline
+`supports` preflight（不满足不消费 approval）、显式 SMTP 阶段跟踪（pre-DATA 明确失败 = FAILED，
+DATA 之后不明 = UNKNOWN）、零自动重发、只读 Sent 对账（FOUND 可把 UNKNOWN/RUNNING 提升为
+SUCCEEDED，NOT_FOUND 不证明失败，AMBIGUOUS 不任选，UNAVAILABLE 保持原状）。
 仍然不发送、无 SMTP / Approval / ActionRequest、无 EventWorker 自动起草。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
-SMTP executor（Phase 6B）/ eHall executor / browser executor / mobile approval UI /
+eHall executor / browser executor / mobile approval UI / 邮件线程回溯修复 /
 site watcher / QQ 渠道 / 个人估时学习 /
 agent tool loop / 多工具只读编排 / command execution boundary（`pw interpret --apply` 之类）/
 重复任务与重复事件 / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /

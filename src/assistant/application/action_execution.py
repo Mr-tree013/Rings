@@ -3,6 +3,7 @@
 ```text
 resolve executor for action_type
         ├── none ──────────────► CapabilityUnavailable   (no approval is consumed)
+        ├── supports(action) false ─► CapabilityUnavailable (no approval is consumed)
         ▼
 re-hash the stored payload ──► ActionFingerprintMismatch (the executor is never called)
         ▼
@@ -114,6 +115,13 @@ class ActionExecutionService:
         if executor is None:
             # Refuse before touching the approval: a missing capability must cost nothing.
             raise CapabilityUnavailable(action.action_type)
+        if not executor.supports(action):
+            # The preflight is pure and offline, and it runs *before* the approval is consumed:
+            # a missing credential or an unconfigured account must never spend a human decision.
+            raise CapabilityUnavailable(
+                f"{action.action_type} is registered but cannot perform this action "
+                "(check the account's outbound configuration and credential)"
+            )
         if not action.is_prepared:
             raise ActionNotExecutable(
                 f"action request {action.id} is {action.status}, not prepared"

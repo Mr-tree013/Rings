@@ -25,6 +25,7 @@ from assistant.domain.errors import (
     InvalidStorageRoot,
 )
 from assistant.domain.mail import validate_account_id
+from assistant.domain.mail_draft import mailbox_address
 from assistant.domain.storage import StorageKind, validate_root_id
 
 CONFIG_FORMAT_VERSION: Final[int] = 1
@@ -81,8 +82,29 @@ _KNOWN_MAIL_KEYS = frozenset(
     }
 )
 _KNOWN_MAIL_ACCOUNT_KEYS = frozenset(
-    {"id", "host", "port", "username", "mailbox", "enabled"}
+    {
+        "id",
+        "host",
+        "port",
+        "username",
+        "mailbox",
+        "enabled",
+        "smtp_host",
+        "smtp_port",
+        "smtp_security",
+        "smtp_username",
+        "from_address",
+        "sent_mailbox",
+    }
 )
+
+SMTP_SECURITY_MODES: Final[tuple[str, ...]] = ("starttls", "ssl")
+"""The only two ways this project will speak SMTP. There is no plaintext mode and no switch to
+skip certificate verification."""
+
+DEFAULT_SMTP_PORT: Final[int] = 587
+DEFAULT_SMTP_SECURITY: Final[str] = "starttls"
+DEFAULT_SENT_MAILBOX: Final[str] = "Sent"
 
 DEFAULT_MAIL_POLL_SECONDS: Final[int] = 60
 MIN_MAIL_POLL_SECONDS: Final[int] = 10
@@ -323,10 +345,14 @@ class IndexingConfig:
 
 @dataclass(frozen=True, slots=True)
 class MailAccountConfig:
-    """One explicitly configured IMAP account.
+    """One explicitly configured mail account: inbound always, outbound only when asked for.
 
     There is no credential field on purpose: a password never lives in configuration, and the
     identity is a stable local id, never the address or the host.
+
+    The SMTP fields are optional as a group. An account with none of them is receive-only, which is
+    a perfectly good configuration; an account with any of them must carry a complete, TLS-only
+    outbound configuration, because a half-configured sender is a trap rather than a convenience.
     """
 
     id: str
@@ -335,6 +361,12 @@ class MailAccountConfig:
     mailbox: str
     port: int = 993
     enabled: bool = True
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_security: str | None = None
+    smtp_username: str | None = None
+    from_address: str | None = None
+    sent_mailbox: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -356,6 +388,78 @@ class MailAccountConfig:
             raise InvalidAssistantConfig("mail account port must be between 1 and 65535")
         if not isinstance(self.enabled, bool):
             raise InvalidAssistantConfig("mail account enabled must be a boolean")
+        self._validate_smtp()
+
+    def _validate_smtp(self) -> None:
+        """Accept a complete TLS-only outbound block, or no outbound block at all."""
+        provided = {
+            "smtp_host": self.smtp_host,
+            "smtp_port": self.smtp_port,
+            "smtp_security": self.smtp_security,
+            "smtp_username": self.smtp_username,
+            "from_address": self.from_address,
+            "sent_mailbox": self.sent_mailbox,
+        }
+        if all(value is None for value in provided.values()):
+            return
+        for key in ("smtp_host", "smtp_username", "from_address"):
+            value = provided[key]
+            if not isinstance(value, str) or not value.strip():
+                raise InvalidAssistantConfig(
+                    f"mail account {self.id!r} configures SMTP, so {key} is required"
+                )
+            if "\x00" in value:
+                raise InvalidAssistantConfig(
+                    f"mail account {key} must not contain NUL bytes"
+                )
+            provided[key] = value.strip()
+        port = provided["smtp_port"]
+        if port is not None and (
+            not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+        ):
+            raise InvalidAssistantConfig("mail account smtp_port must be between 1 and 65535")
+        security = provided["smtp_security"]
+        if security is not None and (
+            not isinstance(security, str) or security.strip() not in SMTP_SECURITY_MODES
+        ):
+            allowed = ", ".join(SMTP_SECURITY_MODES)
+            raise InvalidAssistantConfig(
+                f"mail account smtp_security must be one of: {allowed}"
+            )
+        sent_mailbox = provided["sent_mailbox"]
+        if sent_mailbox is not None and (
+            not isinstance(sent_mailbox, str) or not sent_mailbox.strip()
+        ):
+            raise InvalidAssistantConfig("mail account sent_mailbox must not be blank")
+        sender = mailbox_address(str(provided["from_address"]))
+        if sender != str(provided["from_address"]):
+            raise InvalidAssistantConfig(
+                f"mail account from_address must be a bare mailbox, not "
+                f"{provided['from_address']!r}"
+            )
+        object.__setattr__(self, "smtp_host", str(provided["smtp_host"]))
+        object.__setattr__(self, "smtp_username", str(provided["smtp_username"]))
+        object.__setattr__(self, "from_address", str(provided["from_address"]))
+        object.__setattr__(
+            self,
+            "smtp_port",
+            DEFAULT_SMTP_PORT if port is None else int(port),
+        )
+        object.__setattr__(
+            self,
+            "smtp_security",
+            DEFAULT_SMTP_SECURITY if security is None else str(security).strip(),
+        )
+        object.__setattr__(
+            self,
+            "sent_mailbox",
+            DEFAULT_SENT_MAILBOX if sent_mailbox is None else str(sent_mailbox).strip(),
+        )
+
+    @property
+    def smtp_configured(self) -> bool:
+        """Whether this account can send at all."""
+        return self.smtp_host is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -779,6 +883,7 @@ def _parse_mail_account(entry: object) -> MailAccountConfig:
     enabled = entry.get("enabled", True)
     if not isinstance(enabled, bool):
         raise InvalidAssistantConfig("mail account enabled must be a boolean")
+    smtp = _parse_mail_account_smtp(entry)
     return MailAccountConfig(
         id=str(values["id"]).strip(),
         host=str(values["host"]).strip(),
@@ -786,6 +891,59 @@ def _parse_mail_account(entry: object) -> MailAccountConfig:
         mailbox=str(values["mailbox"]).strip(),
         port=port,
         enabled=enabled,
+        smtp_host=smtp.host,
+        smtp_port=smtp.port,
+        smtp_security=smtp.security,
+        smtp_username=smtp.username,
+        from_address=smtp.from_address,
+        sent_mailbox=smtp.sent_mailbox,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _SmtpAccountFields:
+    """The optional outbound block of one account, exactly as the user wrote it."""
+
+    host: str | None = None
+    port: int | None = None
+    security: str | None = None
+    username: str | None = None
+    from_address: str | None = None
+    sent_mailbox: str | None = None
+
+
+def _parse_mail_account_smtp(entry: Mapping[str, object]) -> _SmtpAccountFields:
+    """Parse the optional outbound block. A credential key is never accepted here."""
+    for forbidden in ("password", "smtp_password", "secret", "api_key", "verify_tls"):
+        if forbidden in entry:
+            raise InvalidAssistantConfig(
+                f"mail account key {forbidden!r} is not configuration: credentials come from the "
+                "environment and certificate verification is never optional"
+            )
+    text_values: dict[str, str | None] = {}
+    for key in ("smtp_host", "smtp_username", "from_address", "sent_mailbox"):
+        raw = entry.get(key)
+        if raw is None:
+            text_values[key] = None
+            continue
+        if not isinstance(raw, str):
+            raise InvalidAssistantConfig(f"mail account {key} must be a string")
+        text_values[key] = raw.strip()
+    smtp_port = entry.get("smtp_port")
+    if smtp_port is not None and (
+        not isinstance(smtp_port, int) or isinstance(smtp_port, bool)
+    ):
+        raise InvalidAssistantConfig("mail account smtp_port must be an integer")
+    security = entry.get("smtp_security")
+    if security is not None and not isinstance(security, str):
+        raise InvalidAssistantConfig("mail account smtp_security must be a string")
+    return _SmtpAccountFields(
+        host=text_values["smtp_host"],
+        port=smtp_port,
+        security=None if security is None else security.strip(),
+        username=text_values["smtp_username"],
+        from_address=text_values["from_address"],
+        sent_mailbox=text_values["sent_mailbox"],
     )
 
 

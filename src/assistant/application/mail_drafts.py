@@ -275,11 +275,32 @@ class MailDraftService:
             needs_user_input=(
                 current.needs_user_input if needs_user_input is None else needs_user_input
             ),
+            # An edit re-opens the questions: whatever the user acknowledged was acknowledged for
+            # the text as it stood then, and the version they are about to send is a new one.
+            needs_user_input_acknowledged_at=None,
             origin=MailDraftOrigin.USER_EDITED,
             version=current.version + 1,
             updated_at=now,
         )
         return await self._drafts.update_draft(updated, expected_version=current.version)
+
+    async def acknowledge_user_input(self, reference: MailDraftId | str) -> MailDraft:
+        """Record that the user has read this draft's open questions.
+
+        The questions themselves are kept — they are the record of what was uncertain — but the
+        draft may now be prepared for sending. The version advances, because the acknowledgement
+        is part of what any later send action was prepared from.
+
+        Raises:
+            MailDraftNotFound: no such draft.
+            InvalidMailDraft: the draft has no open questions to acknowledge.
+            StaleMailDraftUpdate: someone else changed the draft first.
+        """
+        current = await self._require_draft(reference)
+        acknowledged = current.acknowledge_user_input(self._clock.now())
+        return await self._drafts.update_draft(
+            acknowledged, expected_version=current.version
+        )
 
     # ------------------------------------------------------------------ internals
 

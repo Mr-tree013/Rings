@@ -216,7 +216,7 @@ class SqliteActionRepository:
                 connection.execute(
                     f"INSERT INTO action_requests ({_ACTION_FIELDS}) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    _action_parameters(action),
+                    action_parameters(action),
                 )
         except sqlite3.IntegrityError as exc:
             raise CommitmentStoreError(f"could not store an action request: {exc}") from exc
@@ -647,7 +647,7 @@ def _not_prepared(connection: sqlite3.Connection, action_id: ActionRequestId) ->
     )
 
 
-def _action_parameters(action: ActionRequest) -> tuple[object, ...]:
+def action_parameters(action: ActionRequest) -> tuple[object, ...]:
     return (
         str(action.id),
         str(action.case_id),
@@ -747,4 +747,4 @@ def _row_to_run(row: sqlite3.Row) -> ExecutionRun:
     )
 
 
-__all__ = ["SqliteActionRepository"]
+__all__ = ["SqliteActionRepository", "action_parameters"]

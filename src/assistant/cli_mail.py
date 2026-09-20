@@ -26,8 +26,11 @@ from typing import Annotated, Any
 import typer
 from rich.table import Table
 
-from assistant import bootstrap
-from assistant.adapters.mail.credentials import available_password
+from assistant import bootstrap, cli_mail_send
+from assistant.adapters.mail.credentials import (
+    available_password,
+    available_smtp_password,
+)
 from assistant.application.mail_draft_context import (
     DEFAULT_DRAFT_CONTEXT_LIMIT,
     MAX_DRAFT_CONTEXT_LIMIT,
@@ -123,6 +126,28 @@ def mail_accounts() -> None:
             account.username,
             account.mailbox,
             "present" if available_password(account.id) else "[yellow]missing[/yellow]",
+        )
+    console.print(table)
+    _print_smtp_accounts(config)
+
+
+def _print_smtp_accounts(config: AssistantConfig) -> None:
+    """Outbound capability and credential presence. This never contacts a server."""
+    table = Table(title="outbound (SMTP)")
+    for column in ("ID", "SMTP", "SMTP credential", "From", "Sent mailbox"):
+        table.add_column(column)
+    for account in config.mail.accounts:
+        if not account.smtp_configured:
+            table.add_row(account.id, "not configured", "-", "-", "-")
+            continue
+        table.add_row(
+            account.id,
+            f"{account.smtp_host}:{account.smtp_port} ({account.smtp_security})",
+            "present"
+            if available_smtp_password(account.id)
+            else "[yellow]missing[/yellow]",
+            account.from_address or "-",
+            account.sent_mailbox or "-",
         )
     console.print(table)
 
@@ -731,6 +756,29 @@ async def _load_draft(reference: str) -> tuple[MailDraftResult, MailMessage | No
     return result, original
 
 
+@mail_draft_app.command("acknowledge")
+def mail_draft_acknowledge(
+    reference: Annotated[str, typer.Argument(help="Draft id or unique prefix.")]
+) -> None:
+    """Record that you have read this draft's open questions.
+
+    The questions stay on the draft as a record of what was uncertain; acknowledging lets it be
+    prepared for sending. Any later body or subject edit clears the acknowledgement again.
+    """
+    draft = _run(lambda: _acknowledge_draft(reference))
+    console.print(
+        f"[green]acknowledged[/green] {short_id(draft.id)} is now version {draft.version}"
+    )
+    console.print(f"open questions kept for the record: {len(draft.needs_user_input)}")
+
+
+async def _acknowledge_draft(reference: str) -> MailDraft:
+    clock = bootstrap.system_clock()
+    database = bootstrap.runtime_database(clock)
+    service = bootstrap.mail_draft_service(clock, database)
+    return await service.acknowledge_user_input(reference)
+
+
 @mail_draft_app.command("edit")
 def mail_draft_edit(
     reference: Annotated[str, typer.Argument(help="Draft id or unique prefix.")],
@@ -789,6 +837,7 @@ def register(app: typer.Typer) -> None:
     app.add_typer(mail_app, name="mail")
     mail_app.add_typer(mail_thread_app, name="thread")
     mail_app.add_typer(mail_draft_app, name="draft")
+    cli_mail_send.register(mail_app)
 
 
 __all__ = ["mail_app", "register"]

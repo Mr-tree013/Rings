@@ -18,10 +18,17 @@ from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
-from assistant.adapters.mail.credentials import require_password
+from assistant.adapters.mail.credentials import (
+    available_password,
+    available_smtp_password,
+    require_password,
+)
 from assistant.adapters.mail.imap import ImapMailSource
+from assistant.adapters.mail.message_ids import new_rfc_message_id
 from assistant.adapters.mail.parser import Rfc822MailParser
 from assistant.adapters.mail.raw_store import RawMailStore
+from assistant.adapters.mail.sent_lookup import ImapSentMailLookup
+from assistant.adapters.mail.smtp import SmtpMailExecutor, rfc2822_date
 from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.security.tokens import secure_approval_token_factory
 from assistant.adapters.system_clock import SystemClock
@@ -47,6 +54,11 @@ from assistant.application.mail_event_handler import (
     InboundEventDispatcher,
     MailInboundEventHandler,
 )
+from assistant.application.mail_send_actions import MailSendActionService
+from assistant.application.mail_send_reconciliation import (
+    MailSendReconciliationService,
+)
+from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.mail_threading import MailThreadLinker
 from assistant.application.paths import AppPaths
@@ -85,6 +97,7 @@ from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.mail import SqliteMailRepository
 from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
+from assistant.store.mail_send import SqliteMailSendRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
@@ -139,18 +152,41 @@ def approval_service(clock: Clock, database: Database) -> ApprovalService:
     )
 
 
-def registered_action_executors() -> dict[ActionType, ActionExecutor]:
+def registered_action_executors(
+    config: AssistantConfig | None = None,
+) -> dict[ActionType, ActionExecutor]:
     """The external capabilities this deployment can actually perform.
 
-    Phase 6A ships an **empty** registry. Every action type that can be named — `mail.send`,
-    `ehall.submit-certificate` — is therefore unperformable, and `pw action execute` answers
-    `CapabilityUnavailable` without consuming an approval. A later phase registers a real
-    executor here, one capability at a time and with its own review.
+    One capability exists today: `mail.send`, and only when at least one account configures an
+    outbound SMTP block. Everything else that can be named — `ehall.submit-certificate` — has no
+    executor, so `pw action execute` answers `CapabilityUnavailable` without consuming an
+    approval. A capability appears here only when it has been written and reviewed on purpose.
     """
-    return {}
+    if config is None or not any(
+        account.smtp_configured for account in config.mail.accounts
+    ):
+        return {}
+    return {smtp_mail_executor(config).action_type: smtp_mail_executor(config)}
+
+
+def smtp_mail_executor(config: AssistantConfig | None) -> SmtpMailExecutor:
+    """The `mail.send` executor over this host's configured SMTP accounts.
+
+    `supports` asks for a credential; `execute` uses it. Neither ever puts the secret in a
+    payload, a log line or an error message.
+    """
+    accounts = () if config is None else config.mail.accounts
+    return SmtpMailExecutor(
+        {account.id: account for account in accounts},
+        password_lookup=available_smtp_password,
+        timeout_seconds=(
+            DEFAULT_MAIL_TIMEOUT_SECONDS if config is None else config.mail.timeout_seconds
+        ),
+    )
 
 
 def action_execution_service(
+    config: AssistantConfig | None,
     clock: Clock,
     database: Database,
     *,
@@ -159,8 +195,80 @@ def action_execution_service(
     """The executor boundary, over the registered capability set."""
     return ActionExecutionService(
         action_repository(database),
-        registered_action_executors() if executors is None else executors,
+        registered_action_executors(config) if executors is None else executors,
         clock,
+    )
+
+
+def mail_send_repository(database: Database) -> SqliteMailSendRepository:
+    """Durable send links and Sent-folder reconciliation history."""
+    return SqliteMailSendRepository(database)
+
+
+def mail_send_action_service(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> MailSendActionService:
+    """Preparing an approvable send from one draft version.
+
+    The Message-ID factory is the composition layer's job: the domain may not decide how a
+    globally unique identifier is minted, and tests want to inject a deterministic one.
+    """
+    accounts = () if config is None else config.mail.accounts
+    return MailSendActionService(
+        mail_draft_repository(database),
+        mail_repository(database),
+        case_repository(database),
+        action_repository(database),
+        mail_send_repository(database),
+        clock,
+        accounts=accounts,
+        message_id_factory=new_rfc_message_id,
+        date_header_factory=rfc2822_date,
+    )
+
+
+def mail_send_status_service(
+    clock: Clock, database: Database
+) -> MailSendStatusService:
+    """Read-only delivery state for prepared sends."""
+    return MailSendStatusService(
+        action_repository(database),
+        mail_send_repository(database),
+        mail_draft_repository(database),
+        clock,
+    )
+
+
+def mail_send_reconciliation_service(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> MailSendReconciliationService:
+    """Sent-folder reconciliation, using the *inbound* credential (ADR-0024).
+
+    A missing inbound credential is not an error here: it becomes an `UNAVAILABLE` record and the
+    execution state is left exactly as it was.
+    """
+    accounts = () if config is None else config.mail.accounts
+    lookup = None
+    for account in accounts:
+        if account.id and available_password(account.id) is not None:
+            lookup = ImapSentMailLookup(
+                host=account.host,
+                username=account.username,
+                password=require_password(account.id),
+                port=account.port,
+                timeout_seconds=(
+                    DEFAULT_MAIL_TIMEOUT_SECONDS
+                    if config is None
+                    else config.mail.timeout_seconds
+                ),
+            )
+            break
+    return MailSendReconciliationService(
+        action_repository(database),
+        mail_send_repository(database),
+        clock,
+        lookup=lookup,
+        accounts=accounts,
     )
 
 
@@ -689,6 +797,10 @@ __all__ = [
     "mail_event_worker",
     "mail_intelligence_repository",
     "mail_repository",
+    "mail_send_action_service",
+    "mail_send_reconciliation_service",
+    "mail_send_repository",
+    "mail_send_status_service",
     "mail_source",
     "mail_sync_service",
     "model_adapter",
@@ -703,6 +815,7 @@ __all__ = [
     "scheduler_repository",
     "scheduler_service",
     "search_service",
+    "smtp_mail_executor",
     "structured_model",
     "sync_service",
     "system_clock",

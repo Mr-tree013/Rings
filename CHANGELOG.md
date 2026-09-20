@@ -5,7 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-20
+
+Phase 6 (mail workflows): the project can now read someone else's mail, understand it, draft a
+reply, and — only after an explicit human approval bound to the exact bytes — send it, with an
+honest answer for the one case email makes inevitable: not knowing whether it arrived. Everything
+before this release was preparation for that boundary; nothing here can send, approve or execute
+without a person.
 
 ### Added
 
@@ -153,6 +159,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answers `CapabilityUnavailable` (without consuming anything) for every action in a deployment with
   no registered executor. There is deliberately no `pw action create`, no `--force` and no
   `--approve-all`.
+
+- Approved SMTP delivery (ADR-0024): `mail.send` is the first production executor capability, and
+  the only one — it is registered only when an account configures an outbound SMTP block, so
+  naming another action type still grants nothing. `pw mail send prepare DRAFT --case CASE`
+  snapshots one draft version into an immutable `ActionRequest` whose payload carries the derived
+  From, To, Subject, body, Date, Message-ID and reply headers; the approval chain is unchanged
+  (`pw action show|challenge|approve|execute`), and `pw mail sends` / `pw mail send show` are
+  read-only views of it.
+- Exact approved content: the bytes that leave the machine come from the approved payload, never
+  from the draft, so editing a draft after preparation leaves the action untouched and requires a
+  new preparation (and a new approval) to change what is sent. `mail_send_links` makes "one draft
+  version, one send action" and "one Message-ID, one send" database constraints, and a stable RFC
+  Message-ID is minted before approval and reused in the transmitted bytes and in the Sent-folder
+  lookup.
+- TLS-only SMTP with environment-only credentials: `smtp_host`, `smtp_port`, `smtp_security`
+  (`starttls` or `ssl`, never plaintext and no way to skip verification), `smtp_username`,
+  `from_address` and `sent_mailbox` are optional as a group and must be complete when used; the
+  secret is `GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_SMTP_PASSWORD`, separate from the IMAP password,
+  and never stored, logged or placed in a payload.
+- Capability preflight before approval consumption: `ActionExecutor.supports` answers "could this
+  host perform this action right now?" purely and offline, and the execution service asks before
+  consuming anything — so a missing SMTP credential produces `CapabilityUnavailable` with the
+  approval still valid and no execution run created. Preparing a send deliberately needs no
+  credential, so prepare, review and approve work without one.
+- Honest send outcomes: the SMTP conversation is written out explicitly
+  (`EHLO → [STARTTLS → EHLO] → LOGIN → MAIL FROM → RCPT TO → DATA → QUIT`) and the stage decides
+  the result. Authentication, sender, recipient and `DATA` rejections are a definite `FAILED`;
+  a transport or protocol failure at or after `DATA`, which may have been accepted, is `UNKNOWN`.
+  Neither is ever retried automatically, and both spend the approval.
+- Sent-mailbox reconciliation: `pw mail send reconcile ACTION` performs one read-only lookup for
+  the exact approved Message-ID — comparing candidate headers exactly rather than trusting a
+  server-side search — and records `FOUND`, `NOT_FOUND`, `AMBIGUOUS` or `UNAVAILABLE` in an
+  append-only history. A `FOUND` result promotes an `UNKNOWN`/`RUNNING` attempt to `SUCCEEDED` and
+  marks the action `EXECUTED` in one transaction; a missing message proves nothing and changes no
+  state; two matches are never resolved by choosing one; and there is no resend command anywhere.
+- Draft acknowledgement: `pw mail draft acknowledge DRAFT` records that the user has read a
+  draft's open questions (the questions are kept as an audit trail), which is required before a
+  send can be prepared; any later subject or body edit clears the acknowledgement again.
 
 ## [0.4.0] - 2026-09-20
 

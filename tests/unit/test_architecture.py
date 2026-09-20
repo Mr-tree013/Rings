@@ -18,9 +18,16 @@ import ast
 import inspect
 from pathlib import Path
 
+from assistant.domain.config import AssistantConfig
 from assistant.store.events import SqliteEventRepository
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "assistant"
+SMTP_MODULE = "adapters/mail/smtp.py"
+"""The one module allowed to speak SMTP (ADR-0024)."""
+RANDOMNESS_MODULES = frozenset(
+    {"adapters/security/tokens.py", "adapters/mail/message_ids.py"}
+)
+"""Where system randomness may be read: approval tokens and RFC Message-IDs (ADR-0023/0024)."""
 DOMAIN_DIR = SOURCE_ROOT / "domain"
 FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
     "sqlite3",
@@ -500,6 +507,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0008_mail_intelligence.sql",
         "0009_mail_reply_drafts.sql",
         "0010_case_action_approval.sql",
+        "0011_approved_mail_send.sql",
     ]
 
 
@@ -581,7 +589,8 @@ def test_credentials_and_passwords_stay_out_of_the_core_layers() -> None:
     assert not offenders, offenders
 
 
-def test_no_smtp_or_sending_capability_exists() -> None:
+def test_smtp_lives_only_in_the_mail_adapter() -> None:
+    """`smtplib` is one file, and that file is the only place a message can leave the machine."""
     offenders = [
         str(path.relative_to(SOURCE_ROOT))
         for path in sorted(SOURCE_ROOT.rglob("*.py"))
@@ -589,9 +598,11 @@ def test_no_smtp_or_sending_capability_exists() -> None:
             name == "smtplib" or name.startswith("smtplib.")
             for name in _imported_modules(path)
         )
+        and str(path.relative_to(SOURCE_ROOT)) != SMTP_MODULE
     ]
 
     assert not offenders, offenders
+    assert (SOURCE_ROOT / SMTP_MODULE).is_file()
 
 
 GROUNDED_MODULES = (
@@ -1107,15 +1118,156 @@ def test_only_the_composition_root_and_the_execution_path_know_an_executor() -> 
 
 
 def test_the_production_executor_set_is_empty() -> None:
-    """Phase 6A ships no capability at all: every named action type is unperformable."""
+    """Without an outbound configuration there is no capability at all."""
     from assistant.bootstrap import registered_action_executors
 
     assert registered_action_executors() == {}
+    assert registered_action_executors(AssistantConfig()) == {}
 
 
-def test_no_smtp_shell_or_browser_capability_exists() -> None:
-    """High-risk capabilities are missing from the code, not forbidden by a prompt."""
-    forbidden_modules = ("smtplib", "selenium", "playwright", "pyppeteer", "requests")
+def test_the_only_registered_capability_is_mail_send_when_smtp_is_configured() -> None:
+    """Naming a type still grants nothing: a capability appears only where one was written."""
+    from assistant.bootstrap import registered_action_executors
+    from assistant.domain.config import MailAccountConfig, MailConfig
+
+    def account(**overrides: object) -> MailAccountConfig:
+        values: dict[str, object] = {
+            "id": "smail",
+            "host": "imap.example.edu",
+            "username": "student@example.edu",
+            "mailbox": "INBOX",
+        }
+        values.update(overrides)
+        return MailAccountConfig(**values)  # type: ignore[arg-type]
+
+    receive_only = AssistantConfig(mail=MailConfig(accounts=(account(),)))
+    sending = AssistantConfig(
+        mail=MailConfig(
+            accounts=(
+                account(
+                    smtp_host="smtp.example.edu",
+                    smtp_username="student@example.edu",
+                    from_address="student@example.edu",
+                ),
+            )
+        )
+    )
+
+    assert registered_action_executors(receive_only) == {}
+    assert sorted(
+        item.value for item in registered_action_executors(sending)
+    ) == ["mail.send"]
+
+
+SEND_MODULES = (
+    "application/mail_send_actions.py",
+    "application/mail_send_status.py",
+    "application/mail_send_reconciliation.py",
+    "domain/mail_send.py",
+    "ports/mail_send_repository.py",
+    "ports/sent_mail_lookup.py",
+    "adapters/mail/smtp.py",
+    "adapters/mail/sent_lookup.py",
+)
+
+BACKGROUND_MODULES = (
+    "daemon/app.py",
+    "daemon/supervisor.py",
+    "application/event_worker.py",
+    "application/mail_sync.py",
+    "application/mail_event_handler.py",
+    "application/mail_drafts.py",
+    "application/mail_threading.py",
+    "application/scheduler_service.py",
+    "application/index_sync.py",
+    "application/interpreter.py",
+    "application/grounded_answer.py",
+)
+
+
+def test_the_send_path_never_reaches_a_model() -> None:
+    """What leaves the machine was approved as bytes; nothing rewrites it on the way out."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in SEND_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.ports.model",
+                "assistant.application.structured_model",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.adapters.model",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+    named = [
+        f"{relative} names {name}"
+        for relative in SEND_MODULES
+        for name in _identifiers(SOURCE_ROOT / relative)
+        & {"ModelPort", "StructuredModel", "ModelRequest"}
+    ]
+    assert not named, named
+
+
+def test_only_the_execution_service_can_reach_a_send_capability() -> None:
+    """No daemon, worker, scheduler or model path imports the SMTP executor or its services."""
+    forbidden = (
+        "assistant.adapters.mail.smtp",
+        "assistant.application.mail_send_actions",
+        "assistant.application.mail_send_reconciliation",
+        "assistant.application.action_execution",
+    )
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in BACKGROUND_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden)
+    ]
+
+    assert not offenders, offenders
+    text_offenders = [
+        f"{relative} mentions {needle}"
+        for relative in BACKGROUND_MODULES
+        for needle in ("SmtpMailExecutor", "mail.send")
+        if needle in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+    ]
+    assert not text_offenders, text_offenders
+
+
+def test_the_send_path_has_no_automatic_retry_or_resend_command() -> None:
+    """A resend is never a code path: it is a decision a person makes in front of the content."""
+    from assistant.cli_mail_send import mail_send_app
+
+    offenders: list[str] = []
+    for relative in SEND_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        for needle in ("retry(", "resend(", "send_again", "auto_retry", "for attempt in"):
+            if needle in text:
+                offenders.append(f"{relative} mentions {needle}")
+    assert not offenders, offenders
+
+    # The command surface says the same thing: there is nothing to retry with.
+    commands = {command.name for command in mail_send_app.registered_commands}
+    assert commands == {"prepare", "show", "reconcile", "list"}
+    suspicious = {
+        name
+        for name in _identifiers(SOURCE_ROOT / "cli_mail_send.py")
+        if any(part in name.lower() for part in ("resend", "retry", "sendagain"))
+    }
+    assert not suspicious, suspicious
+
+
+def test_no_generic_browser_or_http_capability_exists() -> None:
+    """High-risk capabilities are missing from the code, not forbidden by a prompt.
+
+    SMTP is the one transport the project implements, and only in `SMTP_MODULE`; there is still no
+    generic browser, HTTP or shell executor to widen the capability set by accident.
+    """
+    # `httpx` is excluded: it is the model adapter's client, not an action executor's capability.
+    forbidden_modules = ("selenium", "playwright", "pyppeteer", "requests")
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)} imports {imported}"
         for path in sorted(SOURCE_ROOT.rglob("*.py"))
