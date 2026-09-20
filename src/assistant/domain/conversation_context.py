@@ -84,6 +84,8 @@ class ConversationContext:
     entities: tuple[ConversationEntityRef, ...]
     history_truncated: bool
     confirmation_pending: bool
+    capabilities: dict[str, object] | None = None
+    """What this build can do, computed from the runtime (ADR-0035 §19). Never credentials."""
 
     @property
     def message_ids(self) -> frozenset[str]:
@@ -101,6 +103,7 @@ class ConversationContext:
                 "confirmation_pending": self.confirmation_pending,
             },
             "recent_entities": [entity.to_payload() for entity in self.entities],
+            "capabilities": self.capabilities,
         }
 
     def to_json(self) -> str:

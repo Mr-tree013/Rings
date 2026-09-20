@@ -18,6 +18,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.application.conversation_capabilities.registry import OperationResult
+from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.task import TaskPriority
 
 CONFIRMATION_OFFER = (
@@ -112,7 +113,88 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return _render_mail_reconciled(data)
     if result.kind == "mail_reconciliation_absent":
         return "还没有准备过要发送的邮件，所以没有可以对账的对象。"
+    if result.kind == "mail_accounts":
+        return _render_mail_accounts(data)
+    if result.kind == "capabilities":
+        return render_capabilities(data)
     raise AssertionError(f"unrendered operation result: {result.kind}")  # pragma: no cover
+
+
+_STATE_WORDS = {
+    "available": "可用",
+    "not_configured": "未配置",
+    "disabled": "已关闭",
+    "unavailable": "本版本不支持",
+}
+
+
+def _render_mail_accounts(data: dict[str, Any]) -> str:
+    """Configured mailboxes — never confused with how much mail happens to be stored."""
+    accounts = data.get("accounts") or []
+    if not accounts:
+        return "当前没有配置任何邮箱，所以我不能读取或发送邮件。"
+    lines = [f"当前配置了 {len(accounts)} 个邮箱："]
+    for account in accounts:
+        address = account.get("from_address") or account.get("username") or "（未设置地址）"
+        readiness = []
+        readiness.append("收信已配置" if account.get("receive_configured") else "收信未配置")
+        readiness.append("发信已配置" if account.get("send_configured") else "发信未配置")
+        if not account.get("enabled"):
+            readiness.append("已停用")
+        lines.append(
+            f"- {account.get('account_id', '')} — {address}"
+            f"（IMAP {account.get('host', '')}；{'、'.join(readiness)}）"
+        )
+    cached = sum(int(account.get("stored_messages", 0)) for account in accounts)
+    lines.append(f"本地目前缓存了 {cached} 封邮件。")
+    return "\n".join(lines)
+
+
+def render_capabilities(data: dict[str, Any]) -> str:
+    """What Tree can do here, straight from the runtime's own metadata."""
+    areas = data.get("areas") or {}
+
+    def state_of(name: str) -> str:
+        area = areas.get(name) or {}
+        return str(area.get("state", "unavailable"))
+
+    lines = ["我现在能做这些（按当前配置）："]
+    lines.append("· 任务：查看列表和详情、新建、改标题/优先级/预估、设或清截止时间、标记完成")
+    lines.append("· 日历与工作记录：查看未来几天的安排、登记已占用的时间、记录实际投入")
+    lines.append("· 提醒：查看提醒收件箱、把某条标为已读")
+    planning = areas.get("planning") or {}
+    if state_of("planning") == "available":
+        timezone = planning.get("timezone") or "未设置"
+        lines.append(f"· 周计划：生成并应用周计划提案（时区 {timezone}；应用前需要你确认）")
+    else:
+        lines.append("· 周计划：需要先在配置里设置 [planning].timezone")
+    knowledge = areas.get("knowledge") or {}
+    if state_of("knowledge") == "available":
+        lines.append(
+            f"· 资料问答：从你索引的 {knowledge.get('configured_roots', 0)} 个目录里提问并给出引用"
+        )
+    else:
+        lines.append("· 资料问答：还没有配置要索引的目录")
+    mail_read = areas.get("mail_read") or {}
+    if state_of("mail_read") == "available":
+        lines.append(
+            f"· 邮件（已配置 {mail_read.get('enabled_accounts', 0)} 个启用账号）："
+            "同步收信、列出和查看邮件、按会话查看"
+        )
+        lines.append("· 回复邮件：只为已收到的邮件起草回复（不能新建任意收件人的邮件）")
+    else:
+        lines.append("· 邮件：当前没有配置任何邮箱")
+    if state_of("mail_send_after_confirmation") == "available":
+        lines.append(
+            "· 发送邮件：先准备，再把将要发出的完整内容给你看；"
+            "只有你明确回复「确认发送」才会发出"
+        )
+    else:
+        lines.append("· 发送邮件：需要先配置发信（SMTP）账号")
+    lines.append("")
+    lines.append("做不到的：新建一封任意收件人的邮件、提交校外系统的手续（eHall）、")
+    lines.append("创建审批或绕过确认执行外部动作。")
+    return "\n".join(lines)
 
 
 def _render_mail_status(data: dict[str, Any]) -> str:
@@ -257,6 +339,11 @@ def render_interpretation_refused(reason: str) -> str:
     return f"我没能安全地理解这条请求，所以什么都没有执行。（{reason}）"
 
 
+def render_preflight_refused(reason: str) -> str:
+    """A plan could not be carried out in full, so none of it was applied (ADR-0035 §15-§16)."""
+    return f"我没有执行任何操作：{reason}。你可以调整一下再说一次。"
+
+
 def render_mail_send_preview(payload: dict[str, object]) -> str:
     """The exact bytes that would leave the machine, from the immutable action payload.
 
@@ -309,6 +396,69 @@ def render_send_result(status: str | None, failure_reason: str | None = None) ->
         )
     detail = "" if not failure_reason else f"（{failure_reason}）"
     return f"发送失败，没有确认产生外部发送结果。{detail}"
+
+
+_INTERNAL_MARKERS = (
+    "traceback",
+    "jsonschema",
+    "validationerror",
+    "required property",
+    "is not of type",
+    "is not valid under any",
+    "sqlite3.",
+    "keyerror",
+    "assertionerror",
+    "model output violates",
+)
+"""Substrings that must never reach the normal user interface (ADR-0035 §8, §32)."""
+
+_ERROR_SENTENCES: dict[ConversationErrorCode, str] = {
+    ConversationErrorCode.INPUT_DECODE_FAILED: (
+        "刚才的输入包含无法识别的终端字符，我没有执行任何操作。请重新输入这一句。"
+    ),
+    ConversationErrorCode.MODEL_TIMEOUT: (
+        "模型这次没有及时回应，所以什么都没有执行。要不要再说一次？"
+    ),
+    ConversationErrorCode.MODEL_INVALID_OUTPUT: (
+        "我刚才没能可靠地理解这句话，因此没有执行任何操作。你可以换一种说法再试一次。"
+    ),
+    ConversationErrorCode.MODEL_REPAIR_FAILED: (
+        "我刚才没能可靠地理解这句话，因此没有执行任何操作。你可以换一种说法再试一次。"
+    ),
+    ConversationErrorCode.INTERNAL_ERROR: (
+        "刚才那一步出了内部错误，我没有继续执行。可以再说一次，或者用 `pw` 检查当前状态。"
+    ),
+}
+
+
+def render_error(
+    code: ConversationErrorCode,
+    detail: str | None = None,
+    *,
+    debug: bool = False,
+) -> str:
+    """One recoverable failure, in words; internals only when debug is on.
+
+    A failure the user can act on gets a sentence with no jargon. `detail` is kept for the debug
+    path and for tests: it is attached only when debug is on, and never when it looks like an
+    internal error string.
+    """
+    sentence = _ERROR_SENTENCES.get(
+        code, _ERROR_SENTENCES[ConversationErrorCode.INTERNAL_ERROR]
+    )
+    if not debug or not detail:
+        return sentence
+    safe = sanitise_detail(detail)
+    return sentence if safe is None else f"{sentence}\n[debug] {safe}"
+
+
+def sanitise_detail(detail: str) -> str | None:
+    """Return `detail` only when it carries no internal machinery."""
+    lowered = detail.lower()
+    if any(marker in lowered for marker in _INTERNAL_MARKERS):
+        return None
+    trimmed = detail.strip()
+    return trimmed[:300] or None
 
 
 def render_review_withdrawn() -> str:
@@ -579,14 +729,17 @@ def _zone(timezone: str | None) -> ZoneInfo | Any:
 
 __all__ = [
     "CONFIRMATION_OFFER",
+    "render_capabilities",
     "render_confirmation_expired",
     "render_confirmation_rejected",
     "render_confirmation_request",
     "render_empty_turn",
+    "render_error",
     "render_failure",
     "render_interpretation_refused",
     "render_mail_send_preview",
     "render_multiple_pending",
+    "render_preflight_refused",
     "render_result",
     "render_results",
     "render_review_ambiguous",

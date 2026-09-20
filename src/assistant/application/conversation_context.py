@@ -69,6 +69,7 @@ class ConversationContextBuilder:
         clock: Clock,
         *,
         planning_timezone: str | None,
+        capability_snapshot: dict[str, object] | None = None,
         mail: MailRepository | None = None,
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_drafts: MailDraftRepository | None = None,
@@ -84,6 +85,7 @@ class ConversationContextBuilder:
         self._scheduler = scheduler
         self._clock = clock
         self._planning_timezone = planning_timezone
+        self._capability_snapshot = capability_snapshot
         self._mail = mail
         self._mail_intelligence = mail_intelligence
         self._mail_drafts = mail_drafts
@@ -111,6 +113,7 @@ class ConversationContextBuilder:
             entities=entities,
             history_truncated=truncated,
             confirmation_pending=confirmation_pending,
+            capabilities=self._capability_snapshot,
         )
 
     async def _entities(self, now: datetime) -> tuple[ConversationEntityRef, ...]:

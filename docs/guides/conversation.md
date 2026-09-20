@@ -29,6 +29,19 @@ you need first:
 On start-up Tree resumes the most recent ACTIVE conversation and says so. The whole session is one
 process: the provider client is opened once, not per turn.
 
+Two reliability promises are worth knowing before you rely on it:
+
+* **A malformed model or provider response never executes anything.** Tree normalizes the benign
+  variations providers actually emit (`operations: null`, a missing field), and if an answer is
+  still unusable it may repair it **once** with the same closed schema. If that also fails, the turn
+  ends with a sentence and nothing has happened.
+* **A terminal decoding failure does not end the session.** If the bytes your terminal sent cannot
+  be read with the declared encoding, Tree says so, executes nothing, and keeps the prompt open.
+
+What Tree says it can do comes from the runtime's own capability metadata rather than from a script:
+`你能做什么` reflects the accounts, roots and timezone this host actually has, and `/help` uses the
+same source.
+
 ## What you can say
 
 ```text
@@ -136,6 +149,18 @@ What makes this safe:
 Conversational mail is reply-only, exactly like the underlying v1 mail domain: no contact book, no
 new-message compose, no attachments and no scheduling.
 
+### Which mailbox is configured is not how much mail is stored
+
+```text
+You > 你能查找哪个邮箱？QQ还是学校邮箱？
+Tree > 当前配置了 1 个邮箱：
+       school — student@example.edu（IMAP imap.example.edu；收信已配置、发信已配置）
+       本地目前缓存了 0 封邮件。
+```
+
+The first line answers the question that was asked — which accounts exist — and the last line is a
+separate fact about content. They are never merged.
+
 ## What it will not do
 
 * **No eHall and no generic actions.** Mail is the only external capability a conversation can
@@ -210,6 +235,10 @@ unchanged: see [getting-started.md](getting-started.md), [planning.md](planning.
 - There are no MCP prompts, no sampling and no conversation-driven external actions in Phase 10A.
 - Conversation content is deliberately *not* indexed as knowledge: your documents are the source
   of truth, not your chat log.
+- A plan with several operations is fully preflighted first: if one step cannot run, none of them do,
+  and Tree says which step it stopped on.
+- Recurring rules ("每周一早上十点") are not a calendar feature in v1.1; Tree says so instead of
+  quietly creating a single Monday.
 
 ## Implementation notes
 

@@ -26,6 +26,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from assistant.application.conversation_plan_normalizer import (
+    describe_issue,
+    normalize_wire_plan,
+)
 from assistant.application.conversation_prompt import (
     CONVERSATION_INTERPRETER_VERSION,
     TREE_INSTRUCTIONS,
@@ -37,6 +41,7 @@ from assistant.domain.conversation_context import (
     ConversationContext,
     ConversationEntityKind,
 )
+from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
     ConversationOperationArguments,
     ConversationOperationType,
@@ -58,12 +63,19 @@ from assistant.domain.conversation_plan import (
     build_arguments,
     requires_planning_timezone,
 )
-from assistant.domain.errors import ConversationCapabilityUnavailable, InvalidConversationPlan
+from assistant.domain.errors import (
+    ConversationCapabilityUnavailable,
+    ConversationInterpretationFailed,
+    InvalidConversationPlan,
+    ModelOutputNotJson,
+    ModelOutputSchemaViolation,
+)
 from assistant.domain.model import (
     ModelMessage,
     ModelOutputMode,
     ModelReasoningEffort,
     ModelRequest,
+    ModelResponse,
     ModelRole,
 )
 from assistant.ports.model import ModelPort
@@ -86,24 +98,58 @@ class ConversationInterpreterService:
         self._config = config
 
     async def plan(self, text: str, context: ConversationContext) -> ConversationPlan:
-        """Interpret `text`, or ask for what is missing.
+        """Interpret `text`, with one bounded repair attempt before giving up.
+
+        The pipeline is fixed and has no side effect at any step:
+
+        ```text
+        complete → JSON → normalize benign variation → closed schema → typed plan
+           │                                                    │
+           └────────────── one repair call with the issue ──────┘  (never a second)
+        ```
 
         Raises:
-            InvalidConversationPlan: the message is empty, or the answer is not a usable plan.
-            ModelOutputSchemaViolation: the answer does not match the schema.
+            InvalidConversationPlan: the message itself is empty.
+            ConversationCapabilityUnavailable: the answer named an operation this build does not
+                offer — a refusal, never something to "repair" into a different operation.
+            ConversationInterpretationFailed: two answers in a row were unusable.
+            Model* errors: the provider failed; nothing was executed.
         """
         cleaned = _validate_input(text)
         request = self._build_request(cleaned, context)
         response = await self._model.complete(request)
-        _refuse_unknown_operation_types(response.text)
-        payload = parse_structured_output(response, CONVERSATION_SCHEMA_V1)
-        plan = parse_conversation_plan(payload, context)
+        plan, issue = _plan_or_issue(response.text, context)
+        if plan is None:
+            repaired = await self._model.complete(self._build_repair_request(response.text, issue))
+            plan, issue = _plan_or_issue(repaired.text, context)
+        if plan is None:
+            raise ConversationInterpretationFailed(
+                ConversationErrorCode.MODEL_REPAIR_FAILED, issue
+            )
         if context.planning_timezone is None and _needs_timezone(plan):
             return ConversationPlan(
                 mode=ConversationPlanMode.CLARIFICATION,
                 clarification=MISSING_TIMEZONE_QUESTION,
             )
         return plan
+
+    def _build_repair_request(self, answer: str, issue: str | None) -> ModelRequest:
+        """One bounded repair request: the same schema, the answer, and a compact issue."""
+        payload = {
+            "task": "repair",
+            "previous_answer": answer[:4000],
+            "issue": describe_issue(issue or "the answer did not match the requested schema"),
+        }
+        return ModelRequest(
+            instructions=TREE_INSTRUCTIONS,
+            messages=(
+                ModelMessage(role=ModelRole.USER, content=_canonical_json(payload)),
+            ),
+            output_mode=ModelOutputMode.JSON_SCHEMA,
+            json_schema=CONVERSATION_SCHEMA_V1,
+            reasoning_effort=ModelReasoningEffort(self._config.reasoning_effort),
+            max_output_tokens=self._config.max_output_tokens,
+        )
 
     def _build_request(self, text: str, context: ConversationContext) -> ModelRequest:
         """One USER message holding canonical JSON; instructions carry the fixed rules."""
@@ -125,6 +171,39 @@ def _validate_input(text: str) -> str:
     if not cleaned:
         raise InvalidConversationPlan("there is nothing to interpret")
     return cleaned
+
+
+def _plan_or_issue(
+    raw_text: str, context: ConversationContext
+) -> tuple[ConversationPlan | None, str | None]:
+    """One pass of the pipeline: JSON, benign normalization, schema, typed plan."""
+    try:
+        decoded = json.loads(raw_text.strip())
+    except (ValueError, AttributeError):
+        return None, "the answer was not JSON"
+    _refuse_unknown_operation_types(json.dumps(decoded))
+    normalized, issue = normalize_wire_plan(decoded)
+    if normalized is None:
+        return None, issue
+    try:
+        payload = parse_structured_output(_as_response(normalized), CONVERSATION_SCHEMA_V1)
+    except ModelOutputNotJson as exc:
+        return None, str(exc)
+    except ModelOutputSchemaViolation as exc:
+        return None, str(exc)
+    try:
+        return parse_conversation_plan(payload, context), None
+    except InvalidConversationPlan as exc:
+        return None, str(exc)
+
+
+def _as_response(payload: dict[str, Any]) -> ModelResponse:
+    """Wrap a normalized payload so the existing parser can validate it unchanged."""
+    return ModelResponse(
+        text=json.dumps(payload, ensure_ascii=False),
+        model="normalized-local",
+        provider="local",
+    )
 
 
 def _canonical_json(payload: dict[str, Any]) -> str:

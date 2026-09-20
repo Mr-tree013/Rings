@@ -117,6 +117,10 @@ and questions about your indexed sources. External effects are never the model's
 mail, Tree drafts, shows the **exact bytes** that would be sent, and only your explicit
 confirmation sends it — the `pw` approval chain is still the mechanism behind it.
 
+When the model answers unusably, Tree repairs it **once** and executes nothing; when the terminal
+sends bytes it cannot decode, it says so and keeps the session open. "What can you do?" is answered
+from the runtime's own configuration.
+
 | Entry point | What it is for |
 | --- | --- |
 | `uv run rings` | The conversational surface, for everyday use |

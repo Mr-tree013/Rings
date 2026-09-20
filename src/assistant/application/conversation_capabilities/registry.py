@@ -57,6 +57,24 @@ OperationHandler = Callable[[ConversationOperationArguments], Awaitable[Operatio
 
 
 @dataclass(frozen=True, slots=True)
+class PreflightContext:
+    """What the rest of the plan says, so a dependency inside one turn is not a refusal.
+
+    A legal turn may draft a reply and prepare its send in the same message, or create a calendar
+    event and then plan the week around it. The readiness check for the second operation must know
+    that the first one is coming (ADR-0035 §15-§16).
+    """
+
+    preceding: tuple[ConversationOperationType, ...] = ()
+
+
+PreflightCheck = Callable[
+    [ConversationOperationArguments, PreflightContext], Awaitable[str | None]
+]
+"""A read-only readiness check: `None` means "ready", a string is the reason it is not."""
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationCapability:
     """One operation a conversation may propose."""
 
@@ -64,6 +82,8 @@ class ConversationCapability:
     policy: ConfirmationPolicy
     handler: OperationHandler
     description: str = ""
+    preflight: PreflightCheck | None = None
+    """Run for every operation in a turn *before* the first mutation (ADR-0035 §15-§16)."""
 
 
 class ConversationCapabilityRegistry:
@@ -114,4 +134,6 @@ __all__ = [
     "ConversationCapabilityRegistry",
     "OperationHandler",
     "OperationResult",
+    "PreflightCheck",
+    "PreflightContext",
 ]

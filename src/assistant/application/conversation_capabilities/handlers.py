@@ -12,16 +12,22 @@ renderer's job (`conversation_render.py`), which keeps this module about calling
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from typing import cast
 
 from assistant.application.calendar_service import CalendarService, CreateCalendarEvent
 from assistant.application.case_service import CaseService
+from assistant.application.conversation_capabilities.introspection import (
+    CapabilitySnapshot,
+)
 from assistant.application.conversation_capabilities.registry import (
     ConfirmationPolicy,
     ConversationCapability,
     ConversationCapabilityRegistry,
+    OperationHandler,
     OperationResult,
+    PreflightCheck,
+    PreflightContext,
 )
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.mail_drafts import MailDraftService
@@ -32,12 +38,14 @@ from assistant.application.mail_sync import MailSyncService
 from assistant.application.planner_service import PlannerService
 from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.work_service import WorkService
+from assistant.domain.config import MailAccountConfig
 from assistant.domain.conversation_plan import (
     CalendarCreateArguments,
     CalendarListArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     KnowledgeAskArguments,
+    MailAccountsArguments,
     MailListArguments,
     MailPrepareReplySendArguments,
     MailReconcileSendArguments,
@@ -52,6 +60,7 @@ from assistant.domain.conversation_plan import (
     PlanCurrentArguments,
     PlanProposeWeekArguments,
     StatusGetArguments,
+    SystemCapabilitiesArguments,
     TaskClearDeadlineArguments,
     TaskCompleteArguments,
     TaskCreateArguments,
@@ -120,6 +129,8 @@ class ConversationHandlers:
         mail_reconciliation: MailSendReconciliationService | None = None,
         cases: CaseService | None = None,
         mail_drafts_repository: MailDraftRepository | None = None,
+        capability_snapshot: CapabilitySnapshot | None = None,
+        mail_accounts: tuple[MailAccountConfig, ...] = (),
         knowledge_limit: int = 8,
     ) -> None:
         self._tasks = tasks
@@ -139,6 +150,8 @@ class ConversationHandlers:
         self._mail_reconciliation = mail_reconciliation
         self._cases = cases
         self._mail_drafts_repository = mail_drafts_repository
+        self._capability_snapshot = capability_snapshot
+        self._mail_accounts = mail_accounts
         self._knowledge_limit = knowledge_limit
 
     # ------------------------------------------------------------------------- reads
@@ -484,7 +497,116 @@ class ConversationHandlers:
             },
         )
 
+    async def mail_accounts(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """Which mailboxes are configured — a different question from how much mail is stored."""
+        _expect(MailAccountsArguments, arguments)
+        accounts: list[dict[str, object]] = []
+        mail = self._mail
+        for account in self._mail_accounts:
+            stored = 0
+            if mail is not None:
+                stored = await mail.count_messages(account_id=account.id)
+            accounts.append(
+                {
+                    "account_id": account.id,
+                    # Safe configuration metadata only: never a password, token or key.
+                    "username": account.username,
+                    "from_address": account.from_address,
+                    "host": account.host,
+                    "enabled": account.enabled,
+                    "receive_configured": True,
+                    "send_configured": bool(account.smtp_host and account.from_address),
+                    "stored_messages": stored,
+                }
+            )
+        return OperationResult(kind="mail_accounts", data={"accounts": accounts})
+
+    async def system_capabilities(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """What this build can do here, from the registry and the loaded configuration."""
+        _expect(SystemCapabilitiesArguments, arguments)
+        snapshot = self._capability_snapshot
+        if snapshot is None:  # pragma: no cover - the composition root always supplies one
+            raise ConversationCapabilityUnavailable(
+                "this host cannot describe its own capabilities"
+            )
+        return OperationResult(
+            kind="capabilities",
+            data={"areas": snapshot.to_payload(), "operations": list(snapshot.operation_types)},
+        )
+
     # ------------------------------------------------------------------------ mail support
+
+    async def preflight_task(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A task operation must name a task that exists, before anything else runs."""
+        task_id = _task_reference(arguments)
+        if task_id is None:  # pragma: no cover - only task operations reach this checker
+            return None
+        if await self._commitments.get_task(task_id) is None:
+            return f"找不到这个任务（{str(task_id)[:8]}）"
+        return None
+
+    async def preflight_mail_message(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A mail read or draft must name a message that is stored."""
+        message_id = _mail_message_reference(arguments)
+        if message_id is None or self._mail is None:
+            return None
+        try:
+            resolved = await self._mail.resolve_message_id(str(message_id))
+        except Exception:
+            return "找不到这封邮件"
+        return None if resolved is not None else "找不到这封邮件"
+
+    async def preflight_mail_draft(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """Preparing a send needs a draft that exists for the message it names."""
+        prepared = (
+            arguments if isinstance(arguments, MailPrepareReplySendArguments) else None
+        )
+        draft_id = None if prepared is None else prepared.draft_id
+        message_id = None if prepared is None else prepared.message_id
+        drafts = self._mail_drafts
+        if drafts is None:
+            return "这个主机没有可用的草稿服务"
+        if draft_id is not None:
+            try:
+                await drafts.get_draft(str(draft_id))
+            except Exception:
+                return "找不到这份草稿"
+            return None
+        if message_id is None:
+            return "没有指定要发送的草稿"
+        if ConversationOperationType.MAIL_REPLY_DRAFT in context.preceding:
+            # This turn drafts the reply first, so the draft does not exist yet — and that is fine.
+            return None
+        for listing in await drafts.list_drafts(limit=MAIL_LIST_LIMIT):
+            if str(listing.draft.reply_to_message_id) == str(message_id):
+                return None
+        return "这封邮件还没有草稿，我需要先起草一封回复"
+
+    async def preflight_proposal(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """Applying a proposal needs one that is still pending."""
+        proposal_id = (
+            arguments.proposal_id
+            if isinstance(arguments, PlanApplyProposalArguments)
+            else None
+        )
+        try:
+            if proposal_id is None:
+                summary = await self._latest_pending_proposal()
+                return None if summary is not None else "现在没有待审阅的周计划提案"
+            await self._planner.get_proposal_detail(str(proposal_id))
+        except Exception:
+            return "找不到这份周计划提案"
+        return None
 
     async def _resolve_draft_for_prepare(
         self, asked: MailPrepareReplySendArguments
@@ -680,11 +802,15 @@ class ConversationHandlers:
 
 def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapabilityRegistry:
     """The frozen Phase 10A capability set, with its code-owned confirmation policies."""
-    handler = Callable[..., Awaitable[OperationResult]]
-    entries: tuple[tuple[ConversationOperationType, ConfirmationPolicy, handler], ...] = (
+    entries: tuple[tuple[object, ...], ...] = (
         (ConversationOperationType.STATUS_GET, ConfirmationPolicy.READ, handlers.status_get),
         (ConversationOperationType.TASK_LIST, ConfirmationPolicy.READ, handlers.task_list),
-        (ConversationOperationType.TASK_SHOW, ConfirmationPolicy.READ, handlers.task_show),
+        (
+            ConversationOperationType.TASK_SHOW,
+            ConfirmationPolicy.READ,
+            handlers.task_show,
+            handlers.preflight_task,
+        ),
         (ConversationOperationType.CALENDAR_LIST, ConfirmationPolicy.READ, handlers.calendar_list),
         (ConversationOperationType.PLAN_CURRENT, ConfirmationPolicy.READ, handlers.plan_current),
         (
@@ -702,21 +828,29 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.task_create,
         ),
-        (ConversationOperationType.TASK_EDIT, ConfirmationPolicy.LOCAL_WRITE, handlers.task_edit),
+        (
+            ConversationOperationType.TASK_EDIT,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.task_edit,
+            handlers.preflight_task,
+        ),
         (
             ConversationOperationType.TASK_SET_DEADLINE,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.task_set_deadline,
+            handlers.preflight_task,
         ),
         (
             ConversationOperationType.TASK_CLEAR_DEADLINE,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.task_clear_deadline,
+            handlers.preflight_task,
         ),
         (
             ConversationOperationType.TASK_COMPLETE,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.task_complete,
+            handlers.preflight_task,
         ),
         (
             ConversationOperationType.CALENDAR_CREATE,
@@ -727,6 +861,7 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConversationOperationType.WORK_RECORD,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.work_record,
+            handlers.preflight_task,
         ),
         (
             ConversationOperationType.PLAN_PROPOSE_WEEK,
@@ -737,6 +872,7 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConversationOperationType.PLAN_APPLY_PROPOSAL,
             ConfirmationPolicy.CONFIRM_LOCAL,
             handlers.plan_apply_proposal,
+            handlers.preflight_proposal,
         ),
         (
             ConversationOperationType.NOTIFICATION_READ,
@@ -749,7 +885,12 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConfirmationPolicy.READ,
             handlers.mail_list,
         ),
-        (ConversationOperationType.MAIL_SHOW, ConfirmationPolicy.READ, handlers.mail_show),
+        (
+            ConversationOperationType.MAIL_SHOW,
+            ConfirmationPolicy.READ,
+            handlers.mail_show,
+            handlers.preflight_mail_message,
+        ),
         (
             ConversationOperationType.MAIL_THREAD,
             ConfirmationPolicy.READ,
@@ -765,16 +906,33 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConversationOperationType.MAIL_REPLY_DRAFT,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.mail_reply_draft,
+            handlers.preflight_mail_message,
         ),
         (
             ConversationOperationType.MAIL_PREPARE_REPLY_SEND,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.mail_prepare_reply_send,
+            handlers.preflight_mail_draft,
+        ),
+        (
+            ConversationOperationType.MAIL_ACCOUNTS,
+            ConfirmationPolicy.READ,
+            handlers.mail_accounts,
+        ),
+        (
+            ConversationOperationType.SYSTEM_CAPABILITIES,
+            ConfirmationPolicy.READ,
+            handlers.system_capabilities,
         ),
     )
     return ConversationCapabilityRegistry(
-        ConversationCapability(operation_type=kind, policy=policy, handler=handler)
-        for kind, policy, handler in entries
+        ConversationCapability(
+            operation_type=cast(ConversationOperationType, entry[0]),
+            policy=cast(ConfirmationPolicy, entry[1]),
+            handler=cast("OperationHandler", entry[2]),
+            preflight=cast("PreflightCheck | None", entry[3] if len(entry) > 3 else None),
+        )
+        for entry in entries
     )
 
 
@@ -787,6 +945,30 @@ def _expect[ArgumentsT: ConversationOperationArguments](
             f"handler expected {expected.__name__}, got {type(arguments).__name__}"
         )
     return arguments
+
+
+def _task_reference(arguments: ConversationOperationArguments) -> TaskId | None:
+    """The task an operation names, read through its own type rather than by reflection."""
+    if isinstance(
+        arguments,
+        (
+            TaskShowArguments,
+            TaskEditArguments,
+            TaskCompleteArguments,
+            TaskSetDeadlineArguments,
+            TaskClearDeadlineArguments,
+            WorkRecordArguments,
+        ),
+    ):
+        return arguments.task_id
+    return None
+
+
+def _mail_message_reference(arguments: ConversationOperationArguments) -> str | None:
+    """The message an operation names, read through its own type."""
+    if isinstance(arguments, (MailShowArguments, MailReplyDraftArguments)):
+        return arguments.message_id
+    return None
 
 
 def _task_payload(

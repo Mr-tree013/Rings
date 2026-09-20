@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from assistant.domain.conversation_errors import ConversationErrorCode
     from assistant.domain.inbound_event import EventStatus
+
 
 
 class DomainError(Exception):
@@ -1520,6 +1522,19 @@ class ConversationOperationUnknown(ConversationError):
     """An operation was interrupted mid-apply; its outcome is not knowable locally."""
 
 
+class ConversationInterpretationFailed(ConversationError):
+    """The model's answer could not be turned into a usable plan, even after one repair attempt.
+
+    `code` is one of the finite conversation error codes; `detail` is developer-facing text that is
+    never shown in the normal user interface (ADR-0035 §8, §34).
+    """
+
+    def __init__(self, code: ConversationErrorCode, detail: str | None = None) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(detail or "the answer could not be interpreted")
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1547,6 +1562,7 @@ __all__ = [
     "ConversationConfirmationExpired",
     "ConversationConfirmationRequired",
     "ConversationError",
+    "ConversationInterpretationFailed",
     "ConversationNeedsClarification",
     "ConversationOperationNotFound",
     "ConversationOperationUnknown",

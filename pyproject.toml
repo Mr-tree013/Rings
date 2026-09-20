@@ -71,6 +71,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # The Tree conversation surface answers the user in Chinese, so fullwidth punctuation is
 # intentional wording rather than an ambiguous-character slip.
+"src/assistant/application/conversation_capabilities/handlers.py" = ["RUF001"]
 "src/assistant/application/conversation_context.py" = ["RUF001"]
 "src/assistant/application/conversation_interpreter.py" = ["RUF001"]
 "src/assistant/application/conversation_render.py" = ["RUF001"]
@@ -82,7 +83,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/integration/test_conversation_runtime.py" = ["RUF001"]
 "tests/unit/test_cli_chat.py" = ["RUF001"]
 "tests/unit/test_cli_chat_mail.py" = ["RUF001"]
+"tests/acceptance/test_tree_real_usage.py" = ["RUF001"]
 "tests/unit/test_conversation_domain.py" = ["RUF001"]
+"tests/unit/test_conversation_reliability.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.13"

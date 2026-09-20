@@ -74,6 +74,8 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "mail.reply_draft",
         "mail.prepare_reply_send",
         "mail.reconcile_send",
+        "mail.accounts",
+        "system.capabilities",
     }
 
     assert {member.value for member in ConversationOperationType} == expected
@@ -94,9 +96,10 @@ def test_no_external_or_privileged_operation_exists() -> None:
         "mail.reply_draft",
         "mail.prepare_reply_send",
         "mail.reconcile_send",
+        "mail.accounts",
     }
     for member in ConversationOperationType:
-        if member.value in reviewed_mail:
+        if member.value in reviewed_mail or member.value == "system.capabilities":
             continue
         assert not member.value.startswith(FORBIDDEN_OPERATION_PREFIXES), member.value
 

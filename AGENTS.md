@@ -808,6 +808,18 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
 
 新增能力前先确认它属于哪个 Phase，并在 spec 或 ADR 里落了设计再动手。
 
+### 6.3 对话可靠性规则（Phase 10C，ADR-0035）
+
+- `rings` 是产品面：可恢复的输入/模型/应用错误必须是"一句话 + 继续"，绝不 traceback。
+- 终端输入必须经 `ConsoleInput` 严格解码；解不出来的字节 → 不建 turn、不调模型、不改状态，提示重来。
+- 模型输出是不可信输入：良性缺失可以补齐（null → 空列表等），未知操作/坏参数/歧义引用一律 fail closed。
+- 只允许**一次**有界修复调用（无副作用、无 tool loop）；第二次失败 → 明确告知且零执行。
+- 普通 UI 不得出现 jsonschema / Traceback / required property 等内部字串；细节只在 `RINGS_DEBUG=1`。
+- 能力描述必须来自运行时元数据（registry + config）：`system.capabilities`、`/help`、模型上下文同源。
+- 已配置账号（`mail.accounts`）与本地邮件数量是两个概念，不得混答；账号信息绝不含凭证。
+- 多操作计划必须先整体预检再执行第一个变更；不合法则整轮零变更并说明原因。
+- SMTP `UNKNOWN`、`ActionRequest`/`Approval`/`ExecutionRun` 与"确认发送"语义保持冻结。
+
 ## 7. 版本管理
 
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。

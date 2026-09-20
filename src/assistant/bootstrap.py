@@ -60,6 +60,9 @@ from assistant.application.conversation_capabilities import (
     ConversationHandlers,
     build_phase_10a_registry,
 )
+from assistant.application.conversation_capabilities.introspection import (
+    build_capability_snapshot,
+)
 from assistant.application.conversation_context import ConversationContextBuilder
 from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
@@ -1207,6 +1210,7 @@ def conversation_context_builder(
         scheduler_repository(database),
         clock,
         planning_timezone=_planning_timezone_of(config),
+        capability_snapshot=build_capability_snapshot(config).to_payload(),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         mail_drafts=mail_draft_repository(database),
@@ -1260,6 +1264,7 @@ def conversation_capabilities(
 ) -> ConversationCapabilityRegistry:
     """The frozen Phase 10A capability set, over the existing application services."""
     knowledge = grounded_context_builder(clock, database)
+    snapshot = build_capability_snapshot(config)
     handlers = ConversationHandlers(
         tasks=task_service(database, clock, config),
         calendar=calendar_service(database, clock, config),
@@ -1284,6 +1289,8 @@ def conversation_capabilities(
         mail_reconciliation=mail_send_reconciliation_service(config, clock, database),
         cases=case_service(clock, database),
         mail_drafts_repository=mail_draft_repository(database),
+        capability_snapshot=snapshot,
+        mail_accounts=() if config is None else config.mail.accounts,
     )
     return build_phase_10a_registry(handlers)
 

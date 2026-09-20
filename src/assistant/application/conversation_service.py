@@ -21,7 +21,7 @@ clock. It imports no adapter, no SQLite, no SMTP and no eHall code, which is wha
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -30,6 +30,7 @@ from assistant.application.conversation_capabilities.registry import (
     ConfirmationPolicy,
     ConversationCapabilityRegistry,
     OperationResult,
+    PreflightContext,
 )
 from assistant.application.conversation_context import ConversationContextBuilder
 from assistant.application.conversation_external_review import (
@@ -51,6 +52,7 @@ from assistant.domain.conversation import (
     ConversationTurn,
     ConversationTurnStatus,
 )
+from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
     ConversationOperationArguments,
     ConversationOperationType,
@@ -66,9 +68,20 @@ from assistant.domain.conversation_review import (
 )
 from assistant.domain.errors import (
     ConversationCapabilityUnavailable,
+    ConversationInterpretationFailed,
     ConversationThreadNotFound,
     DomainError,
+    InvalidConversationPlan,
     InvalidConversationThread,
+    ModelAuthenticationError,
+    ModelBillingError,
+    ModelCredentialsMissing,
+    ModelNotConfigured,
+    ModelOutputNotJson,
+    ModelOutputSchemaViolation,
+    ModelRateLimited,
+    ModelTransientError,
+    ModelUnavailable,
 )
 from assistant.ports.clock import Clock
 from assistant.ports.conversation_interpreter import ConversationInterpreter
@@ -83,6 +96,12 @@ EXTERNAL_CONFIRMATION_INTERPRETER_VERSION = "deterministic-external-confirmation
 CONFIRMATION_INTENT_CONFIRM = "confirm"
 CONFIRMATION_INTENT_REJECT = "reject"
 
+_ACTIVITY_HINTS = {
+    ConversationOperationType.MAIL_SYNC: "正在查看邮箱……",
+    ConversationOperationType.KNOWLEDGE_ASK: "正在查资料……",
+}
+"""Short, non-persisted hints for the operations that visibly take time (ADR-0035 §26)."""
+
 
 @dataclass(frozen=True, slots=True)
 class ConversationReply:
@@ -95,6 +114,8 @@ class ConversationReply:
     waiting_for_confirmation: bool = False
     operation_types: tuple[str, ...] = ()
     notices: tuple[str, ...] = ()
+    error_code: ConversationErrorCode | None = None
+    debug_detail: str | None = None
 
 
 class ConversationService:
@@ -251,7 +272,13 @@ class ConversationService:
             return ()
         return tuple(await self._external.waiting(thread_id))
 
-    async def send(self, thread_id: ConversationThreadId, text: str) -> ConversationReply:
+    async def send(
+        self,
+        thread_id: ConversationThreadId,
+        text: str,
+        *,
+        activity: Callable[[str], None] | None = None,
+    ) -> ConversationReply:
         """Record one user message and do whatever the runtime is allowed to do about it."""
         thread = await self._repository.get_thread(thread_id)
         if thread is None:
@@ -292,10 +319,15 @@ class ConversationService:
         if pending:
             # Say what is waiting, and keep waiting: a real request still gets interpreted below.
             await self._expire_stale(thread.id, pending)
-        return await self._interpret_and_run(thread, user_message.id, text)
+        return await self._interpret_and_run(thread, user_message.id, text, activity=activity)
 
     async def _interpret_and_run(
-        self, thread: ConversationThread, user_message_id: ConversationMessageId, text: str
+        self,
+        thread: ConversationThread,
+        user_message_id: ConversationMessageId,
+        text: str,
+        *,
+        activity: Callable[[str], None] | None = None,
     ) -> ConversationReply:
 
 
@@ -323,13 +355,69 @@ class ConversationService:
                 turn,
                 ConversationTurnStatus.FAILED,
                 render.render_unsupported(str(exc).split(", ")),
+                error_code=ConversationErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        except ConversationInterpretationFailed as exc:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_error(exc.code, exc.detail),
+                error_code=exc.code,
+                debug_detail=exc.detail,
+            )
+        except (ModelOutputNotJson, ModelOutputSchemaViolation, InvalidConversationPlan) as exc:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_error(ConversationErrorCode.MODEL_INVALID_OUTPUT, str(exc)),
+                error_code=ConversationErrorCode.MODEL_INVALID_OUTPUT,
+                debug_detail=str(exc),
+            )
+        except (ModelTransientError, ModelUnavailable, ModelRateLimited) as exc:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_error(ConversationErrorCode.MODEL_TIMEOUT, str(exc)),
+                error_code=ConversationErrorCode.MODEL_TIMEOUT,
+                debug_detail=str(exc),
+            )
+        except (
+            ModelAuthenticationError,
+            ModelBillingError,
+            ModelCredentialsMissing,
+            ModelNotConfigured,
+        ) as exc:
+            # A host problem, not a request problem: say what to fix, in the user's terms.
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_error(ConversationErrorCode.CAPABILITY_UNAVAILABLE, str(exc)),
+                error_code=ConversationErrorCode.CAPABILITY_UNAVAILABLE,
+                debug_detail=str(exc),
             )
         except DomainError as exc:
             return await self._finish(
                 thread,
                 turn,
                 ConversationTurnStatus.FAILED,
-                render.render_interpretation_refused(str(exc)),
+                render.render_error(ConversationErrorCode.OPERATION_FAILED, str(exc)),
+                error_code=ConversationErrorCode.OPERATION_FAILED,
+                debug_detail=str(exc),
+            )
+        except Exception as exc:
+            # Nothing has been executed at this point: the plan never became a plan. The session
+            # stays alive, the turn is recorded as failed, and only the class name is kept.
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_error(ConversationErrorCode.INTERNAL_ERROR, type(exc).__name__),
+                error_code=ConversationErrorCode.INTERNAL_ERROR,
+                debug_detail=f"{type(exc).__name__}: {exc}",
             )
         if plan.mode is not ConversationPlanMode.OPERATIONS:
             spoken = (
@@ -340,10 +428,15 @@ class ConversationService:
             return await self._finish(
                 thread, turn, ConversationTurnStatus.COMPLETED, (spoken or "").strip()
             )
-        return await self._run_plan(thread, turn, plan)
+        return await self._run_plan(thread, turn, plan, activity=activity)
 
     async def _run_plan(
-        self, thread: ConversationThread, turn: ConversationTurn, plan: ConversationPlan
+        self,
+        thread: ConversationThread,
+        turn: ConversationTurn,
+        plan: ConversationPlan,
+        *,
+        activity: Callable[[str], None] | None = None,
     ) -> ConversationReply:
         unsupported = [
             operation.operation_type.value
@@ -362,12 +455,35 @@ class ConversationService:
                 render.render_unsupported(unsupported),
             )
 
+        refusal = await self._preflight(plan)
+        if refusal is not None:
+            # Nothing has run yet, and nothing will: a plan that cannot be carried out in full
+            # applies none of itself (ADR-0035 §15-§16).
+            for ordinal, operation in enumerate(plan.operations):
+                await self._store_operation(
+                    turn, ordinal, operation, status=ConversationOperationStatus.REJECTED
+                )
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_preflight_refused(refusal),
+                operation_types=tuple(
+                    operation.operation_type.value for operation in plan.operations
+                ),
+                error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
+            )
+
         results: list[OperationResult] = []
         operation_types: list[str] = []
         waiting: ConversationOperation | None = None
         offer_in_text = False
         for ordinal, planned in enumerate(plan.operations):
             capability = self._capabilities.require(planned.operation_type)
+            hint = _ACTIVITY_HINTS.get(planned.operation_type)
+            if hint is not None and activity is not None:
+                # A transient line, never persisted as conversation content (ADR-0035 §26).
+                activity(hint)
             if capability.policy is ConfirmationPolicy.CONFIRM_LOCAL:
                 stored = await self._store_operation(
                     turn,
@@ -654,6 +770,34 @@ class ConversationService:
         )
         return await self._repository.add_operation(operation)
 
+    async def _preflight(self, plan: ConversationPlan) -> str | None:
+        """Check every operation in a plan before the first mutation runs.
+
+        Returns the first refusal, or `None` when the whole plan is ready. Only read-only
+        readiness checks run here: capability existence, and each capability's own precondition
+        (does the task exist, is there a draft for this message, is the proposal still pending).
+        """
+        preceding: tuple[ConversationOperationType, ...] = ()
+        for planned in plan.operations:
+            capability = self._capabilities.get(planned.operation_type)
+            if capability is None:
+                return f"这个版本还不支持 {planned.operation_type.value}"
+            if capability.preflight is None:
+                preceding = (*preceding, planned.operation_type)
+                continue
+            try:
+                refusal = await capability.preflight(
+                    planned.arguments, PreflightContext(preceding=preceding)
+                )
+            except DomainError as exc:
+                return str(exc)
+            except Exception:
+                return f"我现在无法确认「{planned.operation_type.value}」是否可以执行"
+            if refusal is not None:
+                return refusal
+            preceding = (*preceding, planned.operation_type)
+        return None
+
     async def _execute(
         self, turn: ConversationTurn, ordinal: int, planned: PlannedOperation
     ) -> _Execution:
@@ -716,6 +860,8 @@ class ConversationService:
         *,
         operation_types: tuple[str, ...] = (),
         waiting: bool = False,
+        error_code: ConversationErrorCode | None = None,
+        debug_detail: str | None = None,
     ) -> ConversationReply:
         now = self._clock.now()
         assistant = await self._repository.add_message(
@@ -755,6 +901,8 @@ class ConversationService:
             status=finished.status,
             waiting_for_confirmation=waiting,
             operation_types=operation_types,
+            error_code=error_code,
+            debug_detail=debug_detail,
         )
 
 

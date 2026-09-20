@@ -79,6 +79,8 @@ class ConversationOperationType(StrEnum):
     MAIL_REPLY_DRAFT = "mail.reply_draft"
     MAIL_PREPARE_REPLY_SEND = "mail.prepare_reply_send"
     MAIL_RECONCILE_SEND = "mail.reconcile_send"
+    MAIL_ACCOUNTS = "mail.accounts"
+    SYSTEM_CAPABILITIES = "system.capabilities"
 
 
 READ_OPERATIONS = frozenset(
@@ -94,6 +96,8 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.MAIL_LIST,
         ConversationOperationType.MAIL_SHOW,
         ConversationOperationType.MAIL_THREAD,
+        ConversationOperationType.MAIL_ACCOUNTS,
+        ConversationOperationType.SYSTEM_CAPABILITIES,
     }
 )
 """Operations that only read. They execute immediately (ADR-0033 §10)."""
@@ -353,6 +357,24 @@ class MailReconcileSendArguments:
             _text(self.action_id, "action_id")
 
 
+@dataclass(frozen=True, slots=True)
+class MailAccountsArguments:
+    """Which mailboxes this host is configured to use (never their contents)."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_ACCOUNTS, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemCapabilitiesArguments:
+    """What this build can currently do, read from the runtime."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.SYSTEM_CAPABILITIES, init=False
+    )
+
+
 # ---------------------------------------------------------------------------- write arguments
 
 
@@ -537,6 +559,8 @@ ConversationOperationArguments = (
     | MailReplyDraftArguments
     | MailPrepareReplySendArguments
     | MailReconcileSendArguments
+    | MailAccountsArguments
+    | SystemCapabilitiesArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
 
@@ -593,6 +617,8 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ),
     ConversationOperationType.MAIL_PREPARE_REPLY_SEND: frozenset({"draft_id", "message_id"}),
     ConversationOperationType.MAIL_RECONCILE_SEND: frozenset({"action_id"}),
+    ConversationOperationType.MAIL_ACCOUNTS: frozenset(),
+    ConversationOperationType.SYSTEM_CAPABILITIES: frozenset(),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""
 
@@ -795,6 +821,10 @@ def build_arguments(
         return MailReconcileSendArguments(
             action_id=_optional_strings(payload.get("action_id"), "action_id")
         )
+    if kind is ConversationOperationType.MAIL_ACCOUNTS:
+        return MailAccountsArguments()
+    if kind is ConversationOperationType.SYSTEM_CAPABILITIES:
+        return SystemCapabilitiesArguments()
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
 
 
@@ -913,6 +943,7 @@ __all__ = [
     "ConversationPlan",
     "ConversationPlanMode",
     "KnowledgeAskArguments",
+    "MailAccountsArguments",
     "MailListArguments",
     "MailPrepareReplySendArguments",
     "MailReconcileSendArguments",
@@ -928,6 +959,7 @@ __all__ = [
     "PlanProposeWeekArguments",
     "PlannedOperation",
     "StatusGetArguments",
+    "SystemCapabilitiesArguments",
     "TaskClearDeadlineArguments",
     "TaskCompleteArguments",
     "TaskCreateArguments",

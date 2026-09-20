@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
++- **Conversation reliability and self-knowledge (Phase 10C, ADR-0035).** Terminal input is decoded
++  through an explicit boundary, so an undecodable byte sequence says so and keeps the session open
++  instead of ending it; benign structured-output variation (`operations: null`, missing fields) is
++  normalized, with exactly one bounded repair attempt before a friendly failure; raw schema text
++  never reaches a user; multi-operation plans are fully preflighted before the first mutation; and
++  capability answers (`你能做什么`, `/help`, `mail.accounts`) come from the runtime's own registry
++  and configuration instead of prose that had already drifted out of date.
++
++### Added
++
 - **Conversational mail with exact human approval (Phase 10B, ADR-0034).** A conversation can read
   recent mail, resolve a message or thread, draft a reply with the existing draft service, and
   prepare an immutable `mail.send` action — then it stops and shows the exact payload. Sending needs

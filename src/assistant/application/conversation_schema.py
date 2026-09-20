@@ -234,6 +234,17 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         {"action_id": {"type": ["string", "null"], "maxLength": 200}},
         ("action_id",),
     ),
+    _operation(
+        "mail.accounts",
+        "List the mail accounts this host is configured to use. Configured accounts are not the "
+        "same thing as stored messages: use this whenever the user asks which mailbox or address "
+        "Tree can read.",
+    ),
+    _operation(
+        "system.capabilities",
+        "Describe what this build can currently do, from the runtime. Use this for any question "
+        "about Tree's own abilities instead of answering from memory.",
+    ),
 )
 
 CONVERSATION_SCHEMA_V1: JsonSchemaOutput = JsonSchemaOutput(
