@@ -1,0 +1,120 @@
+/* One small stylesheet, written for a phone. No fonts, no images, no CDN. */
+
+:root {
+  color-scheme: light dark;
+  --fg: #12161c;
+  --muted: #5b6470;
+  --line: #d7dbe2;
+  --accent: #1c5fd4;
+  --danger: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8eaee;
+    --muted: #9aa3ae;
+    --line: #2c313a;
+    --accent: #7aa2f7;
+    --danger: #f2857c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1rem 1rem 3rem;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: Canvas;
+}
+
+header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+}
+
+main {
+  display: block;
+  max-width: 42rem;
+}
+
+section {
+  margin: 1.5rem 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+li {
+  margin: 0.25rem 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: Canvas;
+  color: inherit;
+}
+
+input,
+select {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+button {
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+pre {
+  overflow-x: auto;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}

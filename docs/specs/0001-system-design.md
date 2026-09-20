@@ -228,12 +228,14 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | 6 | Action 边界：Case / ActionRequest / Approval / ExecutionRun、真实 executor、Web 与手机端审批 UI | 进行中：6A 已完成（durable `Case`、immutable `ActionRequest` + canonical SHA256 fingerprint、hash-only 单次 challenge（TTL 600s）、exact-fingerprint binding 的人工 `Approval`（同一 action 同时仅一个有效、`superseded_at` 保留历史）、`ExecutionRun`（RUNNING/SUCCEEDED/FAILED/UNKNOWN）、atomic begin-execution 与并发 fencing、UNKNOWN/崩溃不自动 retry、`ActionExecutor` port + **空 production capability set**、`pw cases|case …` 与 `pw actions|action …`，ADR-0023）；SMTP executor、eHall executor、browser executor、mobile approval UI、executor-specific reconciliation 未实现 |
 | 7 | 真实外部执行：SMTP 发送、Sent 对账、更多 executor、移动端审批 | 进行中：6B 已完成（`mail.send` executor（唯一注册能力，且仅在配置 SMTP 时）、draft `needs_user_input` acknowledgement、TLS-only SMTP config（starttls/ssl，无 plain） + `GROWING_ASSISTANT_MAIL_<ID>_SMTP_PASSWORD`、immutable `MailSendPayload` + prepare 时生成的稳定 RFC Message-ID、`mail_send_links`（一个 draft version 最多一个 send action）、executor offline `supports` preflight（不消费 approval）、显式 SMTP 阶段跟踪（pre-DATA = FAILED，DATA 之后不明 = UNKNOWN）、零自动重发、只读 Sent 对账（FOUND → SUCCEEDED；NOT_FOUND 不证明失败；AMBIGUOUS 不任选；UNAVAILABLE 保持原状），ADR-0024）；eHall executor、browser executor、mobile approval UI、更多对账策略未实现 |
 | 8 | 白名单 eHall 事务：证明书申请、更多低风险事项、移动端审批 | 进行中：6C 已完成（manual `pw ehall login` + persistent headed Chromium profile + NJU top-level origin allowlist、typed only pipeline（`inspect_form` / `submit_certificate`，无 generic browser API）、只读 inspect、page-contract fingerprint、显式 `--field KEY=VALUE` prepare（不在网页填表）、immutable `ActionRequest("ehall.submit-certificate")` + critical preview、既有 challenge/approve/execute 链、执行前 contract 复核 + 精确填写 + readback + 单次 whitelisted submit、click 前 FAILED / click 后 UNKNOWN 且零自动重试，ADR-0025）；其它 eHall 事务、generic browser agent、mobile approval UI 未实现 |
+| 9 | 同一局域网手机控制面：查看进度、建/完成任务、改草稿、审批 exact action | 进行中：6D 已完成（默认关闭的 `[mobile]`（`enabled` / `bind=loopback\|lan` / `port`）、migration 0012（`mobile_pairing_tokens` / `mobile_sessions`，只存 SHA-256、pairing TTL 600s 一次性、session 30 天可撤销）、`MobileAuthService` + `pw mobile status\|pair\|sessions\|revoke\|approval-link`、FastAPI 只存在于 `adapters/web/`（/docs /redoc /openapi.json 关闭 + CSP 等安全 header + private-client middleware 按 socket peer 判定且不信任 forwarding header）、mutation 需 session cookie + CSRF header + CSRF cookie、dashboard / task create+complete / cases / notifications / mail draft 查看与 CAS 编辑 / action 查看与 challenge+approve（复用 `ApprovalService`）、sessionless approval-link（fragment token，只 preview + approve）、daemon `mobile-web` supervised service，ADR-0026）；**手机端无执行入口**（无 SMTP / eHall / ActionExecutionService / ModelPort）、公网部署与 cloud relay、VPN、第三方登录、手机推送未实现 |
 
 ## 12. 后续阶段的未决决策（明确不属于早期 Phase）
 
 以下问题在对应 Phase 开始前必须单独决策并落 ADR，早期 Phase 不做任何实现或假设：
 
-- 手机网页的鉴权方式（设备令牌 / 一次性链接 / 局域网信任边界）。
+- ~~手机网页的鉴权方式（设备令牌 / 一次性链接 / 局域网信任边界）~~ → 已由 ADR-0026 决定：
+  一次性配对码（只存 hash）→ 可撤销的 hashed session + CSRF；私网客户端边界按 socket peer 判定。
 - 邮箱授权码与模型 API key 的存放方式（0600 文件 / 系统 keyring）。
 - 邮件分类器的实现路径（规则优先还是模型优先，及其评测方式）。
 - Vault 文本抽取的格式支持范围与 OCR 是否纳入。
@@ -266,3 +268,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0023 Actions, human approval and the execution boundary
 - ADR-0024 Approved SMTP delivery with ambiguous-result reconciliation
 - ADR-0025 An approved eHall certificate pipeline
+- ADR-0026 A same-LAN mobile control plane

@@ -36,6 +36,7 @@ from assistant import (
     cli_ehall,
     cli_interpreter,
     cli_mail,
+    cli_mobile,
     cli_model,
     cli_scheduler,
 )
@@ -98,6 +99,7 @@ cli_mail.register(app)
 cli_cases.register(app)
 cli_actions.register(app)
 cli_ehall.register(app)
+cli_mobile.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""

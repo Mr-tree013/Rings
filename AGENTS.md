@@ -286,6 +286,33 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Failures after the submit click are ambiguous unless a success/failure state is explicit, and
   must never be blindly retried.** click 之前失败 = 明确 FAILED（approval 已消费）；click 之后无法
   判定 = UNKNOWN，阻塞同一 action 的再次执行，并提示人工去 eHall 查看，绝不自动重发。
+- **Mobile web is a same-LAN control plane, not a public service.**
+  默认 `[mobile] enabled = false`；`bind` 只允许 `loopback` / `lan`（映射 127.0.0.1 / 0.0.0.0），
+  没有 public hostname、没有 proxy trust、没有 CORS 列表、没有 TLS 例外、没有 cloud relay。
+  LAN 模式下由 private-client middleware 按 **socket peer** 判断（loopback / private / link-local
+  才放行），**绝不读 `X-Forwarded-For` / `Forwarded` / `X-Real-IP`**：伪造 header 不能绕过。
+- **Web sessions and pairing tokens are stored only as hashes.**
+  pairing token 一次性、TTL 600s，session TTL 30 天且可 revoke；DB 只存 SHA-256（带 `CHECK`
+  约束），plaintext 只出现在创建它的那一次响应里。pairing code 由 `pw mobile pair` 打印一次，
+  **不得放进 URL query / fragment**；approval link 的 token 只走 URL fragment（不发给 server），
+  页面加载后立刻 `history.replaceState` 抹掉。日志默认 `access_log=False`，token、cookie、
+  mail/draft 正文与 Action payload 一律不写日志。
+- **All web mutations require an authenticated session plus CSRF protection.**
+  session cookie（HttpOnly）+ `X-CSRF-Token` header + CSRF cookie 三者一致才允许 mutation；
+  V1 是 LAN HTTP，因此**不得**虚假声称 `Secure` cookie。
+- **Mobile approval may create Approval but may never execute an ActionRequest.**
+  web 审批复用 `ApprovalService`（同一个 exact-fingerprint 语义），approve 成功即停止；
+  `adapters/web/` 不得 import `ActionExecutionService`，也不得 import SMTP / eHall / Playwright /
+  Sent lookup。**Action execution has no web endpoint**：路由表里不存在 execute / send / submit /
+  retry / resend，也不存在 generic action-creation endpoint。手机只 review + approve。
+- **User-controlled text must never be inserted as HTML.**
+  所有用户内容（task title、mail subject/body、Action payload、notification）只能经 `textContent`
+  写入 DOM；静态文件里禁止 `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `eval` /
+  `new Function`，也禁止任何第三方 JS/CSS/font/CDN 引用（全部 self-contained）。
+- **Mobile routes must use application services, not direct SQLite access.**
+  `domain/mobile.py`、`application/mobile_auth.py`、`store/mobile_sessions.py` 与 `adapters/web/`
+  不得 import store/adapters/model/executor/FastAPI 之外的框架；fastapi / starlette / uvicorn
+  只允许出现在 `adapters/web/`。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -439,14 +466,26 @@ DATA 之后不明 = UNKNOWN）、零自动重发、只读 Sent 对账（FOUND �
 SUCCEEDED，NOT_FOUND 不证明失败，AMBIGUOUS 不任选，UNAVAILABLE 保持原状）。
 仍然不发送、无 SMTP / Approval / ActionRequest、无 EventWorker 自动起草。
 
+**Phase 6D 已完成（仍是 0.6.0）**：同一局域网手机 Web 控制面（ADR-0026）：默认关闭的
+`[mobile]`（`enabled` / `bind=loopback|lan` / `port`）、migration 0012（`mobile_pairing_tokens` /
+`mobile_sessions`，只存 SHA-256）、`MobileAuthService`（pairing / session / CSRF / revoke，
+token factory 在 composition root 注入）、`pw mobile status|pair|sessions|revoke|approval-link`、
+FastAPI 只存在于 `adapters/web/`（/docs /redoc /openapi.json 关闭 + CSP 等安全 header）、
+private-client middleware、dashboard / tasks create+complete / cases / notifications /
+mail drafts 查看与 CAS 编辑 / actions 查看与 challenge+approve、
+sessionless approval-link（fragment token，只 preview + approve）、daemon `mobile-web`
+supervised service（crash 不影响 sibling，stop event 干净退出）。
+**手机端没有任何执行入口**：无 SMTP、无 eHall、无 ActionExecutionService、无 ModelPort。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
-agent / mobile approval UI / mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
+agent / 公网部署与 cloud relay / VPN 集成 / 第三方登录 / 手机推送（APNs/FCM/Web Push）/
+mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
 site watcher / QQ 渠道 / 个人估时学习 / agent tool loop / 多工具只读编排 /
 command execution boundary（`pw interpret --apply` 之类）/ 重复任务与重复事件 /
 embedding 与向量检索 / OCR / Office 文档与压缩包展开 / filesystem watcher 快速路径 /
-Web Server / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/
+移动端执行动作（手机永不执行，执行只在 host 上 `pw action execute`）/
 approval token 之外的动作审批扩展 / Windows Task Scheduler 配置。
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与

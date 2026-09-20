@@ -53,8 +53,10 @@ def build_services(
     """Compose the services the daemon supervises today.
 
     `index-sync` keeps derived views current; `scheduler` runs durable reminders and rolling
-    replans; `mail-sync` receives inbound mail when at least one account is configured; and
-    `event-worker` analyzes that mail — but only when the host can actually analyze it.
+    replans; `mail-sync` receives inbound mail when at least one account is configured;
+    `event-worker` analyzes that mail — but only when the host can actually analyze it; and
+    `mobile-web` serves the same-LAN control plane when `[mobile] enabled = true`. Each one is its
+    own supervisor, so a crashed web server cannot take the mail pipeline down with it.
 
     The last condition is the important one. A worker that cannot reach a provider would
     dead-letter every received event, so a host with mail accounts but no usable model keeps
@@ -69,6 +71,8 @@ def build_services(
         services.append(bootstrap.mail_sync_service(config, clock, database))
         if bootstrap.mail_analysis_available(config, model=model):
             services.append(bootstrap.mail_event_worker(config, clock, database, model=model))
+    if config.mobile.enabled:
+        services.append(bootstrap.mobile_web_service(config, clock, database))
     return services
 
 

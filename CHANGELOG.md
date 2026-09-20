@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Phase 6D (mobile): a phone on the same network can read progress, create and finish tasks, edit a
+reply draft and approve one exact action. It cannot send, submit or execute anything — that stays
+where it has always been, on the host, behind `pw action execute`.
+
+### Added
+
+- Same-LAN mobile control plane (ADR-0026): `[mobile]` configuration with exactly three keys
+  (`enabled`, `bind = loopback | lan`, `port`), disabled by default, and no way to name a public
+  host, trust a proxy header, list a CORS origin or skip TLS verification. `lan` binds `0.0.0.0`,
+  and the middleware that actually keeps the control plane local decides from the **socket peer**
+  with `ipaddress`; `X-Forwarded-For`, `Forwarded` and `X-Real-IP` are never consulted, so a public
+  client is refused even when it claims a private address.
+- Pairing and sessions that hold no usable secret: a ≥256-bit one-time code (`pw mobile pair`,
+  printed once, never in a URL, ten-minute TTL) is redeemed for a revocable 30-day session. The
+  database stores only SHA-256 values — pairing code, session token and CSRF token — behind `CHECK`
+  constraints, and a mutation requires the session cookie *plus* the `X-CSRF-Token` header *plus*
+  the CSRF cookie before anything happens. `pw mobile sessions` lists them and `pw mobile revoke`
+  cuts one off.
+- A narrow authenticated API: dashboard, tasks (create and complete through `TaskService`), cases,
+  notifications, mail drafts (view, and edit with the existing optimistic concurrency — a stale
+  version is `409` with the current one), actions, and approval. Every response carries a `'self'`
+-only CSP, `no-referrer`, `nosniff`, `X-Frame-Options: DENY` and `no-store`, the schema endpoints
+  are disabled, and the route table is pinned by a test so nothing can be added quietly.
+- Approval that stops at approval: the challenge flow mints a Phase 6A token, shows the exact
+  fingerprint and canonical payload, and posts it to `ApprovalService.approve`. The response says
+  `executed: false`, the web adapter cannot import `ActionExecutionService`, and there is no
+  execute, send, submit, retry or resend route anywhere. `pw mobile approval-link ACTION` prints
+  `http://<lan-ip>:<port>/approve/<id>#token=…` — the token lives in the URL fragment, which never
+  reaches the server, and the page strips it from the address bar immediately.
+- A static UI that is genuinely static: three HTML pages, one stylesheet and one small vanilla
+  script, no framework, no build step and not a single external URL. Every piece of user-controlled
+  text reaches the page through `textContent`, and `innerHTML`, `eval` and `new Function` are
+  absent from the assets (asserted by tests, alongside "no third-party assets").
+- `mobile-web` as one more supervised daemon service, started only when `[mobile] enabled = true`.
+  A crashed web server is retried on the usual backoff without disturbing `index-sync`, and the
+  stop event shuts Uvicorn down cleanly with the server task always awaited.
+- `pw mobile status|pair|sessions|revoke|approval-link`. All of them are local: nothing starts a
+  server, nothing contacts the network, and the server logs no access lines, so a token cannot end
+  up in a log file, a URL query string or a page.
+
 ## [0.6.0] - 2026-09-20
 
 Phase 6C (eHall): the first whitelisted university errand — the certificate application — can be

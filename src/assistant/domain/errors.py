@@ -951,6 +951,53 @@ class InvalidEHallForm(DomainError):
     """A form snapshot, a field definition, a value or a payload breaks an invariant."""
 
 
+class InvalidMobileSecurity(DomainError):
+    """A pairing token, a web session or a CSRF companion breaks its invariants."""
+
+
+class MobileDisabled(DomainError):
+    """The host has not enabled the mobile control plane.
+
+    Disabled is the default: a host that never opens a socket to the network is a perfectly good
+    configuration.
+    """
+
+
+class MobilePairingTokenInvalid(DomainError):
+    """The presented pairing code is unknown, expired or already used.
+
+    One error for all three: a caller learning *which* of them applies would learn something about
+    the tokens that exist.
+    """
+
+
+class MobileSessionInvalid(DomainError):
+    """The presented session is unknown, expired or revoked."""
+
+
+class MobileSessionNotFound(DomainError):
+    """No session exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"mobile session {reference} does not exist")
+
+
+class MobileClientRejected(DomainError):
+    """The request did not come from a loopback or private address.
+
+    Proxy headers are never consulted for this decision: a client cannot claim to be local.
+    """
+
+    def __init__(self, peer: str) -> None:
+        self.peer = peer
+        super().__init__(f"mobile control plane refuses a non-private client ({peer})")
+
+
+class MobileCsrfRejected(DomainError):
+    """A mutation arrived without a session-bound CSRF token."""
+
+
 class EHallActionMismatch(DomainError):
     """The action is not an eHall certificate action, so an eHall view cannot describe it."""
 
@@ -1077,6 +1124,7 @@ __all__ = [
     "InvalidMailDraft",
     "InvalidMailMessage",
     "InvalidMailboxState",
+    "InvalidMobileSecurity",
     "InvalidModelRequest",
     "InvalidModelSchema",
     "InvalidNotification",
@@ -1110,6 +1158,12 @@ __all__ = [
     "MailReconciliationConflict",
     "MailReplyRecipientUnavailable",
     "MailThreadNotFound",
+    "MobileClientRejected",
+    "MobileCsrfRejected",
+    "MobileDisabled",
+    "MobilePairingTokenInvalid",
+    "MobileSessionInvalid",
+    "MobileSessionNotFound",
     "ModelAuthenticationError",
     "ModelBillingError",
     "ModelConfigurationError",

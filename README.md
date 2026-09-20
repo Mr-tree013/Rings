@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.6.0（可审计的邮件工作流 + 第一个白名单 eHall 事务）
+## 当前状态：v0.6.0（可审计的邮件工作流 + 白名单 eHall 事务 + 局域网手机控制面）
 
 已完成：
 
@@ -14,12 +14,12 @@
 - 持续索引（v0.2.0）：`~/.config/growing-assistant/config.toml` 配置 Local/Vault roots，
   `assistantd` 周期性 reconciliation（scan → catalog → index），root 失败隔离与 supervisor。
 
-外部输入侧只实现了收信：没有 SMTP 发送、没有 eHall/Playwright、没有 Web UI、没有手机端推送。
-`assistantd` 现在托管 `index-sync`（启动时执行一次存储 reconciliation 并按配置周期重复）、
-`scheduler`（durable reminder / rolling replan）、配置了账号时的 `mail-sync`，以及
-**同时**配置了 mail 与可用 model 时的 `event-worker`（唯一的真实业务 handler）。没有 model 时
-不启动 `event-worker`：一个连不上 provider 的 worker 只会把每封邮件 dead-letter，而停在
-`RECEIVED` 的积压可以在配置好 model 后继续处理。
+外部输入侧只实现了收信：没有公网服务、没有 cloud relay、没有手机推送。`assistantd` 现在托管
+`index-sync`（启动时执行一次存储 reconciliation 并按配置周期重复）、`scheduler`（durable
+reminder / rolling replan）、配置了账号时的 `mail-sync`、**同时**配置了 mail 与可用 model 时的
+`event-worker`（唯一的真实业务 handler），以及 `[mobile] enabled = true` 时的 `mobile-web`
+（同一局域网手机控制面）。没有 model 时不启动 `event-worker`：一个连不上 provider 的 worker
+只会把每封邮件 dead-letter，而停在 `RECEIVED` 的积压可以在配置好 model 后继续处理。
 
 **真实外部副作用只有两个，且都必须经过人工批准**：`mail.send`（配置了 SMTP 时注册）与
 `ehall.submit-certificate`（`[ehall] enabled = true` 时注册）。daemon 自己既不发邮件也不开
@@ -352,8 +352,53 @@ pw action execute ACTION
 - **NJU 可能改版**：portal 的标题、字段与页面结构都可能变化。page contract 不匹配会在提交前
   停下（fail closed），而不是自动适配；本阶段的 selector 不是「永远稳定」的承诺。
 
+同一局域网手机 Web 控制面（Phase 6D）：**已实现** 一个默认关闭的手机端界面 —— 手机可以查看进度、
+建/完成任务、改草稿、审批一个 exact action，**但不能执行任何动作**：
+
+```toml
+# ~/.config/growing-assistant/config.toml
+[mobile]
+enabled = true
+bind = "lan"      # loopback | lan
+port = 8765
+```
+
+```bash
+assistantd            # 托管 mobile-web 服务（与其它 service 相互隔离）
+pw mobile pair        # 打印一次性配对码（只显示一次，只存 hash）
+# 手机浏览器打开 http://<本机局域网 IP>:8765/pair，手工粘贴配对码
+```
+
+要点：
+
+- **只在同一受信局域网**：`bind = "lan"` 监听 `0.0.0.0`，真正把关的是按 **socket peer** 判断的
+  private-client middleware（loopback / private / link-local 放行，其它一律 403）。
+  `X-Forwarded-For` / `Forwarded` / `X-Real-IP` **不被信任**：伪造 header 不能绕过。
+  V1 没有 HTTPS、没有 cloud relay、没有 VPN、没有第三方登录；cookie 也**不**谎称 `Secure`。
+- **秘密只以 hash 存在**：配对码一次性、10 分钟有效；session 30 天且可 `pw mobile revoke` 撤销。
+  数据库里只有 SHA-256（带 `CHECK` 约束），明文只出现在创建它的那一次响应里。配对码由
+  `pw mobile pair` 打印一次，**不会**放进 URL；`pw mobile approval-link ACTION` 的 token 放在
+  URL **fragment**（`#token=...`，不发给服务器），页面加载后立刻从地址栏抹掉。
+  服务器默认 `access_log=False`：token、cookie、邮件正文和 action payload 都不进日志。
+- **每个写操作都要三件套**：session cookie（HttpOnly）+ `X-CSRF-Token` header + CSRF cookie
+  三者一致才允许 mutation；所有响应带 CSP / `Referrer-Policy: no-referrer` / `nosniff` /
+  `X-Frame-Options: DENY` / `Cache-Control: no-store`，`/docs`、`/redoc`、`/openapi.json` 关闭。
+- **手机端没有执行入口**：审批复用 `ApprovalService`（仍是 exact fingerprint 绑定），approve
+  成功即停止；`adapters/web/` 不能 import `ActionExecutionService`，路由表里不存在
+  execute / send / submit / retry / resend，也没有 generic action-creation endpoint。
+  实际执行仍只能在 host 上显式运行 `pw action execute ACTION`。
+- **没有模型参与**：domain/application/web 这条路径不 import `ModelPort` / `StructuredModel` /
+  Interpreter / GroundedAnswer；task 用结构化字段创建（没有自然语言解释），draft 编辑沿用
+  Phase 5C 的 optimistic concurrency（版本过期 → `409` 并返回最新版本）。
+- **界面是自包含的**：静态 HTML + CSS + 少量 vanilla JS，没有构建步骤、没有 CDN、没有任何
+  第三方 JS/CSS/font；所有用户内容（task 标题、邮件主题/正文、action payload）一律经
+  `textContent` 写入 DOM，`innerHTML` / `eval` / `new Function` 在静态资源里不存在。
+- **daemon 里只是多一个被隔离的 service**：`mobile-web` 与 `index-sync` / `scheduler` 同级，
+  crash 会被 supervisor 重启且不影响其它 service，stop event 会干净关闭 Uvicorn。
+
 **尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
-mobile approval UI、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
+公网部署 / cloud relay / VPN / 第三方登录、手机推送（APNs / FCM / Web Push）、
+手机端执行动作（执行只在 host 上发生）、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
 分类结果自动转 Task/Case、事件删除同步（server-side deletion）、attachment materialization、
 QQ 与站点 watcher。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，

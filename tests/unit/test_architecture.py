@@ -510,6 +510,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0009_mail_reply_drafts.sql",
         "0010_case_action_approval.sql",
         "0011_approved_mail_send.sql",
+        "0012_mobile_web.sql",
     ]
 
 
@@ -1408,6 +1409,120 @@ def test_the_ehall_path_has_no_retry_loop() -> None:
             if needle in text:
                 offenders.append(f"{relative} mentions {needle}")
     assert not offenders, offenders
+
+
+MOBILE_MODULES = (
+    "domain/mobile.py",
+    "ports/mobile_session_repository.py",
+    "application/mobile_auth.py",
+    "adapters/web/app.py",
+    "adapters/web/server.py",
+    "cli_mobile.py",
+)
+
+WEB_LAYER_DIR = "adapters/web/"
+
+
+def test_only_the_web_adapter_imports_the_web_framework() -> None:
+    """FastAPI, Starlette and Uvicorn are one package deep; the core stays framework-free."""
+    forbidden = ("fastapi", "starlette", "uvicorn")
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(name.startswith(forbidden) for name in _imported_modules(path))
+        and not str(path.relative_to(SOURCE_ROOT)).startswith(WEB_LAYER_DIR)
+    ]
+
+    assert not offenders, offenders
+    assert (SOURCE_ROOT / WEB_LAYER_DIR / "app.py").is_file()
+
+
+def test_the_mobile_path_reaches_no_store_no_model_and_no_executor() -> None:
+    """The control plane speaks to application services and nothing else.
+
+    The CLI is allowed exactly one store import — `assistant.store.errors`, the shared vocabulary
+    every command module uses to turn a storage failure into a readable message. Nothing else in
+    the mobile path may reach the store at all.
+    """
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MOBILE_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if (
+            imported.startswith("assistant.store")
+            and not (relative == "cli_mobile.py" and imported == "assistant.store.errors")
+        )
+        or imported.startswith(
+            (
+                "assistant.adapters.mail",
+                "assistant.adapters.ehall",
+                "assistant.adapters.model",
+                "assistant.ports.model",
+                "assistant.application.action_execution",
+                "assistant.application.structured_model",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.application.mail_send_actions",
+                "assistant.application.ehall_certificate",
+                "sqlite3",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_web_adapter_cannot_execute_anything() -> None:
+    """A phone may approve; running the action stays on the host, with no route for it."""
+    text = (SOURCE_ROOT / WEB_LAYER_DIR / "app.py").read_text(encoding="utf-8")
+    assert "ActionExecutionService" not in text
+    for forbidden in (
+        "execute(",
+        "smtplib",
+        "SmtpMailExecutor",
+        "EHallCertificateExecutor",
+        "playwright",
+        "subprocess",
+    ):
+        assert forbidden not in text, forbidden
+
+
+def test_the_mobile_path_has_no_model_and_no_environment_reads() -> None:
+    for relative in MOBILE_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        for needle in ("ModelPort", "StructuredModel", "os.environ", "DEEPSEEK"):
+            assert needle not in text, f"{relative} mentions {needle}"
+        named = _identifiers(SOURCE_ROOT / relative) & {"secrets", "urandom"}
+        assert not named, (relative, named)
+
+
+def test_the_static_ui_never_writes_user_data_as_html() -> None:
+    """A task title or an action payload is data in the browser, never markup."""
+    static = SOURCE_ROOT / "adapters" / "web" / "static"
+    for path in sorted(static.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function"):
+            assert forbidden not in text, f"{path.name} mentions {forbidden}"
+        assert "http://" not in text, path.name
+        assert "https://" not in text, path.name
+
+
+def test_the_daemon_supervises_the_web_service_without_owning_it() -> None:
+    """`mobile-web` is one more supervised service, started only when the control plane is on."""
+    app_module = (SOURCE_ROOT / "daemon" / "app.py").read_text(encoding="utf-8")
+    assert "mobile_web_service" in app_module
+    assert "config.mobile.enabled" in app_module
+    supervisor = (SOURCE_ROOT / "daemon" / "supervisor.py").read_text(encoding="utf-8")
+    for forbidden in ("fastapi", "uvicorn", "MobileWebService"):
+        assert forbidden not in supervisor, forbidden
+
+
+def test_the_web_service_stops_cleanly() -> None:
+    """The server runs as a task so the stop event can end it; nothing is left dangling."""
+    text = (SOURCE_ROOT / WEB_LAYER_DIR / "server.py").read_text(encoding="utf-8")
+    assert "should_exit" in text
+    assert "stop_event.wait()" in text
+    assert "asyncio.wait" in text
 
 
 def test_the_send_path_has_no_automatic_retry_or_resend_command() -> None:

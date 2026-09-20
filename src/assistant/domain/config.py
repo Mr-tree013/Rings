@@ -26,6 +26,7 @@ from assistant.domain.errors import (
 )
 from assistant.domain.mail import validate_account_id
 from assistant.domain.mail_draft import mailbox_address
+from assistant.domain.mobile import MobileBindMode
 from assistant.domain.storage import StorageKind, validate_root_id
 
 CONFIG_FORMAT_VERSION: Final[int] = 1
@@ -57,6 +58,7 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "model",
         "mail",
         "ehall",
+        "mobile",
     }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
@@ -98,6 +100,14 @@ _KNOWN_MAIL_ACCOUNT_KEYS = frozenset(
         "sent_mailbox",
     }
 )
+
+DEFAULT_MOBILE_ENABLED: Final[bool] = False
+DEFAULT_MOBILE_BIND: Final[str] = "loopback"
+DEFAULT_MOBILE_PORT: Final[int] = 8765
+MIN_MOBILE_PORT: Final[int] = 1024
+MAX_MOBILE_PORT: Final[int] = 65535
+MOBILE_BIND_MODES: Final[tuple[str, ...]] = ("loopback", "lan")
+_KNOWN_MOBILE_KEYS = frozenset({"enabled", "bind", "port"})
 
 DEFAULT_EHALL_ENABLED: Final[bool] = False
 DEFAULT_EHALL_TIMEOUT_SECONDS: Final[int] = 30
@@ -601,6 +611,40 @@ class EHallConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MobileConfig:
+    """Whether this host serves the same-LAN mobile control plane, and how far it reaches.
+
+    Three keys, and nothing else on purpose: there is no public hostname, no proxy-trust switch, no
+    CORS list and no way to weaken anything. `bind` chooses the interface, and the private-client
+    middleware — not the bind address — is what keeps the control plane on the trusted network.
+    """
+
+    enabled: bool = DEFAULT_MOBILE_ENABLED
+    bind: str = DEFAULT_MOBILE_BIND
+    port: int = DEFAULT_MOBILE_PORT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise InvalidAssistantConfig("mobile.enabled must be a boolean")
+        if self.bind not in MOBILE_BIND_MODES:
+            allowed = ", ".join(MOBILE_BIND_MODES)
+            raise InvalidAssistantConfig(f"mobile.bind must be one of: {allowed}")
+        if (
+            not isinstance(self.port, int)
+            or isinstance(self.port, bool)
+            or not MIN_MOBILE_PORT <= self.port <= MAX_MOBILE_PORT
+        ):
+            raise InvalidAssistantConfig(
+                f"mobile.port must be between {MIN_MOBILE_PORT} and {MAX_MOBILE_PORT}"
+            )
+
+    @property
+    def bind_mode(self) -> MobileBindMode:
+        """The bind mode as the domain enum."""
+        return MobileBindMode(self.bind)
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantConfig:
     """The whole host configuration."""
 
@@ -612,6 +656,7 @@ class AssistantConfig:
     model: ModelConfig | None = None
     mail: MailConfig = field(default_factory=MailConfig)
     ehall: EHallConfig = field(default_factory=lambda: EHallConfig())
+    mobile: MobileConfig = field(default_factory=lambda: MobileConfig())
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -652,6 +697,7 @@ class AssistantConfig:
             model=_parse_model(data.get("model")),
             mail=_parse_mail(data.get("mail")),
             ehall=_parse_ehall(data.get("ehall")),
+            mobile=_parse_mobile(data.get("mobile")),
             format_version=format_version,
         )
 
@@ -855,6 +901,27 @@ def _model_int(value: Mapping[str, object], key: str, default: int) -> int:
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise InvalidAssistantConfig(f"model.{key} must be an integer")
     return raw
+
+
+def _parse_mobile(value: object) -> MobileConfig:
+    """Parse `[mobile]`. Public hosts, proxy trust and CORS are rejected here on purpose."""
+    if value is None:
+        return MobileConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[mobile] must be a table")
+    unknown = sorted(set(value) - _KNOWN_MOBILE_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [mobile] keys: {', '.join(unknown)}")
+    enabled = value.get("enabled", DEFAULT_MOBILE_ENABLED)
+    if not isinstance(enabled, bool):
+        raise InvalidAssistantConfig("mobile.enabled must be a boolean")
+    bind = value.get("bind", DEFAULT_MOBILE_BIND)
+    if not isinstance(bind, str):
+        raise InvalidAssistantConfig("mobile.bind must be a string")
+    port = value.get("port", DEFAULT_MOBILE_PORT)
+    if not isinstance(port, int) or isinstance(port, bool):
+        raise InvalidAssistantConfig("mobile.port must be an integer")
+    return MobileConfig(enabled=enabled, bind=bind.strip(), port=port)
 
 
 def _parse_ehall(value: object) -> EHallConfig:

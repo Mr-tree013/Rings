@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>growing-assistant</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>growing-assistant</h1>
+      <p class="muted" id="connection">checking session…</p>
+    </header>
+
+    <main id="signed-out" hidden>
+      <p>This browser is not paired with this host.</p>
+      <p>Open <code>/pair</code> and paste the pairing code printed by <code>pw mobile pair</code>.</p>
+    </main>
+
+    <main id="signed-in" hidden>
+      <section>
+        <h2>Today</h2>
+        <ul id="summary"></ul>
+      </section>
+
+      <section>
+        <h2>Open tasks</h2>
+        <ul id="tasks"></ul>
+        <form id="task-form">
+          <input id="task-title" type="text" placeholder="New task title" required />
+          <select id="task-priority">
+            <option value="low">low</option>
+            <option value="normal" selected>normal</option>
+            <option value="high">high</option>
+          </select>
+          <input id="task-minutes" type="number" min="1" placeholder="minutes" />
+          <input id="task-deadline" type="text" placeholder="2026-09-30T23:59:00+08:00" />
+          <button type="submit">Add task</button>
+        </form>
+      </section>
+
+      <section>
+        <h2>Notifications</h2>
+        <ul id="notifications"></ul>
+      </section>
+
+      <section>
+        <h2>Cases</h2>
+        <ul id="cases"></ul>
+      </section>
+
+      <section>
+        <h2>Drafts</h2>
+        <ul id="drafts"></ul>
+      </section>
+
+      <section>
+        <h2>Actions</h2>
+        <p class="muted">
+          Reviewing and approving only. Executing stays on the host: run
+          <code>pw action execute ACTION</code>.
+        </p>
+        <ul id="actions"></ul>
+      </section>
+
+      <section>
+        <button id="logout" type="button">Sign out</button>
+      </section>
+    </main>
+
+    <p class="muted small">
+      Same-LAN control plane. No HTTPS in this version, so use it on a network you trust.
+    </p>
+    <script src="/app.js"></script>
+  </body>
+</html>

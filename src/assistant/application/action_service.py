@@ -21,7 +21,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from assistant.domain.action import ActionRequest, ActionRequestId
-from assistant.domain.approval import ApprovalRecord
+from assistant.domain.approval import ApprovalChallenge, ApprovalRecord
 from assistant.domain.errors import ActionRequestNotFound
 from assistant.domain.execution import ExecutionRun, ExecutionRunStatus
 from assistant.ports.action_repository import ActionRepository
@@ -94,6 +94,15 @@ class ActionService:
         """List actions, newest first, each with its current situation."""
         actions = await self._actions.list_actions(case_id=case_id, limit=limit)
         return [await self._describe(action) for action in actions]
+
+    async def latest_challenge(
+        self, action_id: ActionRequestId
+    ) -> ApprovalChallenge | None:
+        """Return the most recent approval challenge for an action, or `None`.
+
+        Read-only: the approval-link preview validates a token against it and consumes nothing.
+        """
+        return await self._actions.latest_challenge(action_id)
 
     async def approval_state_of(self, action: ActionRequest) -> ApprovalState:
         """The approval word for one action, computed from the stored records."""

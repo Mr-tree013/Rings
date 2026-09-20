@@ -8,9 +8,10 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
+from uuid import UUID
 
 from assistant.adapters.config.toml_config import TomlConfigLoader
 from assistant.adapters.content.registry import SuffixExtractorRegistry
@@ -34,8 +35,13 @@ from assistant.adapters.mail.raw_store import RawMailStore
 from assistant.adapters.mail.sent_lookup import ImapSentMailLookup
 from assistant.adapters.mail.smtp import SmtpMailExecutor, rfc2822_date
 from assistant.adapters.model.deepseek import DeepSeekAdapter
-from assistant.adapters.security.tokens import secure_approval_token_factory
+from assistant.adapters.security.tokens import (
+    secure_approval_token_factory,
+    secure_mobile_token_factory,
+)
 from assistant.adapters.system_clock import SystemClock
+from assistant.adapters.web.app import WebDependencies
+from assistant.adapters.web.server import MobileWebService
 from assistant.application.action_execution import ActionExecutionService
 from assistant.application.action_service import ActionService
 from assistant.application.approval_service import ApprovalService
@@ -66,6 +72,7 @@ from assistant.application.mail_send_reconciliation import (
 from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.mail_threading import MailThreadLinker
+from assistant.application.mobile_auth import MobileAuthService
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.retry import RetryPolicy
@@ -81,9 +88,11 @@ from assistant.domain.config import (
     DEFAULT_MAIL_TIMEOUT_SECONDS,
     AssistantConfig,
     MailAccountConfig,
+    MobileConfig,
     ModelConfig,
     SchedulerConfig,
 )
+from assistant.domain.deadline import Deadline
 from assistant.domain.errors import (
     MailConfigurationError,
     ModelCredentialsMissing,
@@ -105,6 +114,7 @@ from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.mail_send import SqliteMailSendRepository
 from assistant.store.migrations import apply_migrations
+from assistant.store.mobile_sessions import SqliteMobileSessionRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
 from assistant.store.work import SqliteWorkRepository
@@ -253,6 +263,75 @@ def ehall_certificate_service(
         action_repository(database),
         clock,
         enabled=config is not None and config.ehall.enabled,
+    )
+
+
+def mobile_session_repository(database: Database) -> SqliteMobileSessionRepository:
+    """Durable pairing tokens and web sessions, stored as hashes."""
+    return SqliteMobileSessionRepository(database)
+
+
+def mobile_auth_service(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> MobileAuthService:
+    """Pairing, sessions and CSRF for the same-LAN control plane.
+
+    The token factory is injected here, at the composition root, for the same reason the approval
+    token is: the application layer may not decide how a secret is minted.
+    """
+    return MobileAuthService(
+        mobile_session_repository(database),
+        clock,
+        token_factory=secure_mobile_token_factory,
+        enabled=config is not None and config.mobile.enabled,
+    )
+
+
+def _deadline_lookup(
+    database: Database,
+) -> Callable[[Sequence[object]], Awaitable[dict[UUID, Deadline]]]:
+    """`async (tasks) -> {task_id: Deadline}` over the commitment store."""
+    commitments = commitment_repository(database)
+
+    async def _lookup(tasks: Sequence[object]) -> dict[UUID, Deadline]:
+        identifiers = [task.id for task in tasks]  # type: ignore[attr-defined]
+        if not identifiers:
+            return {}
+        return await commitments.list_deadlines(identifiers)
+
+    return _lookup
+
+
+def mobile_web_dependencies(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> WebDependencies:
+    """The application services the control plane may speak to, and nothing else.
+
+    Read it as a permission list: tasks, cases, drafts, actions, approvals, notifications and auth.
+    There is no execution service here, no SMTP executor and no eHall gateway.
+    """
+    return WebDependencies(
+        auth=mobile_auth_service(config, clock, database),
+        tasks=task_service(database, clock, config),
+        cases=case_service(clock, database),
+        drafts=mail_draft_service(clock, database),
+        actions=action_service(clock, database),
+        approvals=approval_service(clock, database),
+        notifications=scheduler_repository(database),
+        deadlines=_deadline_lookup(database),
+        clock=clock,
+    )
+
+
+def mobile_web_service(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> MobileWebService:
+    """The supervised mobile web service, when the control plane is enabled."""
+    mobile = MobileConfig() if config is None else config.mobile
+    return MobileWebService(
+        mobile_web_dependencies(config, clock, database),
+        bind=mobile.bind_mode,
+        port=mobile.port,
     )
 
 
@@ -862,6 +941,10 @@ __all__ = [
     "mail_send_status_service",
     "mail_source",
     "mail_sync_service",
+    "mobile_auth_service",
+    "mobile_session_repository",
+    "mobile_web_dependencies",
+    "mobile_web_service",
     "model_adapter",
     "model_api_key",
     "planner_service",
