@@ -497,6 +497,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0005_planning_proposals.sql",
         "0006_scheduler_notifications.sql",
         "0007_inbound_mail.sql",
+        "0008_mail_intelligence.sql",
     ]
 
 
@@ -667,3 +668,165 @@ def test_the_grounded_answer_path_does_not_read_credentials_or_the_environment()
     ]
 
     assert not offenders, offenders
+
+
+THREADING_MODULES = (
+    "application/mail_threading.py",
+    "domain/mail_analysis.py",
+)
+
+MAIL_INTELLIGENCE_MODULES = (
+    "application/mail_event_handler.py",
+    "application/mail_analysis.py",
+    "application/mail_analysis_schema.py",
+    "application/mail_analysis_prompt.py",
+    "application/mail_context.py",
+    "application/mail_threading.py",
+    "ports/mail_intelligence_repository.py",
+    "domain/mail_analysis.py",
+)
+
+
+def test_mail_threading_is_code_and_never_a_model() -> None:
+    """Thread identity is decided by headers. The linker must not be able to call a model."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in THREADING_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.ports.model",
+                "assistant.adapters",
+                "assistant.store",
+                "assistant.application.structured_model",
+                "assistant.application.mail_analysis",
+            )
+        )
+        or imported == "sqlite3"
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_mail_analysis_path_cannot_reach_a_mutation_service() -> None:
+    """An analysis is a record, not an action: no service that changes state is imported."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MAIL_INTELLIGENCE_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.store",
+                "assistant.adapters",
+                "assistant.application.task_service",
+                "assistant.application.calendar_service",
+                "assistant.application.work_service",
+                "assistant.application.planner_service",
+                "assistant.application.scheduler_service",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.application.mail_sync",
+                "sqlite3",
+                "httpx",
+                "smtplib",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_mail_analysis_path_keeps_provider_and_protocol_details_out() -> None:
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MAIL_INTELLIGENCE_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(("imaplib", "ssl", "socket", "email.parser", "email.message"))
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_mail_analysis_path_has_no_tool_or_execution_machinery() -> None:
+    forbidden = (
+        "tool_registry",
+        "tool_choice",
+        "function_call",
+        "tool_call",
+        "agent_loop",
+        "subprocess",
+        "os.system",
+        "smtplib",
+        "eval(",
+        "exec(",
+    )
+    offenders: list[str] = []
+    for relative in MAIL_INTELLIGENCE_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        offenders.extend(
+            f"{relative} mentions {needle}" for needle in forbidden if needle in text
+        )
+
+    assert not offenders, offenders
+
+
+def test_the_mail_analysis_path_does_not_read_credentials_or_the_environment() -> None:
+    offenders = [
+        relative
+        for relative in MAIL_INTELLIGENCE_MODULES
+        if "os.environ" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        or "DEEPSEEK" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        or "password" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_mail_model_context_carries_no_raw_message_or_path() -> None:
+    """The context builder cannot name a raw object, a filesystem path or a credential."""
+    context = (SOURCE_ROOT / "application" / "mail_context.py").read_text(encoding="utf-8")
+
+    for forbidden in ("list_attachments", "to_addresses", "cc_addresses", "raw_sha256"):
+        assert forbidden not in context, f"the mail context must not reach {forbidden}"
+    for forbidden in ("Path", "physical_path", "mount_path", "os.environ"):
+        assert forbidden not in context, f"mail context must not mention {forbidden}"
+
+
+def test_the_mail_analysis_schema_has_nowhere_to_put_an_action() -> None:
+    """A closed schema is the structural half of 'candidates only'.
+
+    The property sets are pinned exactly: widening what a model may answer is a reviewed change,
+    not something that can drift in behind a new field name.
+    """
+    from assistant.application.mail_analysis_schema import MAIL_ANALYSIS_SCHEMA_V1
+
+    schema = MAIL_ANALYSIS_SCHEMA_V1.schema
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert sorted(schema["properties"]) == [
+        "action_candidates",
+        "category",
+        "requires_reply",
+        "summary",
+    ]
+    assert sorted(schema["required"]) == sorted(schema["properties"])
+    candidate = schema["properties"]["action_candidates"]["items"]
+    assert candidate["additionalProperties"] is False
+    assert sorted(candidate["properties"]) == [
+        "interpreted_at",
+        "temporal_kind",
+        "text",
+        "time_text",
+    ]
+    assert schema["properties"]["category"]["enum"] == [
+        "ordinary_correspondence",
+        "receipt_result",
+        "actionable_notice",
+        "unknown",
+    ]
+    assert candidate["properties"]["temporal_kind"]["enum"] == [
+        "none",
+        "deadline",
+        "event_start",
+        "other",
+    ]

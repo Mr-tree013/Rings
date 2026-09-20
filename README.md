@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信）
+## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 邮件线程/分类）
 
 已完成：
 
@@ -14,11 +14,12 @@
 - 持续索引（v0.2.0）：`~/.config/growing-assistant/config.toml` 配置 Local/Vault roots，
   `assistantd` 周期性 reconciliation（scan → catalog → index），root 失败隔离与 supervisor。
 
-**尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有 Web UI、
-没有手机端推送。`assistantd` 现在托管两个 service：启动时执行一次存储 reconciliation 并按配置
-周期重复的 `index-sync`，以及执行 durable reminder / rolling replan 的 `scheduler`；它仍然
-**不会**启动 durable EventWorker——没有真实业务 handler 时，假 handler 只会制造"已经实现"
-的错觉。
+外部输入侧只实现了收信：没有 SMTP 发送、没有 eHall/Playwright、没有 Web UI、没有手机端推送。
+`assistantd` 现在托管 `index-sync`（启动时执行一次存储 reconciliation 并按配置周期重复）、
+`scheduler`（durable reminder / rolling replan）、配置了账号时的 `mail-sync`，以及
+**同时**配置了 mail 与可用 model 时的 `event-worker`（唯一的真实业务 handler）。没有 model 时
+不启动 `event-worker`：一个连不上 provider 的 worker 只会把每封邮件 dead-letter，而停在
+`RECEIVED` 的积压可以在配置好 model 后继续处理。
 
 **尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
 因此变更检测有一个有界延迟（默认 300 秒，可配置到 10 秒）。
@@ -46,9 +47,9 @@ transaction 内 materialize；提醒只投递到 durable notification inbox（`p
 `pw notification show|read`，`pw scheduled` 可查看 job 状态）。Rolling replanning 是 debounced 的
 后台 job：**只产生新的 `PENDING` proposal 并发 `PLAN_READY` 通知，绝不自动 apply**
 （apply 仍需 `pw plan apply`）。daemon 现在托管 `index-sync` 与 `scheduler` 两个 service。
-**尚未实现**：OS/手机推送、mail、LLM 任务解读、个人估时学习（personal effort learning）、
-自然语言时间解析、重复任务/事件、RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、
-filesystem watcher、eHall。
+**尚未实现**：OS/手机推送、个人估时学习（personal effort learning）、自然语言时间解析、
+重复任务/事件、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher、eHall、
+邮件回复起草与发送。
 
 模型基础（Phase 4A）：**已实现** provider-independent model boundary —— core/application 只依赖
 `ModelPort`，DeepSeek 走 Responses API 的 adapter（`[model]` 配置 + `DEEPSEEK_API_KEY` 环境变量，
@@ -77,8 +78,9 @@ pw interpret "add a task to write the SE lab report, high priority, 5 hours, due
 最多 50 条）、current time、planning timezone。**task description、knowledge 内容、文件、
 notification、scheduler payload 都不会发送。** 模型给出的 task UUID 必须来自本次 context，否则
 直接拒绝；没有 `[planning].timezone` 时任何涉及时间的命令一律转为 clarification。
-**尚未实现**：knowledge-grounded answering（RAG）、agent tool loop、conversation memory、
-command execution boundary（把 draft 正式变成执行的边界）、mail/eHall/browser、把 model 接入 daemon。
+**尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
+conversation memory、answer persistence / FactCandidate、web search、eHall/browser、
+mail 回复起草与发送。
 
 基于来源的个人知识问答（Phase 4C）：**已实现** `pw ask` —— 只根据你自己已索引的资料回答，
 每句话都必须带 citation，来源路径/页码/行号由本地解析：
@@ -106,7 +108,7 @@ pw ask "What is the deadline for my SE lab?"
 - `pw ask` is read-only；它不修改文件、不写 index、不创建任何 durable state，也不执行命令。
 - `pw search` 仍然是不调用模型的本地搜索。
 **尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
-conversation memory、answer persistence / FactCandidate、web search、mail/eHall/browser。
+conversation memory、answer persistence / FactCandidate、web search、eHall/browser。
 
 收信（Phase 5A）：**已实现** durable IMAP inbound sync —— 配置 `[[mail.accounts]]`（host/port/
 username/mailbox，仅 TLS），凭据只从环境变量读取：
@@ -134,8 +136,43 @@ pw mail show MESSAGE      # 只读：单封邮件详情
   `event_type=mail.message.received`、`external_id=message:<UUID>`）；event 里只有 message UUID
   和 account id，**不含正文/标题/附件**。两个 crash 窗口都会在后续 sync 中修复。
 - 只读邮箱：`select(readonly=True)` + `BODY.PEEK`，同步不会把邮件标记为已读。
-**尚未实现**：邮件分类、thread UI、正文索引/问答、回复起草、SMTP 发送与审批流程、事件删除同步
-（server-side deletion）、attachment materialization。
+邮件的确定性线程与结构化分类（Phase 5B）：**已实现** deterministic threading + structured
+analysis。
+
+```bash
+pw mail threads              # 只读：确定性 thread 列表
+pw mail thread show THREAD   # 只读：一个 thread 的邮件（对话顺序 + link 状态）
+pw mail analysis MESSAGE     # 只读：已存储的分析结果（不调用模型）
+```
+
+要点：
+
+- **thread 由代码决定，模型不参与**：parent 只按 `In-Reply-To`，然后 `References`（由近到远）
+  解析，且必须**同 account** 且只匹配到**唯一一条**已存储邮件；重复 Message-ID 一律
+  `AMBIGUOUS`（自成 thread，绝不任选），找不到 parent 是 `UNRESOLVED`，没有引用 header 是
+  `ROOT`。membership 只决定一次且幂等，迟到的 parent 不会改写历史。
+- **分类结果只是候选**：每个 message 最多一条 durable `MailAnalysis`（category / requires_reply /
+  summary / action_candidates）。`DEADLINE`（by when）与 `EVENT_START`（when it happens）是
+  **不同取值**，绝不合并；带时间的候选必须给出邮件原文时间或 instant，instant 必须带时区偏移
+  （naive 一律被本地校验拒绝）。
+- **模型只看到有上限的不可信数据**：当前邮件 + 同一 thread 最多 5 条历史，每条最多 3000 字符、
+  总计 12000 字符。`To`/`Cc`、附件 bytes/hash、raw `.eml`、storage key、凭据以及 Task /
+  Calendar / Scheduler / Notification / Knowledge 状态**都不进 context**；邮件内容永远只是
+  被引用的数据，不是 instructions。
+- **重试不再重复付费**：分析结果带 input fingerprint（analyzer/schema 版本 + message id +
+  content fingerprint + thread 上下文 + timezone）；EventWorker retry 命中同样的
+  `(analyzer_version, input_fingerprint)` 时直接复用，不调用模型。provider 401/billing 之类
+  永久失败直接 dead-letter，rate limit / 5xx / 结构化输出不合法则按 EventWorker 的有界 retry
+  策略重试。
+- 正文不可用（oversize）时**不调用模型**，只落一条 `unknown` 分析。
+- `assistantd` 仅在**同时**配置了 mail 与可用 model 时启动 `event-worker`；没有 model 时邮件
+  照常收下并停在 `RECEIVED`，配置好 model 再重启即会继续处理积压。
+- 处理邮件**不改动** Task / Deadline / CalendarEvent / PlanBlock / WorkSession / PlanProposal /
+  ScheduledJob / Notification 或知识索引。
+
+**尚未实现**：正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、分类结果自动转
+Task/Case、回复起草、SMTP 发送与审批流程、事件删除同步（server-side deletion）、attachment
+materialization、QQ 与站点 watcher。
 
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
@@ -147,7 +184,8 @@ Architecture v1 是 **Modular Monolith + asyncio daemon + explicit state machine
 ```text
 smail
   ↓  IMAP incremental fetch (UIDVALIDITY + UID)
-InboundEvent → classification → Case → knowledge search → material checklist
+MailMessage → deterministic thread → InboundEvent → MailAnalysis (candidates only)
+  ↓  (后续 Phase：Case → knowledge search → material checklist)
   → draft/prepare → ActionRequest → approval → execute → result → archive
   → PlaybookCandidate → review/test → Playbook
 ```
@@ -170,8 +208,9 @@ InboundEvent → classification → Case → knowledge search → material check
 调用只在 worker thread 内执行，connection 不跨线程（ADR-0009）。
 
 外部输入统一经 `EventInbox` 摄取为持久化的 `RECEIVED` 事件：重复的 `(source, external_id)`
-是幂等成功（返回 `DUPLICATE`）而不是错误。**尚无事件处理 worker**——claim、retry、崩溃恢复
-是后续 Phase 单独设计的内容。
+是幂等成功（返回 `DUPLICATE`）而不是错误。`EventWorker` 负责 claim / retry / crash recovery /
+dead letter；它现在注册了唯一的真实 handler（`mail.message.received` → `MailInboundEventHandler`），
+并且只在 mail 与 model 同时可用时由 daemon 启动。未知 event type 永久拒绝，不会静默处理。
 
 ## Installation
 

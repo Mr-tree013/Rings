@@ -19,6 +19,7 @@ from assistant.daemon.supervisor import AsyncService, supervise
 from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import InvalidAssistantConfig
 from assistant.ports.clock import Clock
+from assistant.ports.model import ModelPort
 from assistant.store.db import Database
 
 LOGGER = logging.getLogger("assistant.daemon")
@@ -43,14 +44,22 @@ def _install_signal_handlers(stop_event: asyncio.Event) -> None:
 
 
 def build_services(
-    config: AssistantConfig, clock: Clock, database: Database
+    config: AssistantConfig,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
 ) -> list[AsyncService]:
     """Compose the services the daemon supervises today.
 
     `index-sync` keeps derived views current; `scheduler` runs durable reminders and rolling
-    replans; `mail-sync` receives inbound mail when at least one account is configured. The
-    durable `EventWorker` is deliberately absent: there is still no real inbound handler, and a
-    fake handler would only pretend that mail is being processed.
+    replans; `mail-sync` receives inbound mail when at least one account is configured; and
+    `event-worker` analyzes that mail — but only when the host can actually analyze it.
+
+    The last condition is the important one. A worker that cannot reach a provider would
+    dead-letter every received event, so a host with mail accounts but no usable model keeps
+    receiving mail and accumulating `RECEIVED` events instead. Configuring a model and
+    restarting drains that backlog; nothing is lost in the meantime.
     """
     services: list[AsyncService] = [
         bootstrap.sync_service(config, clock, database),
@@ -58,6 +67,8 @@ def build_services(
     ]
     if config.mail.enabled_accounts:
         services.append(bootstrap.mail_sync_service(config, clock, database))
+        if bootstrap.mail_analysis_available(config, model=model):
+            services.append(bootstrap.mail_event_worker(config, clock, database, model=model))
     return services
 
 

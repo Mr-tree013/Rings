@@ -57,6 +57,9 @@ class EventWorker:
     policy, worker identity, claim-token factory, lease duration and poll interval.
     """
 
+    name = "event-worker"
+    """The daemon service name, so a worker can be supervised like any other service."""
+
     def __init__(
         self,
         repository: EventRepository,
@@ -178,4 +181,3 @@ __all__ = [
     "EventWorker",
     "WorkerResult",
 ]
-

@@ -183,14 +183,21 @@ def status() -> None:
     )
     table.add_row("interpreter", "natural-language command preview (never executes)")
     table.add_row("execution", "structured CLI confirmation required")
-    table.add_row("external inputs", "IMAP inbound mail (receive-only)")
+    table.add_row(
+        "external inputs",
+        "IMAP inbound mail (receive-only: sync, deterministic threading, structured "
+        "classification)",
+    )
     table.add_row("agent execution", "[yellow]not implemented[/yellow]")
     table.add_row(
-        "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
+        "daemon services",
+        "index-sync (periodic reconciliation), scheduler (jobs), "
+        "mail-sync + event-worker (when mail and a model are configured)",
     )
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
-        "integrations", "[yellow]not implemented[/yellow] (mail, web, push, eHall)"
+        "integrations",
+        "[yellow]not implemented[/yellow] (reply drafting, sending, cases, web, push, eHall)",
     )
     console.print(table)
     console.print(

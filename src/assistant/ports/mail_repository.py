@@ -112,6 +112,10 @@ class MailRepository(Protocol):
         """Record that one message is bridged to one event. Repeating it is a no-op."""
         ...
 
+    async def get_linked_event_id(self, message_id: MailMessageId) -> EventId | None:
+        """Return the `InboundEvent` this message is bridged to, or `None` when it is not."""
+        ...
+
     async def count_messages(self, *, account_id: MailAccountId | None = None) -> int:
         """How many logical messages are stored."""
         ...

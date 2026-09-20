@@ -36,22 +36,22 @@ from assistant.store.db import Database, transaction
 from assistant.store.errors import CommitmentStoreError
 from assistant.store.serialization import from_utc_iso, to_utc_iso
 
-_MESSAGE_FIELDS = (
+MESSAGE_FIELDS = (
     "id, account_id, message_id_header, in_reply_to_header, references_json, subject, "
     "from_address, to_addresses_json, cc_addresses_json, date_header, sent_at, body_text, "
     "body_status, raw_sha256, content_fingerprint, raw_storage_key, size_bytes, parse_warnings, "
     "first_seen_at, last_seen_at"
 )
 
-_LOCATION_FIELDS = (
+LOCATION_FIELDS = (
     "message_id, account_id, mailbox_name, uidvalidity, uid, first_seen_at, last_seen_at"
 )
 
-_ATTACHMENT_FIELDS = (
+ATTACHMENT_FIELDS = (
     "id, message_id, ordinal, filename, content_type, content_disposition, size_bytes, sha256"
 )
 
-_STATE_FIELDS = (
+STATE_FIELDS = (
     "account_id, mailbox_name, uidvalidity, last_seen_uid, mode, last_sync_at, "
     "last_reconciled_at, updated_at"
 )
@@ -122,6 +122,9 @@ class SqliteMailRepository:
             self._link_inbound_event_sync, mail_message_id, inbound_event_id, linked_at
         )
 
+    async def get_linked_event_id(self, message_id: MailMessageId) -> EventId | None:
+        return await asyncio.to_thread(self._get_linked_event_id_sync, message_id)
+
     async def count_messages(self, *, account_id: MailAccountId | None = None) -> int:
         return await asyncio.to_thread(self._count_messages_sync, account_id)
 
@@ -173,7 +176,7 @@ class SqliteMailRepository:
     ) -> MailboxSyncState | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_STATE_FIELDS} FROM mailbox_sync_state "
+                f"SELECT {STATE_FIELDS} FROM mailbox_sync_state "
                 "WHERE account_id = ? AND mailbox_name = ?",
                 (account_id, mailbox_name),
             ).fetchone()
@@ -242,7 +245,7 @@ class SqliteMailRepository:
 
     def _insert_message(self, connection: sqlite3.Connection, message: MailMessage) -> None:
         connection.execute(
-            f"INSERT INTO mail_messages ({_MESSAGE_FIELDS}) "
+            f"INSERT INTO mail_messages ({MESSAGE_FIELDS}) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             _message_parameters(message),
         )
@@ -259,7 +262,7 @@ class SqliteMailRepository:
         self, connection: sqlite3.Connection, location: MailMessageLocation
     ) -> None:
         connection.execute(
-            f"INSERT INTO mail_message_locations ({_LOCATION_FIELDS}) "
+            f"INSERT INTO mail_message_locations ({LOCATION_FIELDS}) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 str(location.message_id),
@@ -276,7 +279,7 @@ class SqliteMailRepository:
         self, connection: sqlite3.Connection, attachment: MailAttachmentMetadata
     ) -> None:
         connection.execute(
-            f"INSERT INTO mail_attachments ({_ATTACHMENT_FIELDS}) "
+            f"INSERT INTO mail_attachments ({ATTACHMENT_FIELDS}) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(attachment.id),
@@ -303,7 +306,7 @@ class SqliteMailRepository:
         reconciled: bool,
     ) -> None:
         connection.execute(
-            f"INSERT INTO mailbox_sync_state ({_STATE_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            f"INSERT INTO mailbox_sync_state ({STATE_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (account_id, mailbox_name) DO UPDATE SET "
             "uidvalidity = excluded.uidvalidity, "
             "last_seen_uid = excluded.last_seen_uid, "
@@ -327,9 +330,9 @@ class SqliteMailRepository:
     def _get_message_sync(self, message_id: MailMessageId) -> MailMessage | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_MESSAGE_FIELDS} FROM mail_messages WHERE id = ?", (str(message_id),)
+                f"SELECT {MESSAGE_FIELDS} FROM mail_messages WHERE id = ?", (str(message_id),)
             ).fetchone()
-        return None if row is None else _row_to_message(row)
+        return None if row is None else row_to_message(row)
 
     def _list_messages_sync(
         self, account_id: MailAccountId | None, limit: int | None
@@ -337,7 +340,7 @@ class SqliteMailRepository:
         if limit is not None and limit <= 0:
             raise ValueError("limit must be a positive integer or None")
         statement = (
-            f"SELECT {_MESSAGE_FIELDS} FROM mail_messages"
+            f"SELECT {MESSAGE_FIELDS} FROM mail_messages"
             # SQLite has no portable NULLS LAST, so the NULL case is spelled out explicitly.
         )
         parameters: list[object] = []
@@ -350,12 +353,12 @@ class SqliteMailRepository:
             parameters.append(limit)
         with self._database.connect() as connection:
             rows = connection.execute(statement, tuple(parameters)).fetchall()
-        return [_row_to_message(row) for row in rows]
+        return [row_to_message(row) for row in rows]
 
     def _list_locations_sync(self, message_id: MailMessageId) -> list[MailMessageLocation]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_LOCATION_FIELDS} FROM mail_message_locations WHERE message_id = ? "
+                f"SELECT {LOCATION_FIELDS} FROM mail_message_locations WHERE message_id = ? "
                 "ORDER BY uidvalidity, uid",
                 (str(message_id),),
             ).fetchall()
@@ -366,7 +369,7 @@ class SqliteMailRepository:
     ) -> list[MailAttachmentMetadata]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_ATTACHMENT_FIELDS} FROM mail_attachments WHERE message_id = ? "
+                f"SELECT {ATTACHMENT_FIELDS} FROM mail_attachments WHERE message_id = ? "
                 "ORDER BY ordinal",
                 (str(message_id),),
             ).fetchall()
@@ -377,13 +380,13 @@ class SqliteMailRepository:
             raise ValueError("limit must be a positive integer")
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_MESSAGE_FIELDS} FROM mail_messages AS m "
+                f"SELECT {MESSAGE_FIELDS} FROM mail_messages AS m "
                 "WHERE NOT EXISTS (SELECT 1 FROM mail_event_links AS l "
                 "WHERE l.mail_message_id = m.id) "
                 "ORDER BY m.first_seen_at, m.id LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [_row_to_message(row) for row in rows]
+        return [row_to_message(row) for row in rows]
 
     def _link_inbound_event_sync(
         self,
@@ -397,6 +400,14 @@ class SqliteMailRepository:
                 "VALUES (?, ?, ?) ON CONFLICT (mail_message_id) DO NOTHING",
                 (str(mail_message_id), str(inbound_event_id), to_utc_iso(linked_at)),
             )
+
+    def _get_linked_event_id_sync(self, message_id: MailMessageId) -> EventId | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT inbound_event_id FROM mail_event_links WHERE mail_message_id = ?",
+                (str(message_id),),
+            ).fetchone()
+        return None if row is None else UUID(str(row["inbound_event_id"]))
 
     def _count_messages_sync(self, account_id: MailAccountId | None) -> int:
         statement = "SELECT count(*) AS total FROM mail_messages"
@@ -433,26 +444,26 @@ class SqliteMailRepository:
             by_raw = None
             if raw_sha256 is not None:
                 row = connection.execute(
-                    f"SELECT {_MESSAGE_FIELDS} FROM mail_messages "
+                    f"SELECT {MESSAGE_FIELDS} FROM mail_messages "
                     "WHERE account_id = ? AND raw_sha256 = ? ORDER BY first_seen_at, id LIMIT 1",
                     (account_id, raw_sha256),
                 ).fetchone()
-                by_raw = None if row is None else _row_to_message(row)
+                by_raw = None if row is None else row_to_message(row)
             by_header: tuple[MailMessage, ...] = ()
             if message_id_header is not None:
                 by_header = tuple(
-                    _row_to_message(row)
+                    row_to_message(row)
                     for row in connection.execute(
-                        f"SELECT {_MESSAGE_FIELDS} FROM mail_messages "
+                        f"SELECT {MESSAGE_FIELDS} FROM mail_messages "
                         "WHERE account_id = ? AND message_id_header = ? "
                         "ORDER BY first_seen_at, id",
                         (account_id, message_id_header),
                     )
                 )
             by_fingerprint = tuple(
-                _row_to_message(row)
+                row_to_message(row)
                 for row in connection.execute(
-                    f"SELECT {_MESSAGE_FIELDS} FROM mail_messages "
+                    f"SELECT {MESSAGE_FIELDS} FROM mail_messages "
                     "WHERE account_id = ? AND content_fingerprint = ? "
                     "ORDER BY first_seen_at, id",
                     (account_id, content_fingerprint),
@@ -504,7 +515,7 @@ def _parse_json_list(raw: object) -> tuple[str, ...]:
     return tuple(str(item) for item in decoded)
 
 
-def _row_to_message(row: sqlite3.Row) -> MailMessage:
+def row_to_message(row: sqlite3.Row) -> MailMessage:
     try:
         return MailMessage(
             id=UUID(str(row["id"])),
@@ -578,4 +589,11 @@ def _optional_instant(value: object) -> datetime | None:
     return None if value is None else from_utc_iso(str(value))
 
 
-__all__ = ["SqliteMailRepository"]
+__all__ = [
+    "ATTACHMENT_FIELDS",
+    "LOCATION_FIELDS",
+    "MESSAGE_FIELDS",
+    "STATE_FIELDS",
+    "SqliteMailRepository",
+    "row_to_message",
+]

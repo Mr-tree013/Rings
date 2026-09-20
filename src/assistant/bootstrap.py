@@ -26,6 +26,7 @@ from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
 from assistant.application.event_inbox import EventInbox
+from assistant.application.event_worker import EventWorker
 from assistant.application.greedy_planner import GreedyPlanner
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.grounded_context import GroundedContextBuilder
@@ -34,7 +35,14 @@ from assistant.application.interpreter import InterpreterService
 from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
+from assistant.application.mail_context import MailContextBuilder
+from assistant.application.mail_event_handler import (
+    MAIL_EVENT_TYPE,
+    InboundEventDispatcher,
+    MailInboundEventHandler,
+)
 from assistant.application.mail_sync import MailSyncService
+from assistant.application.mail_threading import MailThreadLinker
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.retry import RetryPolicy
@@ -65,6 +73,7 @@ from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.mail import SqliteMailRepository
+from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
@@ -91,6 +100,11 @@ def catalog_repository(database: Database) -> SqliteCatalogRepository:
 def mail_repository(database: Database) -> SqliteMailRepository:
     """Durable inbound mail: messages, locations, attachments and the mailbox cursor."""
     return SqliteMailRepository(database)
+
+
+def mail_intelligence_repository(database: Database) -> SqliteMailIntelligenceRepository:
+    """Durable mail threads and analyses."""
+    return SqliteMailIntelligenceRepository(database)
 
 
 def raw_mail_store() -> RawMailStore:
@@ -360,6 +374,83 @@ def structured_model(config: AssistantConfig | None) -> StructuredModel:
     return StructuredModel(model_adapter(config))
 
 
+def mail_analysis_available(
+    config: AssistantConfig | None, *, model: ModelPort | None = None
+) -> bool:
+    """Whether this host can analyze mail at all.
+
+    Both halves are required: a `[model]` section *and* a credential. A host with mail accounts
+    but no model keeps receiving mail and keeps producing `RECEIVED` events — it simply does not
+    start a worker that would dead-letter every one of them.
+    """
+    if config is None or config.model is None:
+        return False
+    return model is not None or model_api_key() is not None
+
+
+def mail_context_builder(
+    database: Database, config: AssistantConfig | None
+) -> MailContextBuilder:
+    """The bounded, untrusted thread context an analysis is allowed to see."""
+    return MailContextBuilder(
+        mail_repository(database),
+        mail_intelligence_repository(database),
+        planning_timezone=(
+            None if config is None or config.planning is None else config.planning.timezone
+        ),
+    )
+
+
+def mail_event_handler(
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
+) -> MailInboundEventHandler:
+    """The mail analysis handler over the configured adapter.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    return MailInboundEventHandler(
+        mail_repository(database),
+        mail_intelligence_repository(database),
+        MailThreadLinker(mail_repository(database), mail_intelligence_repository(database), clock),
+        mail_context_builder(database, config),
+        StructuredModel(model if model is not None else model_adapter(config)),
+        clock,
+        reasoning_effort=settings.reasoning_effort,
+        max_output_tokens=settings.max_output_tokens,
+    )
+
+
+def mail_event_worker(
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
+    worker_id: str = "event-worker",
+) -> EventWorker:
+    """The durable worker that turns received mail into analyses.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    handler = mail_event_handler(config, clock, database, model=model)
+    return EventWorker(
+        SqliteEventRepository(database, clock),
+        InboundEventDispatcher({MAIL_EVENT_TYPE: handler}),
+        clock,
+        RetryPolicy(),
+        worker_id=worker_id,
+    )
+
+
 def grounded_context_builder(
     clock: Clock, database: Database
 ) -> GroundedContextBuilder:
@@ -438,6 +529,11 @@ __all__ = [
     "grounded_context_builder",
     "interpreter_service",
     "knowledge_indexer",
+    "mail_analysis_available",
+    "mail_context_builder",
+    "mail_event_handler",
+    "mail_event_worker",
+    "mail_intelligence_repository",
     "mail_repository",
     "mail_source",
     "mail_sync_service",

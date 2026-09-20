@@ -66,6 +66,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a matching file name is not a statement about a file's contents, and an unplugged vault's
   content is unavailable rather than guessed. Zero evidence means no provider call at all, and
   there is no general-knowledge fallback.
+- Deterministic mail threading (ADR-0021): each stored message is placed in exactly one thread by
+  code, never by a model. Parent resolution reads `In-Reply-To` first and then `References` from
+  the nearest entry backwards, accepts only a Message-ID that matches exactly one stored message
+  in the same account, and records why: `root`, `linked`, `unresolved` (the parent was never
+  stored) or `ambiguous` (a duplicate Message-ID — never resolved by choosing). Membership is
+  recorded once, is idempotent, is cycle-safe under a depth limit, and never crosses accounts.
+- Structured mail analysis: the first real `EventHandler` (registered through a one-entry
+  `InboundEventDispatcher`) turns a `mail.message.received` event into a durable `MailAnalysis`
+  with a category (`ordinary_correspondence`, `receipt_result`, `actionable_notice`, `unknown`),
+  a `requires_reply` verdict, a bounded summary and up to 10 action candidates. A deadline
+  candidate and an event-start candidate are different kinds and are never merged; an
+  `interpreted_at` must carry an explicit UTC offset, and a naive one is refused rather than
+  assumed local.
+- Bounded untrusted mail context: the request carries the current message plus at most 5 earlier
+  messages of the same thread, 3000 characters per body and 12000 in total, with a deterministic
+  truncation flag. `To`/`Cc`, attachment bytes and hashes, raw `.eml`, storage keys, credentials
+  and all Task, Calendar, Scheduler, Notification and Knowledge state are absent by construction,
+  and mail text only ever appears as quoted data inside the user message.
+- Analysis idempotency: each analysis stores an input fingerprint (analyzer and schema versions,
+  message id, content fingerprint, ordered thread context, planning timezone). An `EventWorker`
+  retry that finds the same `(analyzer_version, input_fingerprint)` reuses the stored analysis
+  without a second provider call, so a crash after the analysis costs nothing. A changed
+  fingerprint replaces the row atomically and keeps its original `created_at`.
+- Mail model failure handling: rate limiting, transient and unavailable errors, provider protocol
+  failures and unusable structured output retry under the existing bounded event policy, while
+  authentication, billing, invalid-request, missing-credential and configuration failures
+  dead-letter immediately. A model failure never modifies or removes the stored mail, and an
+  oversize body is never sent to a provider at all.
+- Daemon and CLI: `event-worker` is supervised only when mail accounts and a usable model are both
+  configured — without a model, mail keeps arriving as `RECEIVED` events and waits for one —
+  and `pw mail threads`, `pw mail thread show` and `pw mail analysis` are read-only local views.
+  `pw mail messages` and `pw mail show` now show the thread and the stored analysis category.
 
 ## [0.4.0] - 2026-09-20
 

@@ -612,6 +612,34 @@ class MailReconciliationConflict(DomainError):
     """Reconciliation evidence conflicts, so no automatic match may be made."""
 
 
+class MailEventLinkMismatch(DomainError):
+    """A mail event and the message it names disagree about their identity.
+
+    Retryable on purpose: `mail_event_links` is written moments after the event is ingested, so
+    a mismatch usually means the bridge has not finished yet rather than that the data is wrong.
+    """
+
+
+class InvalidMailAnalysis(DomainError):
+    """A mail analysis, action candidate or thread record breaks its invariants."""
+
+
+class MailAnalysisNotFound(DomainError):
+    """No stored analysis exists for the requested message."""
+
+    def __init__(self, message_id: object) -> None:
+        self.message_id = message_id
+        super().__init__(f"mail message {message_id} has no analysis")
+
+
+class MailThreadNotFound(DomainError):
+    """No thread exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"mail thread {reference} does not exist")
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -652,6 +680,7 @@ __all__ = [
     "InvalidInboundEvent",
     "InvalidInterpretationResult",
     "InvalidKnowledgeDocument",
+    "InvalidMailAnalysis",
     "InvalidMailMessage",
     "InvalidMailboxState",
     "InvalidModelRequest",
@@ -672,14 +701,17 @@ __all__ = [
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
     "KnowledgeIndexNeedsRebuild",
+    "MailAnalysisNotFound",
     "MailAuthenticationError",
     "MailConfigurationError",
     "MailConnectionError",
     "MailCredentialsMissing",
+    "MailEventLinkMismatch",
     "MailMessageNotFound",
     "MailProtocolError",
     "MailRawStorageError",
     "MailReconciliationConflict",
+    "MailThreadNotFound",
     "ModelAuthenticationError",
     "ModelBillingError",
     "ModelConfigurationError",

@@ -192,6 +192,23 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   secret 不进入 domain object、日志或异常。
 - **Phase 5A mail ingress is receive-only; no SMTP capability exists.** 不分类、不起草、不发送、
   不建 Task/Case。
+- **Mail threading is deterministic code; the model never decides message identity.**
+  parent 只按 `In-Reply-To` 然后 `References`（由近到远）解析，且必须同 account 且只匹配到唯一一条
+  已存储 message；重复 Message-ID 一律 `AMBIGUOUS`，禁止任选、禁止按 subject 猜、禁止回溯改写
+  已决定的 membership（ADR-0021）。
+- **Mail classification creates analysis/candidates only and must not directly create Tasks or
+  Cases.** handler 只写 `mail_analyses` + thread membership + InboundEvent 状态；不得 import
+  Task/Calendar/Work/Planner/Scheduler/Interpreter service，不得建 Task、不得改 Deadline、
+  不得起草或发送。
+- **Mail bodies and thread history supplied to the model are untrusted data.** 正文、标题、header、
+  线程历史只能出现在 USER message 的 canonical JSON 里；`To`/`Cc`、附件 bytes/hash、raw `.eml`、
+  storage key、凭据以及 Task/Calendar/Scheduler/Notification/Knowledge 状态一律不进 context。
+- **Deadline candidates and event-start candidates are distinct concepts.**
+  `DEADLINE`（by when）与 `EVENT_START`（when it happens）是不同取值，禁止合并成单个 date 字段；
+  带时间的 candidate 必须带原文时间或 instant，`interpreted_at` 必须 timezone-aware。
+- **A durable analysis with the same input fingerprint must be reused across EventWorker retries.**
+  `(analyzer_version, input_fingerprint)` 相同即直接复用、不再调用模型；fingerprint 变化才允许
+  原子替换。oversize（无正文）不得调用模型，只记录 `UNKNOWN` 分析。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -292,16 +309,25 @@ bounded initial history、增量 cursor、UIDVALIDITY reconciliation、attachmen
 MailMessage → InboundEvent bridge（两个 crash 窗口可恢复）、daemon `mail-sync` service、
 `pw mail accounts|sync|status|messages|show`。仍无分类/起草/发送/SMTP，也未启动 EventWorker。
 
+**Phase 5B 已完成（仍是 0.4.0）**：mail threading + structured analysis（ADR-0021）：
+deterministic thread linker（`In-Reply-To` → `References` 由近到远、同 account、唯一匹配；
+`root`/`linked`/`unresolved`/`ambiguous` 四态、幂等、防循环）、closed analysis schema
+（category / requires_reply / summary / action_candidates）、`DEADLINE` 与 `EVENT_START` 分离、
+bounded untrusted thread context（当前邮件 + 最多 5 条历史、每条 3000 / 总 12000 字符）、
+input fingerprint + 幂等复用（EventWorker retry 不再付费）、oversize 不调用模型、
+第一个真实 `EventHandler`（`MailInboundEventHandler` + `InboundEventDispatcher`）、
+daemon `event-worker`（仅在同时配置 mail 与可用 model 时启动）、
+`pw mail threads|thread show|analysis`。仍不建 Task/Case、不起草、不发送、无 SMTP。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-LLM 问答与 RAG / 个人估时学习 / knowledge-grounded answering / agent tool loop /
-command execution boundary（`pw interpret --apply` 之类）/
-重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
-Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
-Playwright / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/
-approval token / Case、Approval 等其余 domain entity /
-Windows Task Scheduler 配置。
+mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task / reply draft /
+SMTP 发送与审批 / site watcher / QQ 渠道 / eHall / browser / 个人估时学习 /
+agent tool loop / 多工具只读编排 / command execution boundary（`pw interpret --apply` 之类）/
+重复任务与重复事件 / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
+filesystem watcher 快速路径 / Web Server / Playwright /
+OS·手机推送投递（当前 reminder 只进 durable notification inbox）/ approval token /
+Case、Approval 等其余 domain entity / Windows Task Scheduler 配置。
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
 Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）
