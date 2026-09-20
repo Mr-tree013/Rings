@@ -7,6 +7,7 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
+from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
 from assistant.application.greedy_planner import GreedyPlanner
@@ -28,10 +30,13 @@ from assistant.application.retry import RetryPolicy
 from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.application.scheduler_service import SchedulerService
 from assistant.application.storage_catalog import StorageCatalogService
+from assistant.application.structured_model import StructuredModel
 from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
-from assistant.domain.config import AssistantConfig, SchedulerConfig
+from assistant.domain.config import AssistantConfig, ModelConfig, SchedulerConfig
+from assistant.domain.errors import ModelCredentialsMissing, ModelNotConfigured
 from assistant.ports.clock import Clock
+from assistant.ports.model import ModelPort
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
@@ -217,22 +222,84 @@ def scheduler_service(
     )
 
 
+MODEL_API_KEY_ENV = "DEEPSEEK_API_KEY"
+"""Where the provider credential comes from. It is never read from host configuration."""
+
+
+def model_api_key() -> str | None:
+    """Return the provider credential from the environment, or `None` when unset."""
+    value = os.environ.get(MODEL_API_KEY_ENV, "").strip()
+    return value or None
+
+
+def require_model_config(config: AssistantConfig | None) -> ModelConfig:
+    """Return the `[model]` configuration or explain that this host has no model capability."""
+    if config is None or config.model is None:
+        raise ModelNotConfigured(
+            "no [model] section in the host config; the model boundary is optional"
+        )
+    return config.model
+
+
+def model_adapter(config: AssistantConfig | None) -> ModelPort:
+    """Build the configured provider adapter.
+
+    The credential is read here, at composition time, so that a host without a model
+    configuration — or without a key — still runs every Phase 1-3 capability unchanged.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    if settings.provider != "deepseek":  # pragma: no cover - config validation guarantees it
+        raise ModelNotConfigured(f"unsupported model provider {settings.provider!r}")
+    api_key = model_api_key()
+    if api_key is None:
+        raise ModelCredentialsMissing(
+            f"no credential available; set {MODEL_API_KEY_ENV} in the environment"
+        )
+    return DeepSeekAdapter(
+        api_key=api_key,
+        model=settings.model,
+        timeout_seconds=settings.timeout_seconds,
+    )
+
+
+def structured_model(config: AssistantConfig | None) -> StructuredModel:
+    """The structured-output service over the configured adapter."""
+    return StructuredModel(model_adapter(config))
+
+
+async def close_model(model: ModelPort) -> None:
+    """Release adapter resources, without making `ModelPort` promise a lifecycle."""
+    close = getattr(model, "aclose", None)
+    if callable(close):
+        await close()
+
+
 __all__ = [
+    "MODEL_API_KEY_ENV",
     "AppPaths",
     "VaultManifestFile",
     "calendar_service",
     "catalog_repository",
     "catalog_service",
+    "close_model",
     "commitment_repository",
     "config_loader",
     "knowledge_indexer",
+    "model_adapter",
+    "model_api_key",
     "planner_service",
     "planning_repository",
+    "require_model_config",
     "rolling_replan_requester",
     "runtime_database",
     "scheduler_repository",
     "scheduler_service",
     "search_service",
+    "structured_model",
     "sync_service",
     "system_clock",
     "task_service",

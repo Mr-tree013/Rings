@@ -41,7 +41,15 @@ DEFAULT_DEADLINE_REMINDER_OFFSETS: Final[tuple[int, ...]] = (1440, 120)
 MAX_DEADLINE_REMINDER_OFFSET_MINUTES: Final[int] = 30 * 24 * 60
 
 _KNOWN_TOP_LEVEL_KEYS = frozenset(
-    {"format_version", "indexing", "storage", "planning", "reminders", "scheduler"}
+    {
+        "format_version",
+        "indexing",
+        "storage",
+        "planning",
+        "reminders",
+        "scheduler",
+        "model",
+    }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
 _KNOWN_ROOT_KEYS = frozenset({"kind", "id", "label", "path", "enabled"})
@@ -52,6 +60,21 @@ _KNOWN_PLANNING_KEYS = frozenset(
 _KNOWN_AVAILABILITY_KEYS = frozenset({"days", "start", "end"})
 _KNOWN_REMINDER_KEYS = frozenset({"deadline_offsets_minutes"})
 _KNOWN_SCHEDULER_KEYS = frozenset({"poll_interval_seconds", "replan_debounce_seconds"})
+_KNOWN_MODEL_KEYS = frozenset(
+    {"provider", "model", "reasoning_effort", "max_output_tokens", "timeout_seconds"}
+)
+
+SUPPORTED_MODEL_PROVIDERS: Final[tuple[str, ...]] = ("deepseek",)
+DEFAULT_MODEL_PROVIDER: Final[str] = "deepseek"
+DEFAULT_MODEL_NAME: Final[str] = "deepseek-flash"
+DEFAULT_MODEL_REASONING_EFFORT: Final[str] = "low"
+DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 4096
+MIN_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 64
+MAX_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 32768
+DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 120
+MIN_MODEL_TIMEOUT_SECONDS: Final[int] = 10
+MAX_MODEL_TIMEOUT_SECONDS: Final[int] = 600
+MODEL_REASONING_EFFORTS: Final[tuple[str, ...]] = ("none", "low", "high", "max")
 
 
 class Weekday(StrEnum):
@@ -198,6 +221,51 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelConfig:
+    """Which provider the model boundary talks to, and how.
+
+    Credentials are deliberately absent: an API key is never configuration, never a repository
+    file and never a log line. The composition root reads it from the process environment.
+    """
+
+    provider: str = DEFAULT_MODEL_PROVIDER
+    model: str = DEFAULT_MODEL_NAME
+    reasoning_effort: str = DEFAULT_MODEL_REASONING_EFFORT
+    max_output_tokens: int = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+    timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if self.provider not in SUPPORTED_MODEL_PROVIDERS:
+            allowed = ", ".join(SUPPORTED_MODEL_PROVIDERS)
+            raise InvalidAssistantConfig(
+                f"unknown model.provider {self.provider!r}; supported providers: {allowed}"
+            )
+        if not self.model.strip():
+            raise InvalidAssistantConfig("model.model must not be blank")
+        if "\x00" in self.model:
+            raise InvalidAssistantConfig("model.model must not contain NUL bytes")
+        if self.reasoning_effort not in MODEL_REASONING_EFFORTS:
+            allowed = ", ".join(MODEL_REASONING_EFFORTS)
+            raise InvalidAssistantConfig(
+                f"model.reasoning_effort must be one of: {allowed}"
+            )
+        if not (
+            MIN_MODEL_MAX_OUTPUT_TOKENS
+            <= self.max_output_tokens
+            <= MAX_MODEL_MAX_OUTPUT_TOKENS
+        ):
+            raise InvalidAssistantConfig(
+                "model.max_output_tokens must be between "
+                f"{MIN_MODEL_MAX_OUTPUT_TOKENS} and {MAX_MODEL_MAX_OUTPUT_TOKENS}"
+            )
+        if not MIN_MODEL_TIMEOUT_SECONDS <= self.timeout_seconds <= MAX_MODEL_TIMEOUT_SECONDS:
+            raise InvalidAssistantConfig(
+                "model.timeout_seconds must be between "
+                f"{MIN_MODEL_TIMEOUT_SECONDS} and {MAX_MODEL_TIMEOUT_SECONDS}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class IndexingConfig:
     """How often the daemon reconciles storage roots."""
 
@@ -264,6 +332,7 @@ class AssistantConfig:
     planning: PlanningConfig | None = None
     reminders: ReminderConfig = field(default_factory=ReminderConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    model: ModelConfig | None = None
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -301,6 +370,7 @@ class AssistantConfig:
             planning=planning,
             reminders=_parse_reminders(data.get("reminders")),
             scheduler=_parse_scheduler(data.get("scheduler")),
+            model=_parse_model(data.get("model")),
             format_version=format_version,
         )
 
@@ -470,6 +540,42 @@ def _scheduler_int(value: Mapping[str, object], key: str, default: int) -> int:
     return raw
 
 
+def _parse_model(value: object) -> ModelConfig | None:
+    """Parse `[model]`. Credentials are rejected here on purpose: they are never config."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[model] must be a table")
+    unknown = sorted(set(value) - _KNOWN_MODEL_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [model] keys: {', '.join(unknown)}")
+    provider = value.get("provider", DEFAULT_MODEL_PROVIDER)
+    if not isinstance(provider, str):
+        raise InvalidAssistantConfig("model.provider must be a string")
+    model_name = value.get("model", DEFAULT_MODEL_NAME)
+    if not isinstance(model_name, str):
+        raise InvalidAssistantConfig("model.model must be a string")
+    reasoning_effort = value.get("reasoning_effort", DEFAULT_MODEL_REASONING_EFFORT)
+    if not isinstance(reasoning_effort, str):
+        raise InvalidAssistantConfig("model.reasoning_effort must be a string")
+    return ModelConfig(
+        provider=provider.strip().lower(),
+        model=model_name.strip(),
+        reasoning_effort=reasoning_effort.strip().lower(),
+        max_output_tokens=_model_int(
+            value, "max_output_tokens", DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+        ),
+        timeout_seconds=_model_int(value, "timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS),
+    )
+
+
+def _model_int(value: Mapping[str, object], key: str, default: int) -> int:
+    raw = value.get(key, default)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise InvalidAssistantConfig(f"model.{key} must be an integer")
+    return raw
+
+
 def _parse_availability(entry: object) -> WeeklyAvailabilityRule:
     if not isinstance(entry, Mapping):
         raise InvalidAssistantConfig("each [[planning.availability]] entry must be a table")
@@ -520,21 +626,33 @@ __all__ = [
     "CONFIG_FORMAT_VERSION",
     "DEFAULT_DEADLINE_REMINDER_OFFSETS",
     "DEFAULT_INDEX_INTERVAL_SECONDS",
+    "DEFAULT_MODEL_MAX_OUTPUT_TOKENS",
+    "DEFAULT_MODEL_NAME",
+    "DEFAULT_MODEL_PROVIDER",
+    "DEFAULT_MODEL_REASONING_EFFORT",
+    "DEFAULT_MODEL_TIMEOUT_SECONDS",
     "DEFAULT_REPLAN_DEBOUNCE_SECONDS",
     "DEFAULT_SCHEDULER_POLL_SECONDS",
     "MAX_DEADLINE_REMINDER_OFFSET_MINUTES",
     "MAX_INDEX_INTERVAL_SECONDS",
+    "MAX_MODEL_MAX_OUTPUT_TOKENS",
+    "MAX_MODEL_TIMEOUT_SECONDS",
     "MAX_REPLAN_DEBOUNCE_SECONDS",
     "MAX_SCHEDULER_POLL_SECONDS",
     "MIN_INDEX_INTERVAL_SECONDS",
+    "MIN_MODEL_MAX_OUTPUT_TOKENS",
+    "MIN_MODEL_TIMEOUT_SECONDS",
     "MIN_REPLAN_DEBOUNCE_SECONDS",
     "MIN_SCHEDULER_POLL_SECONDS",
+    "MODEL_REASONING_EFFORTS",
+    "SUPPORTED_MODEL_PROVIDERS",
     "WEEKDAY_ORDER",
     "AssistantConfig",
     "ConfiguredLocalRoot",
     "ConfiguredStorageRoot",
     "ConfiguredVaultRoot",
     "IndexingConfig",
+    "ModelConfig",
     "PlanningConfig",
     "ReminderConfig",
     "SchedulerConfig",

@@ -25,3 +25,32 @@ id = "archive-main"
 path = "/mnt/e/archive-vault"
 enabled = true
 
+# Planning preferences (Phase 3B). Required before `pw plan week` can run.
+[planning]
+timezone = "Asia/Shanghai"
+min_block_minutes = 30
+max_block_minutes = 120
+deadline_buffer_minutes = 120
+
+[[planning.availability]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "09:00"
+end = "22:00"
+
+# Deadline reminders (Phase 3C): one reminder 24h before and one 2h before.
+[reminders]
+deadline_offsets_minutes = [1440, 120]
+
+# The daemon scheduler (Phase 3C).
+[scheduler]
+poll_interval_seconds = 15
+replan_debounce_seconds = 60
+
+# The model boundary (Phase 4A). Set DEEPSEEK_API_KEY in the process environment.
+# Never put API keys in this file: the config parser rejects an `api_key` key on purpose.
+[model]
+provider = "deepseek"
+model = "deepseek-flash"
+reasoning_effort = "low"
+max_output_tokens = 4096
+timeout_seconds = 120

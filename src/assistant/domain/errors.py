@@ -439,6 +439,77 @@ class InvalidNotification(DomainError):
     """A `Notification` was built with values that break its invariants."""
 
 
+class InvalidModelRequest(DomainError):
+    """A `ModelRequest`, `ModelMessage`, `ModelUsage` or `ModelResponse` is malformed."""
+
+
+class InvalidModelSchema(DomainError):
+    """A JSON Schema is not a valid Draft 2020-12 schema, or its name is unusable."""
+
+
+class ModelNotConfigured(DomainError):
+    """The host config has no `[model]` section, so no model capability is available."""
+
+
+class ModelConfigurationError(DomainError):
+    """The model configuration itself is unusable (unknown provider, bad bounds)."""
+
+
+class ModelCredentialsMissing(DomainError):
+    """No provider credential is available in the environment.
+
+    The message names the environment variable to set and never contains a credential.
+    """
+
+
+class ModelAuthenticationError(DomainError):
+    """The provider rejected the credential."""
+
+
+class ModelBillingError(DomainError):
+    """The provider refused the request because the account has no balance."""
+
+
+class ModelRateLimited(DomainError):
+    """The provider is throttling this client."""
+
+
+class ModelInvalidRequest(DomainError):
+    """The provider rejected the request as malformed or invalid."""
+
+
+class ModelTransientError(DomainError):
+    """A network or provider failure that a caller may choose to retry.
+
+    The adapter never retries by itself: a request that may already have been generated and
+    billed must not be repeated behind the caller's back.
+    """
+
+
+class ModelUnavailable(DomainError):
+    """The provider is reachable but is not serving requests right now."""
+
+
+class ModelProtocolError(DomainError):
+    """The provider answered with something this adapter cannot interpret.
+
+    Raised for unexpected output items (for example a tool call that was never offered), for a
+    response without final text, and for a body that is not the documented shape.
+    """
+
+
+class ModelResponseIncomplete(DomainError):
+    """The provider stopped early: the response is not a usable answer."""
+
+
+class ModelOutputNotJson(DomainError):
+    """Structured output was requested but the text is not parseable JSON."""
+
+
+class ModelOutputSchemaViolation(DomainError):
+    """The parsed JSON does not satisfy the requested schema."""
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -470,6 +541,8 @@ __all__ = [
     "InvalidEventTransition",
     "InvalidInboundEvent",
     "InvalidKnowledgeDocument",
+    "InvalidModelRequest",
+    "InvalidModelSchema",
     "InvalidNotification",
     "InvalidPlanBlock",
     "InvalidScheduledJob",
@@ -486,6 +559,19 @@ __all__ = [
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
     "KnowledgeIndexNeedsRebuild",
+    "ModelAuthenticationError",
+    "ModelBillingError",
+    "ModelConfigurationError",
+    "ModelCredentialsMissing",
+    "ModelInvalidRequest",
+    "ModelNotConfigured",
+    "ModelOutputNotJson",
+    "ModelOutputSchemaViolation",
+    "ModelProtocolError",
+    "ModelRateLimited",
+    "ModelResponseIncomplete",
+    "ModelTransientError",
+    "ModelUnavailable",
     "NotificationNotFound",
     "PermanentEventError",
     "PermanentScheduledJobError",

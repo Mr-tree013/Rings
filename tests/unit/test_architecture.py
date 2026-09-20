@@ -8,6 +8,7 @@ Covered rules:
 - the application layer never reaches into the store;
 - the greedy planner stays pure: no ports, no store, no clock, no CLI;
 - scheduler job payloads are data, never code;
+- the model boundary keeps providers, credentials and reasoning out of the core;
 - only the store (and other infrastructure modules) may import `sqlite3`.
 """
 
@@ -24,6 +25,8 @@ DOMAIN_DIR = SOURCE_ROOT / "domain"
 FORBIDDEN_DOMAIN_IMPORT_PREFIXES = (
     "sqlite3",
     "pypdf",
+    "httpx",
+    "jsonschema",
     "assistant.store",
     "assistant.adapters",
     "assistant.application",
@@ -121,9 +124,27 @@ def test_application_does_not_import_adapters_or_sqlite() -> None:
         for imported in _imported_modules(path)
         if imported.startswith(("assistant.adapters", "assistant.store", "pypdf"))
         or imported == "sqlite3"
+        or imported == "httpx"
+        or imported.startswith("httpx.")
     ]
 
     assert not violations, violations
+
+
+def test_only_the_structured_output_service_validates_schemas() -> None:
+    """`jsonschema` belongs to the one application module that owns output validation."""
+    offenders = [
+        path.name
+        for path in sorted((SOURCE_ROOT / "application").glob("*.py"))
+        if any(
+            name == "jsonschema" or name.startswith("jsonschema.")
+            for name in _imported_modules(path)
+        )
+        and path.name != "structured_model.py"
+    ]
+
+    assert not offenders, offenders
+    assert (SOURCE_ROOT / "application" / "structured_model.py").is_file()
 
 
 def test_ports_do_not_import_concrete_adapters() -> None:
@@ -135,6 +156,8 @@ def test_ports_do_not_import_concrete_adapters() -> None:
         for path in port_modules
         for imported in _imported_modules(path)
         if imported.startswith(("assistant.adapters", "assistant.store"))
+        or imported in {"httpx", "jsonschema"}
+        or imported.startswith(("httpx.", "jsonschema."))
     ]
 
     assert not violations, violations
@@ -297,3 +320,87 @@ def test_daemon_supervises_services_through_the_async_service_protocol() -> None
     assert "AsyncService" in text
     assert "SchedulerService" not in text
     assert "IndexSyncService" not in text
+
+
+PROVIDER_STRINGS = ("api.deepseek.com", "deepseek", "Authorization", "DEEPSEEK_API_KEY")
+
+PROVIDER_NEUTRAL_LAYERS = ("domain", "application", "ports")
+
+PROVIDER_STRING_EXCEPTIONS = frozenset(
+    {
+        # Configuration validation names the supported providers, which is where a provider
+        # *choice* belongs; the adapter is the only place that names an endpoint.
+        "domain/config.py",
+    }
+)
+
+
+def test_only_the_composition_root_and_the_adapter_know_the_provider() -> None:
+    """A provider name, URL or credential variable must not reach the core layers."""
+    offenders: list[str] = []
+    for layer in PROVIDER_NEUTRAL_LAYERS:
+        for path in sorted((SOURCE_ROOT / layer).glob("*.py")):
+            relative = f"{layer}/{path.name}"
+            if relative in PROVIDER_STRING_EXCEPTIONS:
+                continue
+            text = path.read_text(encoding="utf-8")
+            offenders.extend(
+                f"{relative} mentions {needle}"
+                for needle in PROVIDER_STRINGS
+                if needle.lower() in text.lower()
+            )
+
+    assert not offenders, offenders
+
+
+def test_the_deepseek_endpoint_lives_only_in_the_adapter() -> None:
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if "api.deepseek.com" in path.read_text(encoding="utf-8")
+        and path.name != "deepseek.py"
+    ]
+
+    assert not offenders, offenders
+
+
+def test_credentials_are_only_read_by_the_composition_root_and_the_adapter() -> None:
+    allowed = {"bootstrap.py", "deepseek.py"}
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if "DEEPSEEK_API_KEY" in path.read_text(encoding="utf-8")
+        and path.name not in allowed
+    ]
+
+    assert not offenders, offenders
+
+
+def test_no_module_persists_or_logs_provider_reasoning() -> None:
+    """Reasoning is dropped inside the adapter; nothing else may even name it."""
+    offenders = [
+        f"{path.relative_to(SOURCE_ROOT)} mentions {needle}"
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for needle in ("reasoning_content", "chain_of_thought", "chain-of-thought")
+        if needle in path.read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, offenders
+
+
+def test_reasoning_fields_exist_only_as_an_accounting_counter() -> None:
+    """`reasoning_tokens` is a number; there is no field anywhere for reasoning *text*."""
+    import dataclasses
+
+    from assistant.domain import model as model_module
+
+    forbidden = {"reasoning", "reasoning_content", "chain_of_thought", "thinking"}
+    offenders = [
+        f"{name}.{field.name}"
+        for name, value in vars(model_module).items()
+        if dataclasses.is_dataclass(value) and isinstance(value, type)
+        for field in dataclasses.fields(value)
+        if field.name in forbidden
+    ]
+
+    assert not offenders, offenders

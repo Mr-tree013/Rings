@@ -11,12 +11,18 @@ from assistant.adapters.config.toml_config import TomlConfigLoader, default_conf
 from assistant.domain.config import (
     DEFAULT_DEADLINE_REMINDER_OFFSETS,
     DEFAULT_INDEX_INTERVAL_SECONDS,
+    DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_MODEL_PROVIDER,
+    DEFAULT_MODEL_REASONING_EFFORT,
+    DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_REPLAN_DEBOUNCE_SECONDS,
     DEFAULT_SCHEDULER_POLL_SECONDS,
     AssistantConfig,
     ConfiguredLocalRoot,
     ConfiguredVaultRoot,
     IndexingConfig,
+    ModelConfig,
     ReminderConfig,
     SchedulerConfig,
 )
@@ -346,3 +352,113 @@ def test_invalid_scheduler_bounds_are_rejected(poll: object, debounce: object) -
 def test_unknown_scheduler_shapes_are_rejected(document: dict[str, object]) -> None:
     with pytest.raises(InvalidAssistantConfig):
         AssistantConfig.from_mapping(_mapping(**document))
+
+
+def test_a_missing_model_section_means_no_model_capability() -> None:
+    """Every Phase 1-3 feature keeps working on a host that never configures a model."""
+    config = AssistantConfig.from_mapping(_mapping())
+
+    assert config.model is None
+
+
+def test_a_valid_model_section_is_parsed() -> None:
+    config = AssistantConfig.from_mapping(
+        _mapping(
+            model={
+                "provider": "deepseek",
+                "model": "deepseek-flash",
+                "reasoning_effort": "high",
+                "max_output_tokens": 8192,
+                "timeout_seconds": 60,
+            }
+        )
+    )
+
+    assert config.model == ModelConfig(
+        provider="deepseek",
+        model="deepseek-flash",
+        reasoning_effort="high",
+        max_output_tokens=8192,
+        timeout_seconds=60,
+    )
+
+
+def test_model_defaults_are_applied() -> None:
+    config = AssistantConfig.from_mapping(_mapping(model={"provider": "deepseek"}))
+
+    assert config.model is not None
+    assert config.model.model == DEFAULT_MODEL_NAME
+    assert config.model.provider == DEFAULT_MODEL_PROVIDER
+    assert config.model.reasoning_effort == DEFAULT_MODEL_REASONING_EFFORT
+    assert config.model.max_output_tokens == DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+    assert config.model.timeout_seconds == DEFAULT_MODEL_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "high", "max"])
+def test_every_documented_reasoning_effort_is_accepted(effort: str) -> None:
+    config = AssistantConfig.from_mapping(_mapping(model={"reasoning_effort": effort}))
+
+    assert config.model is not None and config.model.reasoning_effort == effort
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        {"provider": "openai"},
+        {"model": "   "},
+        {"reasoning_effort": "medium"},
+        {"reasoning_effort": "minimal"},
+        {"max_output_tokens": 63},
+        {"max_output_tokens": 32769},
+        {"timeout_seconds": 9},
+        {"timeout_seconds": 601},
+        {"api_key": "sk-should-never-live-here"},
+        {"authorization": "Bearer x"},
+        {"secret": "x"},
+        {"unknown": 1},
+    ),
+)
+def test_invalid_model_sections_are_rejected(section: dict[str, object]) -> None:
+    with pytest.raises(InvalidAssistantConfig):
+        AssistantConfig.from_mapping(_mapping(model=section))
+
+
+def test_a_credential_key_is_rejected_by_name() -> None:
+    """The strict parser is what keeps secrets out of `config.toml`, not a convention."""
+    with pytest.raises(InvalidAssistantConfig) as excinfo:
+        AssistantConfig.from_mapping(_mapping(model={"api_key": "sk-live"}))
+
+    assert "api_key" in str(excinfo.value)
+    assert "sk-live" not in str(excinfo.value)
+
+
+def test_other_sections_keep_working_alongside_model_config() -> None:
+    config = AssistantConfig.from_mapping(
+        _mapping(
+            model={"provider": "deepseek"},
+            planning={"timezone": "Asia/Shanghai"},
+            reminders={"deadline_offsets_minutes": [60]},
+            scheduler={"poll_interval_seconds": 30, "replan_debounce_seconds": 120},
+        )
+    )
+
+    assert config.model is not None
+    assert config.planning is not None and config.planning.timezone == "Asia/Shanghai"
+    assert config.reminders.deadline_offsets_minutes == (60,)
+    assert config.scheduler.replan_debounce_seconds == 120
+
+
+def test_the_shipped_example_configuration_is_valid() -> None:
+    """`docs/examples/config.toml` is documentation that must not rot."""
+    import tomllib
+
+    example = Path(__file__).resolve().parents[2] / "docs" / "examples" / "config.toml"
+    with example.open("rb") as handle:
+        data = tomllib.load(handle)
+
+    config = AssistantConfig.from_mapping(data)
+
+    assert config.model is not None
+    assert config.model.provider == DEFAULT_MODEL_PROVIDER
+    assert config.planning is not None
+    assert config.reminders.deadline_offsets_minutes == (1440, 120)

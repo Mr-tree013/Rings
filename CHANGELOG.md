@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Provider-independent model boundary (ADR-0017): `ModelPort` with a single `complete`
+  operation, provider-neutral `ModelRole`/`ModelMessage`/`ModelRequest`/`ModelResponse`/
+  `ModelUsage` value objects, and an explicit `reasoning_effort` vocabulary
+  (`none`/`low`/`high`/`max`) that adapters map to their own spelling.
+- DeepSeek adapter (`adapters/model/deepseek.py`): the Responses API
+  (`POST https://api.deepseek.com/responses`, non-streaming, stateless) with `deepseek-flash`
+  as the default model name, `text.format` structured output, explicit output-item handling
+  (reasoning discarded, `output_text` parts concatenated, unexpected tool calls refused),
+  provider-neutral error mapping for 400/401/402/422/429/500/503 and for network failures,
+  finite layered timeouts, sanitised error text, and no automatic retry (a request that may
+  already have been billed is never repeated behind the caller's back).
+- Locally validated structured output (`application/structured_model.py`): a JSON parse and a
+  Draft 2020-12 schema validation performed by this project, so a provider's server-side
+  structured-output mode is a convenience rather than the only thing standing between a model
+  and application code.
+- `[model]` configuration (provider, model name, reasoning effort, `max_output_tokens`,
+  `timeout_seconds`) with a required provider from the supported list; credentials are read
+  from `DEEPSEEK_API_KEY` only, and an `api_key`-style key is rejected by the strict parser.
+  A missing `[model]` section leaves every Phase 1-3 capability unchanged.
+- `FakeModelAdapter` (`adapters/model/fake.py`) for deterministic tests and future evals:
+  scripted responses and errors, recorded requests, no HTTP, and unreachable from host
+  configuration (`provider = "fake"` is rejected).
+- `pw model status` (inspection only: provider, model, budget, timeout, credential present or
+  missing — never the credential itself) and `pw model test`, the single live provider call in
+  this phase, which asks for a tiny JSON object and reports the locally validated answer plus
+  token usage. `pw doctor` gained read-only model diagnostics that make no network request.
+
 ## [0.3.0] - 2026-09-20
 
 Phase 3: durable commitments, deterministic weekly planning, and time. Tasks, deadlines,

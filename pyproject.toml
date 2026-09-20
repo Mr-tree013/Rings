@@ -9,6 +9,8 @@ dependencies = [
     "typer>=0.15",
     "rich>=13.9",
     "pypdf>=6.19.0",
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
 ]
 
 [project.scripts]
@@ -22,6 +24,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.9",
     "mypy>=1.14",
+    "types-jsonschema>=4.26.0.20260518",
 ]
 
 [build-system]

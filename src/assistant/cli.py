@@ -1,10 +1,11 @@
 """`pw` — the growing-assistant command line.
 
 Implemented today: `status`, `doctor`, `roots list`, `sync`, the `vault` group
-(`init`, `status`, `scan`) and the knowledge commands (`reindex`, `search`). Commands that
-would need capability the project does not have yet (`cases`, `tasks`, `scheduled`,
-`approve`, `run`) are deliberately not registered, so the CLI never advertises behaviour
-that does not exist.
+(`init`, `status`, `scan`), the knowledge commands (`reindex`, `search`), the commitment
+commands (`task*`, `calendar`, `plan*`, `work*`), the scheduler views (`notifications*`,
+`scheduled`) and the model boundary (`model status`, `model test`). Commands that would need
+capability the project does not have yet (`cases`, `approve`, `run`) are deliberately not
+registered, so the CLI never advertises behaviour that does not exist.
 
 `pw sync` is the orchestrator: it reconciles the configured roots exactly as the daemon's
 periodic loop does. The lower-level commands stay available for debugging.
@@ -25,7 +26,7 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from assistant import __version__, bootstrap, cli_commitments, cli_scheduler
+from assistant import __version__, bootstrap, cli_commitments, cli_model, cli_scheduler
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
 from assistant.cli_support import console, error_console, fail
@@ -71,6 +72,7 @@ app.add_typer(vault_app, name="vault")
 app.add_typer(roots_app, name="roots")
 cli_commitments.register(app)
 cli_scheduler.register(app)
+cli_model.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -97,6 +99,22 @@ def _pypdf_version() -> str:
         return importlib.metadata.version("pypdf")
     except importlib.metadata.PackageNotFoundError:  # pragma: no cover - packaging edge case
         return "not installed"
+
+
+def _model_diagnostic(config: AssistantConfig) -> tuple[str, str]:
+    """Report the model boundary without contacting the provider.
+
+    A missing `[model]` section is not a problem: the model is an optional capability, exactly
+    like the planner's. A configured provider without a credential *is* a problem worth
+    failing on, because the user asked for something this host cannot do yet.
+    """
+    if config.model is None:
+        return "not configured", "not needed"
+    present = bootstrap.model_api_key() is not None
+    return (
+        f"configured ({config.model.provider}, {config.model.model})",
+        "present" if present else "[red]missing[/red]",
+    )
 
 
 def _scheduler_store_available(database_file: Path) -> bool:
@@ -129,6 +147,10 @@ def status() -> None:
     table.add_row("commitments", "durable tasks, deadlines, calendar events, plan blocks, work")
     table.add_row("planning", "deterministic weekly proposals (review before apply)")
     table.add_row(
+        "model", "provider-independent boundary (DeepSeek adapter); structured output validated"
+    )
+    table.add_row("interpreter", "[yellow]not implemented[/yellow]")
+    table.add_row(
         "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
     )
     table.add_row("cli", "[green]ok[/green]")
@@ -151,6 +173,7 @@ def doctor() -> None:
     paths = bootstrap.AppPaths.resolve()
     config_error: str | None = None
     configured_roots = 0
+    model_row: tuple[str, str] = ("not configured", "not needed")
     loader = bootstrap.config_loader()
     try:
         config = asyncio.run(loader.load())
@@ -199,6 +222,9 @@ def doctor() -> None:
                 f"(replan debounce {config.scheduler.replan_debounce_seconds}s)"
             ),
         )
+        model_row = _model_diagnostic(config)
+        table.add_row("model config", model_row[0])
+        table.add_row("model API key", model_row[1])
     else:
         table.add_row("config", f"[red]ERROR[/red] ({config_error})")
     console.print(table)
@@ -210,6 +236,11 @@ def doctor() -> None:
         _fail("knowledge search requires SQLite FTS5 with the trigram tokenizer")
     if config_error is not None:
         _fail("configuration is invalid")
+    if model_row[0] != "not configured" and "missing" in model_row[1]:
+        _fail(
+            f"model is configured but {bootstrap.MODEL_API_KEY_ENV} is missing from the "
+            "environment"
+        )
 
     console.print("[green]environment looks usable[/green]")
 

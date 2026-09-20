@@ -122,6 +122,23 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Scheduler job payloads are typed JSON data, never executable code.**
   payload 只允许 canonical JSON object（固定 schema）；禁止 pickle / module path / eval /
   shell string。
+- **Application code depends on ModelPort, never on a concrete model provider.**
+  provider、base URL、model 名、HTTP 细节只能存在于 `adapters/model/`（ADR-0017）；core 只认
+  `ModelPort.complete()`。
+- **Model output is untrusted input and must pass deterministic validation before use.**
+  structured output 必须本地 `json.loads` + `Draft202012Validator` 校验；provider 声称的
+  structured-output guarantee 不能替代本地校验。
+- **The model must never own durable state or directly write application databases.**
+  model 无 SQLite / filesystem / scheduler / email / browser / eHall 能力；Phase 4A 不提供
+  tool calls，任何 function_call 响应都是 protocol error。
+- **Do not persist or log provider reasoning / chain-of-thought.**
+  reasoning 在 adapter 内部解析后丢弃，不返回、不打印、不写日志、不落库；`ModelResponse`
+  没有存放 reasoning 的字段。
+- **API keys and provider credentials must never appear in repository files, prompts, logs,
+  or test fixtures that contain real secrets.** key 只从 `DEEPSEEK_API_KEY` 环境变量注入；
+  `[model].api_key` 这类配置键必须被 strict parser 拒绝。
+- **Tool execution is not part of ModelPort.complete; side-effect capabilities require a
+  separately designed application boundary.** 不允许把 tools/stream/memory 加进 ModelPort。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -196,10 +213,17 @@ deadline reminder 与 deadline/task mutation 同事务 materialize、durable not
 （`pw notifications` / `pw notification show|read` / `pw scheduled`）、debounced rolling replan
 （只产生 `PENDING` proposal + `PLAN_READY`）、daemon 新增 supervised `scheduler` service。
 
+**Phase 4A 已完成（进行中，仍是 0.3.0）**：model 基础设施（ADR-0017）：provider-neutral
+`ModelPort` / `ModelRequest` / `ModelResponse`，DeepSeek Responses API adapter（
+`adapters/model/deepseek.py`）、`FakeModelAdapter`、本地 JSON + JSON Schema 校验
+（`application/structured_model.py`）、`[model]` config（key 只走 `DEEPSEEK_API_KEY` 环境变量）、
+`pw model status|test` 与 `pw doctor` 只读诊断。Interpreter / agent tool loop / 自然语言命令
+执行仍未实现。
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / LLM 问答与 RAG / 个人估时学习 / 自然语言时间解析 /
+LLM 问答与 RAG / 个人估时学习 / 自然语言时间解析 / 自然语言 Interpreter 与 agent tool loop /
 重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
 Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
 Playwright / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/

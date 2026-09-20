@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 3 完成（v0.3.0，durable planning + reminders + rolling replanning）
+## 当前状态：Phase 3 完成（v0.3.0）+ Phase 4A model 基础
 
 已完成：
 
@@ -49,6 +49,17 @@ transaction 内 materialize；提醒只投递到 durable notification inbox（`p
 **尚未实现**：OS/手机推送、mail、LLM 任务解读、个人估时学习（personal effort learning）、
 自然语言时间解析、重复任务/事件、RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、
 filesystem watcher、eHall。
+
+模型基础（Phase 4A）：**已实现** provider-independent model boundary —— core/application 只依赖
+`ModelPort`，DeepSeek 走 Responses API 的 adapter（`[model]` 配置 + `DEEPSEEK_API_KEY` 环境变量，
+key 永不写入 config/repo/log），structured output 必须在本地 `json.loads` + JSON Schema 校验
+（`jsonschema`）通过后才可用，provider 的 reasoning 在 adapter 内丢弃（不返回、不落库、不打日志），
+`FakeModelAdapter` 供确定性测试，`pw model status`（只读）与 `pw model test`（唯一的真实 provider
+调用，可能产生费用）可用。**尚未实现**：自然语言 command interpretation（Interpreter）、
+agent tool loop、conversation memory、RAG 问答、把 model 接入 daemon。
+
+明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
+是否可用由本地 deterministic validation 决定。
 
 ## Architecture summary
 
