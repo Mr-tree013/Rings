@@ -54,6 +54,26 @@ def _require_optional_aware(value: datetime | None, field_name: str) -> None:
         _require_aware(value, field_name)
 
 
+def validate_task_title(title: str) -> str:
+    """Return the stripped title, or raise `InvalidTask`.
+
+    This is the one definition of what a task title is; `Task` and any command draft that
+    carries a title both go through it, so no second rule set can drift from the entity.
+    """
+    stripped = title.strip()
+    if not stripped:
+        raise InvalidTask("task title must not be blank")
+    if len(stripped) > TITLE_MAX_LENGTH:
+        raise InvalidTask(f"task title must be at most {TITLE_MAX_LENGTH} characters")
+    return stripped
+
+
+def validate_estimated_minutes(value: int | None) -> None:
+    """Check the estimate rule (`None` or at least one minute)."""
+    if value is not None and value < 1:
+        raise InvalidTask("estimated_minutes must be None or at least 1")
+
+
 @dataclass(frozen=True, slots=True)
 class Task:
     """A commitment that is open until completed or cancelled."""
@@ -70,18 +90,14 @@ class Task:
     cancelled_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        if not self.title.strip():
-            raise InvalidTask("task title must not be blank")
-        if len(self.title.strip()) > TITLE_MAX_LENGTH:
-            raise InvalidTask(f"task title must be at most {TITLE_MAX_LENGTH} characters")
+        validate_task_title(self.title)
         _require_aware(self.created_at, "created_at")
         _require_aware(self.updated_at, "updated_at")
         _require_optional_aware(self.completed_at, "completed_at")
         _require_optional_aware(self.cancelled_at, "cancelled_at")
         if self.updated_at < self.created_at:
             raise InvalidTask("updated_at must not precede created_at")
-        if self.estimated_minutes is not None and self.estimated_minutes < 1:
-            raise InvalidTask("estimated_minutes must be None or at least 1")
+        validate_estimated_minutes(self.estimated_minutes)
         if self.status is TaskStatus.OPEN:
             if self.completed_at is not None or self.cancelled_at is not None:
                 raise InvalidTask("an OPEN task must not carry completed_at or cancelled_at")
@@ -152,5 +168,13 @@ class Task:
         )
 
 
-__all__ = ["TITLE_MAX_LENGTH", "Task", "TaskId", "TaskPriority", "TaskStatus", "new_task_id"]
-
+__all__ = [
+    "TITLE_MAX_LENGTH",
+    "Task",
+    "TaskId",
+    "TaskPriority",
+    "TaskStatus",
+    "new_task_id",
+    "validate_estimated_minutes",
+    "validate_task_title",
+]

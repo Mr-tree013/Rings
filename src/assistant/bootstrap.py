@@ -22,6 +22,8 @@ from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
 from assistant.application.greedy_planner import GreedyPlanner
 from assistant.application.index_sync import IndexSyncService
+from assistant.application.interpreter import InterpreterService
+from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.paths import AppPaths
@@ -271,6 +273,35 @@ def structured_model(config: AssistantConfig | None) -> StructuredModel:
     return StructuredModel(model_adapter(config))
 
 
+def interpreter_service(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    model: ModelPort | None = None,
+) -> InterpreterService:
+    """The natural-language interpreter: bounded context in, typed draft out.
+
+    Only `pw interpret` builds this, and only for the duration of one command: the daemon never
+    constructs a model client, so a missing credential can never affect it.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    settings = require_model_config(config)
+    planning_timezone = (
+        None if config is None or config.planning is None else config.planning.timezone
+    )
+    return InterpreterService(
+        StructuredModel(model if model is not None else model_adapter(config)),
+        InterpreterContextBuilder(
+            commitment_repository(database), clock, planning_timezone=planning_timezone
+        ),
+        settings,
+    )
+
+
 async def close_model(model: ModelPort) -> None:
     """Release adapter resources, without making `ModelPort` promise a lifecycle."""
     close = getattr(model, "aclose", None)
@@ -288,6 +319,7 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "interpreter_service",
     "knowledge_indexer",
     "model_adapter",
     "model_api_key",

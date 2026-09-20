@@ -15,6 +15,8 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from assistant.domain.instants import parse_iso_instant
+
 console = Console()
 error_console = Console(stderr=True)
 
@@ -37,20 +39,19 @@ def parse_aware_datetime(value: str, *, field_name: str = "datetime") -> datetim
     Raises:
         ValueError: the text is not ISO 8601, or it carries no offset.
     """
-    text = value.strip()
     try:
-        parsed = datetime.fromisoformat(text)
+        return parse_iso_instant(value)
     except ValueError as exc:
+        text = value.strip()
+        if "timezone offset" in str(exc):
+            raise ValueError(
+                f"{field_name} must include a timezone offset "
+                f"(e.g. {ISO_EXAMPLE}); local time is never assumed"
+            ) from exc
         raise ValueError(
             f"{field_name} must be ISO 8601 with an explicit offset "
             f"(e.g. {ISO_EXAMPLE}): {text!r}"
         ) from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(
-            f"{field_name} must include a timezone offset "
-            f"(e.g. {ISO_EXAMPLE}); local time is never assumed"
-        )
-    return parsed
 
 
 def format_local(moment: datetime) -> str:

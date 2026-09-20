@@ -510,6 +510,41 @@ class ModelOutputSchemaViolation(DomainError):
     """The parsed JSON does not satisfy the requested schema."""
 
 
+class InvalidCommandDraft(DomainError):
+    """A typed command draft was built with values that break its invariants."""
+
+
+class InvalidInterpretationResult(DomainError):
+    """An interpretation result mixes statuses (a draft with a question, and so on)."""
+
+
+class InterpreterInputTooLong(DomainError):
+    """The natural-language request is longer than the interpreter accepts."""
+
+
+class InterpreterInvalidReference(DomainError):
+    """The model referenced an entity that was not in the context it was given.
+
+    Identity is authorised by the context, never by the database: a task id that was not
+    supplied to the model does not become valid because a row with that id happens to exist.
+    """
+
+    def __init__(self, kind: object, reference: object) -> None:
+        self.kind = kind
+        self.reference = reference
+        super().__init__(
+            f"the model referenced {kind} {reference}, which was not in the supplied context"
+        )
+
+
+class InterpreterSemanticError(DomainError):
+    """A schema-valid interpretation is not a usable command.
+
+    Raised for a naive datetime, a backwards interval, a blank clarification, or any other case
+    where the honest answer is "reject", never "guess".
+    """
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -532,14 +567,19 @@ __all__ = [
     "EventNotFound",
     "FileChangedDuringExtraction",
     "Fts5Unavailable",
+    "InterpreterInputTooLong",
+    "InterpreterInvalidReference",
+    "InterpreterSemanticError",
     "InvalidAssistantConfig",
     "InvalidCalendarEvent",
     "InvalidCatalogEntry",
+    "InvalidCommandDraft",
     "InvalidCommitment",
     "InvalidDeadline",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidInboundEvent",
+    "InvalidInterpretationResult",
     "InvalidKnowledgeDocument",
     "InvalidModelRequest",
     "InvalidModelSchema",

@@ -404,3 +404,74 @@ def test_reasoning_fields_exist_only_as_an_accounting_counter() -> None:
     ]
 
     assert not offenders, offenders
+
+
+INTERPRETER_MODULES = (
+    "application/interpreter.py",
+    "application/interpreter_context.py",
+    "application/interpreter_schema.py",
+    "application/interpreter_prompt.py",
+)
+
+FORBIDDEN_INTERPRETER_IMPORTS = (
+    "assistant.store",
+    "assistant.adapters",
+    "assistant.application.task_service",
+    "assistant.application.calendar_service",
+    "assistant.application.planner_service",
+    "assistant.application.scheduler_service",
+    "assistant.application.work_service",
+    "assistant.application.knowledge_search",
+    "sqlite3",
+    "httpx",
+)
+
+
+def test_the_interpreter_cannot_reach_a_mutation_service() -> None:
+    """'The interpreter does not execute' is a property of its imports, not a promise."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in INTERPRETER_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(FORBIDDEN_INTERPRETER_IMPORTS)
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_interpreter_has_no_tool_loop_machinery() -> None:
+    forbidden = (
+        "tool_registry",
+        "tool_choice",
+        "function_call",
+        "tool_call",
+        "agent_loop",
+        "ToolRegistry",
+    )
+    offenders: list[str] = []
+    for relative in INTERPRETER_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        offenders.extend(
+            f"{relative} mentions {needle}" for needle in forbidden if needle in text
+        )
+    # The interpreter must not even offer tool-shaped vocabulary to a provider.
+    assert not offenders, offenders
+
+
+def test_the_interpreter_does_not_read_credentials_or_the_environment() -> None:
+    offenders = [
+        relative
+        for relative in INTERPRETER_MODULES
+        if "os.environ" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        or "DEEPSEEK" in (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, offenders
+
+
+def test_no_migration_was_added_for_this_phase() -> None:
+    """Interpretations are not durable state yet, so the schema must not grow for them."""
+    migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
+
+    assert migrations[-1] == "0006_scheduler_notifications.sql"
+    assert not [name for name in migrations if name.startswith("0007")]

@@ -36,6 +36,26 @@ def _require_aware(value: datetime, field_name: str) -> None:
         raise InvalidCalendarEvent(f"{field_name} must be timezone-aware")
 
 
+def validate_event_title(title: str) -> str:
+    """Return the stripped title, or raise `InvalidCalendarEvent`."""
+    stripped = title.strip()
+    if not stripped:
+        raise InvalidCalendarEvent("calendar event title must not be blank")
+    if len(stripped) > EVENT_TITLE_MAX_LENGTH:
+        raise InvalidCalendarEvent(
+            f"calendar event title must be at most {EVENT_TITLE_MAX_LENGTH} characters"
+        )
+    return stripped
+
+
+def validate_event_interval(starts_at: datetime, ends_at: datetime) -> None:
+    """Check that both ends are aware instants and that the interval is forward."""
+    _require_aware(starts_at, "starts_at")
+    _require_aware(ends_at, "ends_at")
+    if ends_at <= starts_at:
+        raise InvalidCalendarEvent("ends_at must be after starts_at")
+
+
 @dataclass(frozen=True, slots=True)
 class CalendarEvent:
     """Time that is already occupied."""
@@ -50,18 +70,10 @@ class CalendarEvent:
     cancelled_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        if not self.title.strip():
-            raise InvalidCalendarEvent("calendar event title must not be blank")
-        if len(self.title.strip()) > EVENT_TITLE_MAX_LENGTH:
-            raise InvalidCalendarEvent(
-                f"calendar event title must be at most {EVENT_TITLE_MAX_LENGTH} characters"
-            )
-        _require_aware(self.starts_at, "starts_at")
-        _require_aware(self.ends_at, "ends_at")
+        validate_event_title(self.title)
+        validate_event_interval(self.starts_at, self.ends_at)
         _require_aware(self.created_at, "created_at")
         _require_aware(self.updated_at, "updated_at")
-        if self.ends_at <= self.starts_at:
-            raise InvalidCalendarEvent("ends_at must be after starts_at")
         if self.updated_at < self.created_at:
             raise InvalidCalendarEvent("updated_at must not precede created_at")
         if self.cancelled_at is not None:
@@ -95,5 +107,6 @@ __all__ = [
     "CalendarEventId",
     "CalendarEventStatus",
     "new_calendar_event_id",
+    "validate_event_interval",
+    "validate_event_title",
 ]
-

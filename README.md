@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 3 完成（v0.3.0）+ Phase 4A model 基础
+## 当前状态：Phase 4 进行中（v0.4.0：model 边界 + 自然语言命令预览）
 
 已完成：
 
@@ -55,8 +55,30 @@ filesystem watcher、eHall。
 key 永不写入 config/repo/log），structured output 必须在本地 `json.loads` + JSON Schema 校验
 （`jsonschema`）通过后才可用，provider 的 reasoning 在 adapter 内丢弃（不返回、不落库、不打日志），
 `FakeModelAdapter` 供确定性测试，`pw model status`（只读）与 `pw model test`（唯一的真实 provider
-调用，可能产生费用）可用。**尚未实现**：自然语言 command interpretation（Interpreter）、
-agent tool loop、conversation memory、RAG 问答、把 model 接入 daemon。
+连通性检查，可能产生费用）可用。
+
+自然语言命令预览（Phase 4B）：**已实现** `pw interpret "..."` —— 把一句话解释成**一个** typed
+command draft，并打印人类可读预览与本地渲染的等价结构化命令：
+
+```bash
+pw interpret "add a task to write the SE lab report, high priority, 5 hours, due Friday"
+# Interpretation: ready
+#   Action: Create task
+#   Title: write the SE lab report
+#   ...
+# No changes were made.
+# Equivalent structured command:
+# pw task add 'write the SE lab report' --priority high --estimate 300 --deadline 2026-10-23T15:59:00+00:00
+```
+
+**The interpreter does not execute anything.** 它只产出经过本地校验的 command draft 和等价命令，
+由用户复核后自己运行；没有 `pw interpret --apply`。它会向配置的 model provider 发送请求文本，以及
+**有限且明确**的 context：open task metadata（id/title/priority/estimate/deadline/updated_at，
+最多 50 条）、current time、planning timezone。**task description、knowledge 内容、文件、
+notification、scheduler payload 都不会发送。** 模型给出的 task UUID 必须来自本次 context，否则
+直接拒绝；没有 `[planning].timezone` 时任何涉及时间的命令一律转为 clarification。
+**尚未实现**：knowledge-grounded answering（RAG）、agent tool loop、conversation memory、
+command execution boundary（把 draft 正式变成执行的边界）、mail/eHall/browser、把 model 接入 daemon。
 
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。

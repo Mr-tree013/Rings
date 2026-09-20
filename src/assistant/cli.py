@@ -26,7 +26,14 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from assistant import __version__, bootstrap, cli_commitments, cli_model, cli_scheduler
+from assistant import (
+    __version__,
+    bootstrap,
+    cli_commitments,
+    cli_interpreter,
+    cli_model,
+    cli_scheduler,
+)
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
 from assistant.cli_support import console, error_console, fail
@@ -73,6 +80,7 @@ app.add_typer(roots_app, name="roots")
 cli_commitments.register(app)
 cli_scheduler.register(app)
 cli_model.register(app)
+cli_interpreter.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -149,7 +157,8 @@ def status() -> None:
     table.add_row(
         "model", "provider-independent boundary (DeepSeek adapter); structured output validated"
     )
-    table.add_row("interpreter", "[yellow]not implemented[/yellow]")
+    table.add_row("interpreter", "natural-language command preview (never executes)")
+    table.add_row("execution", "structured CLI confirmation required")
     table.add_row(
         "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
     )

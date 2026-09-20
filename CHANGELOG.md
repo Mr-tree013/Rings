@@ -7,34 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
+Phase 4 (in progress): a model boundary the rest of the project can trust, and natural-language
+interpretation that produces reviewable, typed, non-executing command drafts. The model can be
+asked for validated structured data, and it can propose an action in the user's own words — but
+it never holds durable state, never touches the database, and never runs anything.
+
 ### Added
 
-- Provider-independent model boundary (ADR-0017): `ModelPort` with a single `complete`
-  operation, provider-neutral `ModelRole`/`ModelMessage`/`ModelRequest`/`ModelResponse`/
-  `ModelUsage` value objects, and an explicit `reasoning_effort` vocabulary
+- Natural-language interpreter (ADR-0018): `pw interpret "…"` interprets exactly one action into
+  a typed `CommandDraft` over a closed set of seven commands (`create_task`, `complete_task`,
+  `cancel_task`, `set_deadline`, `clear_deadline`, `create_calendar_event`,
+  `request_week_plan`), and prints a human-readable preview plus the locally rendered equivalent
+  structured CLI command. It does not execute the command, and there is no `--apply`/`--yes`/
+  `--execute` flag to make it.
+- Bounded, deterministic interpreter context: open task metadata only (id, title, priority,
+  estimate, deadline, updated_at), capped at 50 tasks with an explicit `tasks_truncated` flag,
+  ordered by deadline → priority → creation → id, serialized as canonical JSON in a single user
+  message. Task descriptions, work sessions, calendar events, plan blocks, notifications,
+  scheduler payloads, knowledge content, file paths and mail are never sent; the context type
+  cannot even carry them.
+- Strict interpreter schema: a closed top-level object whose `status` selects one of three
+  mutually exclusive branches (`ready` / `needs_clarification` / `unsupported`), with every
+  command a closed object whose `kind` is a `const` and whose fields are all required and
+  nullable where the user stayed silent. An unknown command fails schema validation instead of
+  degrading into "unsupported", and a `confidence` or reasoning field cannot appear at all.
+- Semantic validation of schema-valid answers: drafts reuse the entity rules, datetimes must be
+  timezone-aware ISO 8601 (naive values are rejected), a backwards calendar interval is refused
+  rather than swapped, and every task reference must match a UUID from the exact context that was
+  supplied — title matching, prefix resolution and re-querying the database are forbidden.
+- Timezone policy: a time-bearing draft (deadline, calendar interval, weekly plan) without a
+  configured `[planning].timezone` becomes a fixed clarification question instead of a guess, so
+  the model cannot bypass the deterministic boundary by inventing an offset.
+- Safe local preview rendering: the equivalent command is built from the typed draft with
+  `shlex.quote` on every user-provided value, so a hostile title is one shell argument rather
+  than an injected command. The model never produces shell text.
+- Supported provider-independent model boundary (ADR-0017): `ModelPort` with a single `complete`
+  operation, provider-neutral model value objects, and a `reasoning_effort` vocabulary
   (`none`/`low`/`high`/`max`) that adapters map to their own spelling.
 - DeepSeek adapter (`adapters/model/deepseek.py`): the Responses API
-  (`POST https://api.deepseek.com/responses`, non-streaming, stateless) with `deepseek-flash`
-  as the default model name, `text.format` structured output, explicit output-item handling
+  (`POST https://api.deepseek.com/responses`, non-streaming, stateless) with `deepseek-flash` as
+  the default model name, `text.format` structured output, explicit output-item handling
   (reasoning discarded, `output_text` parts concatenated, unexpected tool calls refused),
-  provider-neutral error mapping for 400/401/402/422/429/500/503 and for network failures,
-  finite layered timeouts, sanitised error text, and no automatic retry (a request that may
-  already have been billed is never repeated behind the caller's back).
+  provider-neutral error mapping for 400/401/402/422/429/500/503 and for network failures, finite
+  layered timeouts, sanitised error text, and no automatic retry.
 - Locally validated structured output (`application/structured_model.py`): a JSON parse and a
-  Draft 2020-12 schema validation performed by this project, so a provider's server-side
-  structured-output mode is a convenience rather than the only thing standing between a model
-  and application code.
+  Draft 2020-12 schema validation performed by this project, so a provider's structured-output
+  mode is a convenience rather than the only thing standing between a model and application code.
 - `[model]` configuration (provider, model name, reasoning effort, `max_output_tokens`,
-  `timeout_seconds`) with a required provider from the supported list; credentials are read
-  from `DEEPSEEK_API_KEY` only, and an `api_key`-style key is rejected by the strict parser.
-  A missing `[model]` section leaves every Phase 1-3 capability unchanged.
-- `FakeModelAdapter` (`adapters/model/fake.py`) for deterministic tests and future evals:
-  scripted responses and errors, recorded requests, no HTTP, and unreachable from host
-  configuration (`provider = "fake"` is rejected).
-- `pw model status` (inspection only: provider, model, budget, timeout, credential present or
-  missing — never the credential itself) and `pw model test`, the single live provider call in
-  this phase, which asks for a tiny JSON object and reports the locally validated answer plus
-  token usage. `pw doctor` gained read-only model diagnostics that make no network request.
+  `timeout_seconds`); credentials come from `DEEPSEEK_API_KEY` only, and an `api_key`-style key is
+  rejected by the strict parser. A missing `[model]` section leaves every other capability
+  unchanged.
+- `FakeModelAdapter` for deterministic tests and future evals, plus `pw model status` (inspection
+  only) and `pw model test` (a single live request the user chooses to make) with read-only model
+  diagnostics in `pw doctor`.
 
 ## [0.3.0] - 2026-09-20
 

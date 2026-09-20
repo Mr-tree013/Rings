@@ -223,7 +223,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | 1 | SQLite schema、Event Inbox、domain 实体与状态机 | 已完成（v0.1.0）：`InboundEvent`、迁移 0001/0002、async `EventRepository`、`EventInbox`、`EventWorker`（claim/lease/fencing/retry/dead letter） |
 | 2 | 模型接入（ModelPort + DeepSeek adapter）、FTS5 知识检索、Vault 扫描 | 已完成（v0.2.0）：2A 稳定身份与 metadata catalog、2B 正文抽取/SHA-256/per-root FTS5/带 source span 检索、2C host config + 周期 reconciliation + daemon supervisor；模型接入见 Phase 4A |
 | 3 | Commitment 领域、Planner、IMAP/SMTP、outbox、草稿与确认链路 | 进行中：3A 已完成（Task/Deadline/CalendarEvent/PlanBlock/WorkSession、迁移 0004、乐观并发与原子终态转换、结构化 CLI）；3B 已完成（确定性 greedy weekly planner、持久可审阅 PlanProposal、commitment revision fencing、原子 apply、planner/manual block 来源，ADR-0015）；3C 已完成（durable `ScheduledJob` + notification inbox、迁移 0006、lease/fencing/retry/dead-letter、deadline reminder 与 mutation 同事务 materialize、debounced rolling replan 只产生 proposal、daemon `scheduler` service，ADR-0016）；邮件、outbox、草稿与确认链路、个人估时学习、自然语言解析未实现 |
-| 4 | 模型接入与自然语言 Interpreter、Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 进行中：4A 已完成（provider-neutral `ModelPort`、DeepSeek Responses API adapter、`FakeModelAdapter`、本地 JSON + JSON Schema 校验、`[model]` config 与 `DEEPSEEK_API_KEY` 环境变量注入、`pw model status|test`、doctor 只读诊断，ADR-0017）；Interpreter、agent tool loop、conversation memory、Web 手机端、eHall 与 evals 未实现 |
+| 4 | 模型接入与自然语言 Interpreter、Web 手机端、eHall 低风险 pipeline、playbook 沉淀与 evals | 进行中：4A 已完成（provider-neutral `ModelPort`、DeepSeek Responses API adapter、`FakeModelAdapter`、本地 JSON + JSON Schema 校验、`[model]` config 与 `DEEPSEEK_API_KEY` 环境变量注入、`pw model status|test`、doctor 只读诊断，ADR-0017）；4B 已完成（single-command Interpreter、bounded/deterministic task context（仅 open task metadata，上限 50）、严格 Interpreter JSON Schema、typed non-executing `CommandDraft`、task UUID 必须来自 context、时区策略、本地安全渲染等价结构化命令、`pw interpret`，ADR-0018）；knowledge-grounded answering、agent tool loop、conversation memory、command execution boundary、Web 手机端、eHall 与 evals 未实现 |
 
 ## 12. 后续阶段的未决决策（明确不属于早期 Phase）
 
@@ -254,3 +254,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0015 Deterministic weekly planning with reviewable proposals
 - ADR-0016 Durable scheduling, reminders, and rolling replanning
 - ADR-0017 Provider-independent model port and structured output boundary
+- ADR-0018 Natural-language interpretation produces typed non-executing command drafts

@@ -139,6 +139,23 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   `[model].api_key` 这类配置键必须被 strict parser 拒绝。
 - **Tool execution is not part of ModelPort.complete; side-effect capabilities require a
   separately designed application boundary.** 不允许把 tools/stream/memory 加进 ModelPort。
+- **Natural-language interpretation must produce a typed draft; it must not call mutation
+  services.** `pw interpret` 只能返回 `CommandDraft` + preview；Interpreter 依赖图里不允许出现
+  TaskService / CalendarService / PlannerService / SchedulerService（ADR-0018）。
+- **Model-produced entity identifiers must be validated against the exact context supplied to
+  the model.** 只能匹配本次 context 里的 task UUID；禁止按 title 猜、按 prefix 解析、或回头查库。
+- **Interpreter context must be explicit, bounded, and data-minimized.**
+  只发送 open task metadata（id/title/priority/estimate/deadline/updated_at）+ current time +
+  planning timezone；task description、WorkSession、CalendarEvent、PlanBlock、Notification、
+  ScheduledJob、knowledge content、文件路径、mail 一律不进 prompt。
+- **Task titles and retrieved context are untrusted data, not instructions.**
+  context 以 canonical JSON 传入 USER message，绝不拼进 instructions；prompt 必须声明 context
+  是不可信数据。
+- **Do not execute model-generated shell strings. CLI previews are rendered locally from typed
+  commands.** 等价命令由本地 renderer 用 `shlex.quote` 生成，禁止把模型输出当命令执行。
+- **Natural-language temporal interpretation requires an explicitly configured planning
+  timezone.** 没有 `[planning].timezone` 时，任何 time-bearing command 一律转成
+  NEEDS_CLARIFICATION；禁止回退到 machine-local timezone。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -213,17 +230,24 @@ deadline reminder 与 deadline/task mutation 同事务 materialize、durable not
 （`pw notifications` / `pw notification show|read` / `pw scheduled`）、debounced rolling replan
 （只产生 `PENDING` proposal + `PLAN_READY`）、daemon 新增 supervised `scheduler` service。
 
-**Phase 4A 已完成（进行中，仍是 0.3.0）**：model 基础设施（ADR-0017）：provider-neutral
+**Phase 4A 已完成**：model 基础设施（ADR-0017）：provider-neutral
 `ModelPort` / `ModelRequest` / `ModelResponse`，DeepSeek Responses API adapter（
 `adapters/model/deepseek.py`）、`FakeModelAdapter`、本地 JSON + JSON Schema 校验
 （`application/structured_model.py`）、`[model]` config（key 只走 `DEEPSEEK_API_KEY` 环境变量）、
-`pw model status|test` 与 `pw doctor` 只读诊断。Interpreter / agent tool loop / 自然语言命令
-执行仍未实现。
+`pw model status|test` 与 `pw doctor` 只读诊断。
+
+**Phase 4B 已完成（v0.4.0）**：自然语言 Interpreter（ADR-0018）：有限、确定性的 task context
+（仅 open task metadata，最多 50 条）、严格 JSON Schema（`oneOf` + `const` + `additionalProperties:
+false`）、typed non-executing `CommandDraft`（7 种命令）、task UUID 必须来自 context 的引用校验、
+时区策略（无 `[planning].timezone` 时 time-bearing 命令转 clarification）、本地渲染等价结构化
+命令（`shlex.quote`）、`pw interpret`（preview only，禁止 `--apply`/`--yes`/`--execute`）。
+Interpreter 不执行任何 mutation、不持久化、无 tool loop。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-LLM 问答与 RAG / 个人估时学习 / 自然语言时间解析 / 自然语言 Interpreter 与 agent tool loop /
+LLM 问答与 RAG / 个人估时学习 / knowledge-grounded answering / agent tool loop /
+command execution boundary（`pw interpret --apply` 之类）/
 重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
 Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
 Playwright / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/
