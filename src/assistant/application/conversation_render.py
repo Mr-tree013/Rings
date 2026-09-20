@@ -13,7 +13,7 @@ back into a service.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -329,8 +329,18 @@ def _moment(value: object, timezone: str | None) -> str:
         return str(value)
     zone = _zone(timezone)
     localised = instant.astimezone(zone)
-    suffix = "UTC" if zone is UTC else f"{localised.utcoffset()}"
+    suffix = "UTC" if zone is UTC else _offset_text(localised.utcoffset())
     return f"{localised.strftime('%Y-%m-%d %H:%M')}（{suffix}）"
+
+
+def _offset_text(offset: timedelta | None) -> str:
+    """Render a UTC offset the way a person writes one: `+08:00`, `-04:00`, `+05:30`."""
+    if offset is None:  # pragma: no cover - an aware instant always has one
+        return "UTC"
+    minutes = int(offset.total_seconds()) // 60
+    sign = "+" if minutes >= 0 else "-"
+    hours, remainder = divmod(abs(minutes), 60)
+    return f"{sign}{hours:02d}:{remainder:02d}"
 
 
 def _zone(timezone: str | None) -> ZoneInfo | Any:

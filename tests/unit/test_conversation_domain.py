@@ -200,3 +200,21 @@ def test_priority_round_trips_through_arguments() -> None:
 
     assert isinstance(arguments, TaskCreateArguments)
     assert arguments.priority is TaskPriority.HIGH
+
+
+def test_instants_are_rendered_in_the_planning_timezone() -> None:
+    """The user reads their own clock, written the way a clock is written (`+08:00`)."""
+    from assistant.application.conversation_capabilities.registry import OperationResult
+    from assistant.application.conversation_render import render_result
+
+    result = OperationResult(
+        kind="deadline_set",
+        ref="task",
+        data={"title": "写报告", "due_at": "2026-09-22T07:00:00+00:00"},
+    )
+
+    rendered = render_result(result, timezone="Asia/Shanghai")
+    other = render_result(result, timezone=None)
+
+    assert "2026-09-22 15:00（+08:00）" in rendered
+    assert "2026-09-22 07:00（UTC）" in other
