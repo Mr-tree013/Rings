@@ -68,3 +68,21 @@ usually be asked to split or stop.
 ## Reporting security issues
 
 Please do not open a public issue for a security problem. See [`SECURITY.md`](SECURITY.md).
+
+## Repository structure
+
+```text
+src/assistant/domain          domain model and rules; no I/O, no adapters
+src/assistant/application     use-case orchestration; depends on domain and ports
+src/assistant/ports           interfaces (model, store, mail, approval, …)
+src/assistant/adapters        DeepSeek, IMAP/SMTP, Playwright eHall, web, MCP, knowledge
+src/assistant/store           SQLite persistence: the only runtime store
+migrations                    immutable historical migrations
+docs/adr                      architecture decision records
+docs/specs                    architecture specification
+docs/concepts                 product language
+docs/guides                   user guides
+docs/releases                 release notes
+docs/examples                 sample configuration
+tests                         unit / integration / contract / acceptance / release suites
+```

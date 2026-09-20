@@ -147,6 +147,37 @@ explicit state machines
 
 Where the metaphor and the architecture disagree, the architecture wins and this document is wrong.
 
+## The loop the Tree runs
+
+The vocabulary above is static; the work moves through seven stages, and every stage has a
+boundary.
+
+```text
+Observe
+  ↓
+Understand
+  ↓
+Commit
+  ↓
+Plan
+  ↓
+Execute
+  ↓
+Review
+  ↓
+Learn
+```
+
+| Stage | What happens there |
+| --- | --- |
+| Observe | Read-only IMAP receive, configured public HTTPS pages, and text you paste or forward. Nothing is fetched from an unconfigured source. |
+| Understand | Deterministic parsing and threading, plus bounded model analysis that produces candidates only — never a durable mutation. |
+| Commit | Tasks, deadlines, calendar events and work sessions are recorded as distinct domain concepts. |
+| Plan | A deterministic planner writes a reviewable weekly proposal; reminders and rolling replans are durable scheduled jobs. |
+| Execute | A `Case` holds prepared `ActionRequest`s. Execution happens only after one exact human `Approval`, and only for a registered capability. |
+| Review | Every challenge, approval and execution is durable history. An ambiguous external result stays `UNKNOWN` instead of being retried. |
+| Learn | Corrections become fact candidates until you confirm them; successful runs become playbook candidates until a dry run is replayed and you promote them. |
+
 ## How the vocabulary maps onto the frozen terminology
 
 | Product language | Frozen technical terms |

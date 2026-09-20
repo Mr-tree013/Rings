@@ -1,9 +1,12 @@
-"""The public README stays true to the release it describes (26, 30, 36-38).
+"""The public documentation stays true to the release it describes (26, 30, 35-38).
 
-A README is a promise. This file keeps three kinds of promise checkable without a Markdown parser:
-every `pw …` command it shows must exist with the options it shows, it must not describe a v1
-capability as missing, and neither it nor the other public documents may carry a personal path or a
-credential-shaped value.
+A document is a promise. This file keeps three kinds of promise checkable without a Markdown parser:
+every `pw …` command the README and the user guides show must exist with the options they show, the
+documents must not describe a v1 capability as missing, and none of the public documents may carry a
+personal path or a credential-shaped value.
+
+The README is a landing page, so most of the commands now live in `docs/guides/` — that is why this
+checks the guides as well instead of counting commands in the README alone.
 """
 
 from __future__ import annotations
@@ -19,11 +22,14 @@ from assistant.cli import app
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 README = REPOSITORY_ROOT / "README.md"
+GUIDES = tuple(sorted((REPOSITORY_ROOT / "docs" / "guides").glob("*.md")))
 PUBLIC_DOCUMENTS = (
     README,
     REPOSITORY_ROOT / "CONTRIBUTING.md",
     REPOSITORY_ROOT / "SECURITY.md",
+    *GUIDES,
 )
+COMMAND_DOCUMENTS = (README, *GUIDES)
 
 _INVOCATION = re.compile(r"^(?:uv run )?pw\b(?P<rest>.*)$")
 
@@ -38,8 +44,10 @@ def _joined_lines(text: str) -> Iterator[tuple[int, str]]:
     start = 0
     for number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
-        buffer = f"{buffer} {stripped}" if buffer else stripped
-        if not buffer:
+        if buffer:
+            buffer = f"{buffer} {stripped}"
+        else:
+            buffer = stripped
             start = number
         if buffer.endswith("\\"):
             buffer = buffer[:-1]
@@ -60,16 +68,17 @@ def _long_options(command: object) -> set[str]:
     return known
 
 
-def _documented_invocations() -> Iterator[tuple[int, list[str]]]:
-    for number, line in _joined_lines(_read(README)):
-        match = _INVOCATION.match(line)
-        if match is None:
-            continue
-        try:
-            tokens = shlex.split(match.group("rest"))
-        except ValueError:  # an unbalanced quote in prose is not a command example
-            continue
-        yield number, tokens
+def _documented_invocations() -> Iterator[tuple[Path, int, list[str]]]:
+    for path in COMMAND_DOCUMENTS:
+        for number, line in _joined_lines(_read(path)):
+            match = _INVOCATION.match(line)
+            if match is None:
+                continue
+            try:
+                tokens = shlex.split(match.group("rest"))
+            except ValueError:  # an unbalanced quote in prose is not a command example
+                continue
+            yield path, number, tokens
 
 
 def _resolve(tokens: list[str]) -> tuple[object, list[str]]:
@@ -85,32 +94,35 @@ def _resolve(tokens: list[str]) -> tuple[object, list[str]]:
     return command, remaining
 
 
-def test_the_readme_names_the_release_it_documents() -> None:
-    text = _read(README)
+def test_the_public_documents_name_the_release_they_describe() -> None:
+    readme = _read(README)
 
-    assert "1.0.0" in text
-    assert "Current release: v1.0.0" in text
-    for section in ("Product model", "Core capabilities", "Safety model", "Known limitations"):
-        assert section in text, section
+    assert "1.0.0" in readme
+    assert "docs/releases/1.0.0.md" in readme
+    for section in ("The Tree Model", "What Rings Can Do", "Safety by Design", "Quick Start",
+                    "Documentation", "Known Limitations"):
+        assert section in readme, section
 
 
 def test_every_documented_command_exists_with_the_options_it_shows() -> None:
-    """A README example that no longer runs is worse than no example."""
+    """A documentation example that no longer runs is worse than no example."""
     checked = 0
-    for number, tokens in _documented_invocations():
+    for path, number, tokens in _documented_invocations():
         if not tokens:
             continue
         command, remaining = _resolve(tokens)
         documented = [token.split("=", 1)[0] for token in remaining if token.startswith("--")]
         unknown = sorted(set(documented) - _long_options(command))
-        assert not unknown, f"README.md:{number} documents unknown option(s) {unknown}"
+        where = path.relative_to(REPOSITORY_ROOT)
+        assert not unknown, f"{where}:{number} documents unknown option(s) {unknown}"
         checked += 1
-    assert checked >= 50, f"expected the README to show real commands, found {checked}"
+
+    assert len(GUIDES) >= 9, f"expected the user guides to exist, found {len(GUIDES)}"
+    assert checked >= 100, f"expected real commands across the docs, found {checked}"
 
 
-def test_the_readme_does_not_claim_v1_capabilities_are_missing() -> None:
-    """The v0.x README said these; a v1 README that repeats them would mislead a reader."""
-    text = _read(README).lower()
+def test_the_documents_do_not_claim_v1_capabilities_are_missing() -> None:
+    """The v0.x README said these; repeating them would mislead a reader."""
     stale = (
         "no smtp support",
         "no smtp capability",
@@ -123,12 +135,15 @@ def test_the_readme_does_not_claim_v1_capabilities_are_missing() -> None:
         "ehall is not implemented",
         "production capability set is empty",
     )
-    for phrase in stale:
-        assert phrase not in text, phrase
+    for path in COMMAND_DOCUMENTS:
+        text = _read(path).lower()
+        for phrase in stale:
+            assert phrase not in text, f"{path.name}: {phrase}"
 
-    # And the capabilities a reader is promised are actually described.
+    # And the capabilities a reader is promised are actually described somewhere public.
+    everything = "\n".join(_read(path).lower() for path in PUBLIC_DOCUMENTS)
     for capability in ("mail.send", "ehall.submit-certificate", "non-executing", "trusted-lan"):
-        assert capability in text, capability
+        assert capability in everything, capability
 
 
 _CREDENTIAL_SHAPED = (
@@ -149,3 +164,12 @@ def test_public_documents_carry_no_personal_path_or_credential() -> None:
             assert match is None, f"{path.name} looks like it carries a secret: {match.group(0)!r}"
         match = _PERSONAL_PATH.search(text)
         assert match is None, f"{path.name} carries a personal path: {match.group(0)!r}"
+
+
+def test_the_guides_are_linked_from_the_documentation_hub() -> None:
+    """A guide nobody can find is a guide nobody reads."""
+    readme = _read(README)
+
+    for guide in GUIDES:
+        relative = guide.relative_to(REPOSITORY_ROOT).as_posix()
+        assert relative in readme, relative
