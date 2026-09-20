@@ -96,8 +96,34 @@ uv run assistantd
 In a second terminal:
 
 ```bash
-uv run pw status
+uv run rings
+uv run pw status      # the advanced surface: a status overview
 ```
+
+The everyday entry point is a conversation, not a command:
+
+```text
+Tree > Hello. I am Tree. What are we arranging today?
+You > remind me to submit the SE report tomorrow at 3pm
+Tree > Created the task "submit the SE report", due 2026-09-21 15:00 (+08:00).
+You > plan my week
+Tree > A weekly proposal is ready (3 blocks). Apply it? Reply yes and I will write it down.
+You > yes
+Tree > Applied the proposal: 3 blocks created, 0 replaced.
+```
+
+Tree handles local daily work in natural language: tasks, calendar, work sessions, weekly planning
+and questions about your indexed sources. External effects are **not** reachable from the
+conversation; they still go through the `pw` approval chain.
+
+| Entry point | What it is for |
+| --- | --- |
+| `uv run rings` | The conversational surface, for everyday use |
+| `uv run pw chat` | The same runtime, from the existing CLI |
+| `pw …` | The advanced/admin surface: the full command set |
+
+`assistantd` keeps running the background work (indexing, reminders, mail, watchers, mobile), and
+`growing-assistant-mcp` keeps serving the editor.
 
 The sample configuration is inert until you change it: mail, eHall, mobile and MCP are off and no
 watcher is configured. Credentials are supplied through environment variables, not committed to
@@ -151,6 +177,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 
 | Topic | Where |
 | --- | --- |
+| The conversational entry point: Tree Conversation | [docs/guides/conversation.md](docs/guides/conversation.md) |
 | Getting started, configuration, credentials, WSL startup | [docs/guides/getting-started.md](docs/guides/getting-started.md) |
 | The Rings / Tree vocabulary | [docs/concepts/rings-language.md](docs/concepts/rings-language.md) |
 | Tasks, calendar, work sessions, weekly planning | [docs/guides/planning.md](docs/guides/planning.md) |

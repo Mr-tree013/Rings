@@ -336,5 +336,8 @@ def test_the_runtime_database_still_has_no_interpreter_tables(database: Database
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    for forbidden in ("command_proposals", "interpretations", "conversation_messages"):
+    # `pw interpret` still persists nothing: a preview leaves no proposal row and no transcript.
+    # (The conversation runtime of ADR-0033 does own a durable store — `conversation_*` — but it is
+    # a different surface with its own history, not the interpreter's.)
+    for forbidden in ("command_proposals", "interpretations", "model_outputs", "prompts"):
         assert forbidden not in names

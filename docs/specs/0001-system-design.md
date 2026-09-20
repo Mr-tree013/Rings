@@ -74,6 +74,34 @@ adapters      DeepSeek、IMAP/SMTP、Playwright、Web 等具体实现
   不允许发展成 God Object。
 - 模型访问必须经 `ports.ModelPort`，SDK 类型不得越过该边界。
 
+### 4.1 Tree Conversation Runtime（Phase 10A，ADR-0033）
+
+对话是 v1.1 的主交互方向，但它只是**一层新的 surface + 编排层**，不改变上面的分层：
+
+```text
+rings / pw chat
+      ↓  用户一句话
+ConversationService（application）—— 有状态：thread / turn / operation
+      ↓  有界上下文（最近消息 + 最近实体 + planning timezone）
+ConversationInterpreter（application）→ ModelPort，只产出 ConversationPlan
+      ↓  封闭的 typed operation（Phase 10A 只有任务/日历/工时/计划/提醒/知识问答）
+ConversationCapabilityRegistry —— 代码拥有的 confirmation policy
+      ↓  既有 application services（TaskService / CalendarService / WorkService /
+          PlannerService / GroundedAnswerService / scheduler repository）
+```
+
+硬性约束：
+
+- 模型没有 tool / function / shell / filesystem / browser / HTTP，也没有数据库或 service 句柄；
+  它只能产出 schema 封闭的 `ConversationPlan`，不存在通用 tool loop。
+- 模型不能决定风险等级、是否需要确认、由谁执行——这些属于确定性代码
+  （`ConfirmationPolicy`：READ / LOCAL_WRITE / CONFIRM_LOCAL，本阶段没有 EXTERNAL_WRITE）。
+- 对话不能创建 `Approval`、不能执行 `ActionRequest`、不能发 SMTP、不能提交 eHall；
+  `ActionRequest → Approval → ExecutionRun` 语义不变。
+- 相对时间只依据显式配置的 `[planning].timezone`；缺失时提问，不猜宿主机时区。
+- 对话历史是 durable 的，但不会自动变成 `ConfirmedFact`，也不替代 Roots / Facts。
+- 本地写入先持久化 `APPLYING`，中断则成为 `UNKNOWN_LOCAL`，绝不自动重放。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）

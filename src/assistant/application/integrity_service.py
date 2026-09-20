@@ -4,6 +4,7 @@
 database        pragmas, applied migrations against the reviewed files
 content         every referenced mail raw object and web snapshot, by hash
 capabilities    approvals, challenges, executions and send links
+conversation    threads, turns and operations; an interrupted write stays visible
 learning        facts, playbooks and their provenance
 mail            identity, threading, drafts, send links
 observations    web versioning, bridges, analyses
@@ -39,7 +40,7 @@ from assistant.ports.integrity_repository import DatabaseAudit, IntegrityReposit
 
 LOGGER = logging.getLogger("assistant.integrity")
 
-REVIEWED_MIGRATION_COUNT = 15
+REVIEWED_MIGRATION_COUNT = 16
 """How many migration files the reviewed schema has; pinned again by an architecture test."""
 
 

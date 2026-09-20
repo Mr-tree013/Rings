@@ -1461,6 +1461,65 @@ class IntegrityCheckFailed(DomainError):
     """A read-only integrity check found a problem. Nothing is repaired automatically."""
 
 
+# --------------------------------------------------------------- tree conversation (ADR-0033)
+
+
+class ConversationError(DomainError):
+    """Base class for every conversation-runtime failure."""
+
+
+class InvalidConversationThread(ConversationError):
+    """A thread would be stored in a state the domain does not allow."""
+
+
+class InvalidConversationMessage(ConversationError):
+    """A message would be stored in a state the domain does not allow."""
+
+
+class InvalidConversationOperation(ConversationError):
+    """An operation would be stored in a state the domain does not allow."""
+
+
+class InvalidConversationPlan(ConversationError):
+    """A model answer is not a usable conversation plan."""
+
+
+class ConversationThreadNotFound(ConversationError):
+    """No such conversation thread."""
+
+
+class ConversationTurnFailed(ConversationError):
+    """A conversation turn could not be completed."""
+
+
+class ConversationOperationNotFound(ConversationError):
+    """No such conversation operation."""
+
+
+class ConversationCapabilityUnavailable(ConversationError):
+    """The plan asked for an operation this build does not offer."""
+
+
+class ConversationConfirmationRequired(ConversationError):
+    """The operation needs an explicit conversational confirmation first."""
+
+
+class ConversationConfirmationExpired(ConversationError):
+    """A pending confirmation was answered after it expired."""
+
+
+class ConversationNeedsClarification(ConversationError):
+    """The request is ambiguous; the runtime asks instead of guessing."""
+
+
+class ConversationTimezoneRequired(ConversationError):
+    """A relative civil time arrived with no configured planning timezone."""
+
+
+class ConversationOperationUnknown(ConversationError):
+    """An operation was interrupted mid-apply; its outcome is not knowable locally."""
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1484,6 +1543,16 @@ __all__ = [
     "ConfirmedFactNotFound",
     "ContentExtractionError",
     "ContentTooLarge",
+    "ConversationCapabilityUnavailable",
+    "ConversationConfirmationExpired",
+    "ConversationConfirmationRequired",
+    "ConversationError",
+    "ConversationNeedsClarification",
+    "ConversationOperationNotFound",
+    "ConversationOperationUnknown",
+    "ConversationThreadNotFound",
+    "ConversationTimezoneRequired",
+    "ConversationTurnFailed",
     "CorrectionNotFound",
     "DeadlineNotFound",
     "DomainError",
@@ -1524,6 +1593,10 @@ __all__ = [
     "InvalidCommandDraft",
     "InvalidCommitment",
     "InvalidConfirmedFact",
+    "InvalidConversationMessage",
+    "InvalidConversationOperation",
+    "InvalidConversationPlan",
+    "InvalidConversationThread",
     "InvalidCorrection",
     "InvalidDeadline",
     "InvalidEHallForm",

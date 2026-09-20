@@ -1,0 +1,232 @@
+"""The bounded context one conversation turn is allowed to see (ADR-0033 §10-11).
+
+Read-only by construction: this builder is given repositories and a clock, and nothing else. It
+cannot mutate, cannot call a model and cannot reach an action, an approval or a mail body.
+
+The bounded policy is explicit and tested:
+
+* at most `MAX_CONTEXT_MESSAGES` recent messages, **and**
+* at most `MAX_CONTEXT_HISTORY_CHARS` characters of them, taken newest first, so a long
+  conversation degrades by dropping its oldest context instead of overflowing the request;
+* at most `MAX_CONTEXT_ENTITIES_PER_KIND` tasks, proposals, calendar events and notifications,
+  ordered deterministically, because the same state must produce the same context.
+
+What is *not* here matters as much as what is: no mail bodies, no indexed document text, no
+`ConfirmedFact`s, no Playbooks, no Action payloads, no Approval data and no credentials. Knowledge
+reaches a turn only through `knowledge.ask`, which goes to the grounded-answer service and comes
+back with citations.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from assistant.domain.conversation import ConversationMessage, ConversationThreadId
+from assistant.domain.conversation_context import (
+    MAX_CONTEXT_ENTITIES_PER_KIND,
+    MAX_CONTEXT_HISTORY_CHARS,
+    MAX_CONTEXT_MESSAGES,
+    ConversationContext,
+    ConversationEntityKind,
+    ConversationEntityRef,
+    ConversationRecentMessage,
+)
+from assistant.domain.deadline import Deadline
+from assistant.domain.notification import NotificationStatus
+from assistant.domain.planning import PlanProposal, PlanProposalStatus
+from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
+from assistant.ports.clock import Clock
+from assistant.ports.commitment_repository import CommitmentRepository
+from assistant.ports.conversation_repository import ConversationRepository
+from assistant.ports.planning_repository import PlanningRepository
+from assistant.ports.scheduler_repository import SchedulerRepository
+
+CALENDAR_LOOKAHEAD_DAYS = 14
+"""How far ahead calendar events are summarised for a follow-up reference."""
+
+_PRIORITY_RANK = {
+    TaskPriority.HIGH: 0,
+    TaskPriority.NORMAL: 1,
+    TaskPriority.LOW: 2,
+}
+
+
+class ConversationContextBuilder:
+    """Reads the bounded context from authoritative state. It can only read."""
+
+    def __init__(
+        self,
+        repository: ConversationRepository,
+        commitments: CommitmentRepository,
+        planning: PlanningRepository,
+        scheduler: SchedulerRepository,
+        clock: Clock,
+        *,
+        planning_timezone: str | None,
+        max_messages: int = MAX_CONTEXT_MESSAGES,
+        max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
+        max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
+    ) -> None:
+        if max_messages < 1 or max_history_chars < 1 or max_entities < 1:
+            raise ValueError("every conversation context bound must be at least 1")
+        self._repository = repository
+        self._commitments = commitments
+        self._planning = planning
+        self._scheduler = scheduler
+        self._clock = clock
+        self._planning_timezone = planning_timezone
+        self._max_messages = max_messages
+        self._max_history_chars = max_history_chars
+        self._max_entities = max_entities
+
+    async def build(
+        self,
+        thread_id: ConversationThreadId,
+        *,
+        confirmation_pending: bool = False,
+    ) -> ConversationContext:
+        """Return the same context for the same state, every time."""
+        now = self._clock.now()
+        messages = await self._repository.list_messages(thread_id)
+        history, truncated = _recent_history(
+            messages, max_messages=self._max_messages, max_chars=self._max_history_chars
+        )
+        entities = await self._entities(now)
+        return ConversationContext(
+            current_time=now,
+            planning_timezone=self._planning_timezone,
+            recent_messages=history,
+            entities=entities,
+            history_truncated=truncated,
+            confirmation_pending=confirmation_pending,
+        )
+
+    async def _entities(self, now: datetime) -> tuple[ConversationEntityRef, ...]:
+        return (
+            *await self._task_entities(),
+            *await self._proposal_entities(),
+            *await self._calendar_entities(now),
+            *await self._notification_entities(),
+        )
+
+    async def _task_entities(self) -> tuple[ConversationEntityRef, ...]:
+        tasks = await self._commitments.list_tasks(statuses=(TaskStatus.OPEN,))
+        deadlines = (
+            await self._commitments.list_deadlines([task.id for task in tasks]) if tasks else {}
+        )
+        ordered = _order_tasks(tasks, deadlines)[: self._max_entities]
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.TASK,
+                id=str(task.id),
+                label=task.title,
+                detail=_task_detail(task, deadlines.get(task.id)),
+            )
+            for task in ordered
+        )
+
+    async def _proposal_entities(self) -> tuple[ConversationEntityRef, ...]:
+        summaries = await self._planning.list_proposal_summaries(limit=self._max_entities * 2)
+        pending = [
+            summary
+            for summary in summaries
+            if summary.proposal.status is PlanProposalStatus.PENDING
+        ][: self._max_entities]
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.PROPOSAL,
+                id=str(summary.proposal.id),
+                label=_proposal_label(summary.proposal),
+                detail=f"blocks={summary.block_count}, issues={summary.issue_count}",
+            )
+            for summary in pending
+        )
+
+    async def _calendar_entities(self, now: datetime) -> tuple[ConversationEntityRef, ...]:
+        events = await self._commitments.list_calendar_events(
+            query_start=now,
+            query_end=now + timedelta(days=CALENDAR_LOOKAHEAD_DAYS),
+        )
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.CALENDAR_EVENT,
+                id=str(event.id),
+                label=event.title,
+                detail=f"starts={event.starts_at.isoformat()} ends={event.ends_at.isoformat()}",
+            )
+            for event in events[: self._max_entities]
+        )
+
+    async def _notification_entities(self) -> tuple[ConversationEntityRef, ...]:
+        notifications = await self._scheduler.list_notifications(
+            unread_only=True, limit=self._max_entities
+        )
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.NOTIFICATION,
+                id=str(notification.id),
+                label=notification.title,
+                detail=f"kind={notification.kind.value} status={NotificationStatus.UNREAD.value}",
+            )
+            for notification in notifications
+        )
+
+
+def _recent_history(
+    messages: list[ConversationMessage], *, max_messages: int, max_chars: int
+) -> tuple[tuple[ConversationRecentMessage, ...], bool]:
+    """The newest bounded slice of history, in reading order."""
+    selected: list[ConversationRecentMessage] = []
+    used = 0
+    for message in reversed(messages):
+        if len(selected) >= max_messages:
+            break
+        if used + len(message.text) > max_chars:
+            break
+        selected.append(
+            ConversationRecentMessage(
+                role=message.role,
+                text=message.text,
+                created_at=message.created_at,
+            )
+        )
+        used += len(message.text)
+    selected.reverse()
+    return tuple(selected), len(selected) < len(messages)
+
+
+def _order_tasks(tasks: list[Task], deadlines: dict[TaskId, Deadline]) -> list[Task]:
+    """Deadline tasks first (earliest due), then the rest; deterministic tie-breaks."""
+
+    def key(task: Task) -> tuple[object, ...]:
+        deadline = deadlines.get(task.id)
+        due_at = None if deadline is None else deadline.due_at
+        return (
+            due_at is None,
+            due_at or task.created_at,
+            _PRIORITY_RANK[task.priority],
+            task.created_at,
+            str(task.id),
+        )
+
+    return sorted(tasks, key=key)
+
+
+def _task_detail(task: Task, deadline: Deadline | None) -> str:
+    due_at = None if deadline is None else deadline.due_at
+    estimate = task.estimated_minutes
+    return (
+        f"deadline={'-' if due_at is None else due_at.isoformat()} "
+        f"priority={task.priority.value} "
+        f"estimate={'-' if estimate is None else f'{estimate}m'}"
+    )
+
+
+def _proposal_label(proposal: PlanProposal) -> str:
+    return (
+        f"weekly plan proposal {proposal.window.starts_at.date().isoformat()} -> "
+        f"{proposal.window.ends_at.date().isoformat()} ({proposal.window.timezone})"
+    )
+
+
+__all__ = ["CALENDAR_LOOKAHEAD_DAYS", "ConversationContextBuilder"]

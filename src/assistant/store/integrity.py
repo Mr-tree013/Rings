@@ -47,6 +47,7 @@ class SqliteIntegrityRepository:
                 sections = (
                     _database_section(connection),
                     _capability_section(connection),
+                    _conversation_section(connection),
                     _learning_section(connection),
                     _mail_section(connection),
                     _observation_section(connection),
@@ -137,6 +138,55 @@ def _capability_section(connection: sqlite3.Connection) -> IntegritySection:
         "capabilities",
         IntegritySeverity.OK,
         f"actions, approvals and executions OK ({unresolved} unresolved)",
+    )
+
+
+def _conversation_section(connection: sqlite3.Connection) -> IntegritySection:
+    """A turn must stay inside its own thread, and an interrupted write must stay visible.
+
+    The foreign keys already guarantee that a message and a turn exist; they cannot guarantee that
+    they belong to the *same* conversation, which is the invariant the runtime reads by. An
+    `UNKNOWN_LOCAL` operation is not corruption — it is the honest record of a write whose outcome
+    nobody knows — but it is worth a warning, because only a human can settle it.
+    """
+    critical: list[str] = []
+    for row in connection.execute(
+        "SELECT t.id AS turn_id FROM conversation_turns AS t "
+        "LEFT JOIN conversation_messages AS m ON m.id = t.user_message_id "
+        "WHERE m.id IS NULL OR m.thread_id <> t.thread_id"
+    ).fetchall():
+        critical.append(f"conversation turn {row['turn_id']} does not own its user message")
+    for row in connection.execute(
+        "SELECT t.id AS turn_id FROM conversation_turns AS t "
+        "LEFT JOIN conversation_messages AS m ON m.id = t.assistant_message_id "
+        "WHERE t.assistant_message_id IS NOT NULL "
+        "AND (m.id IS NULL OR m.thread_id <> t.thread_id)"
+    ).fetchall():
+        critical.append(f"conversation turn {row['turn_id']} does not own its assistant message")
+    for row in connection.execute(
+        "SELECT o.id AS operation_id FROM conversation_operations AS o "
+        "LEFT JOIN conversation_turns AS t ON t.id = o.turn_id WHERE t.id IS NULL"
+    ).fetchall():
+        critical.append(f"conversation operation {row['operation_id']} has no turn")
+    if critical:
+        return IntegritySection(
+            "conversation",
+            IntegritySeverity.CRITICAL,
+            "stored conversations disagree with their own history",
+            tuple(critical),
+        )
+    unresolved = connection.execute(
+        "SELECT COUNT(*) FROM conversation_operations WHERE status = 'unknown_local'"
+    ).fetchone()[0]
+    if unresolved:
+        return IntegritySection(
+            "conversation",
+            IntegritySeverity.WARN,
+            f"{unresolved} interrupted local write(s) may have completed; inspect them before "
+            "retrying",
+        )
+    return IntegritySection(
+        "conversation", IntegritySeverity.OK, "threads, turns and operations OK"
     )
 
 

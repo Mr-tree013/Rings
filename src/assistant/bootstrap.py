@@ -55,6 +55,14 @@ from assistant.application.approval_service import ApprovalService
 from assistant.application.backup_service import MIGRATION_DIRECTORY, BackupService
 from assistant.application.calendar_service import CalendarService
 from assistant.application.case_service import CaseService
+from assistant.application.conversation_capabilities import (
+    ConversationCapabilityRegistry,
+    ConversationHandlers,
+    build_phase_10a_registry,
+)
+from assistant.application.conversation_context import ConversationContextBuilder
+from assistant.application.conversation_interpreter import ConversationInterpreterService
+from assistant.application.conversation_service import ConversationService
 from assistant.application.ehall_certificate import EHallCertificateService
 from assistant.application.event_inbox import EventInbox
 from assistant.application.event_worker import EventWorker
@@ -134,6 +142,7 @@ from assistant.store.backup import SqliteRuntimeBackup
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
+from assistant.store.conversations import SqliteConversationRepository
 from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
 from assistant.store.integrity import SqliteIntegrityRepository
@@ -1173,6 +1182,91 @@ async def close_model(model: ModelPort) -> None:
         await close()
 
 
+def _planning_timezone_of(config: AssistantConfig | None) -> str | None:
+    """The user's planning timezone, or `None` when the host has not chosen one."""
+    return None if config is None or config.planning is None else config.planning.timezone
+
+
+def conversation_repository(database: Database) -> SqliteConversationRepository:
+    """Durable conversation threads, messages, turns and operation outcomes."""
+    return SqliteConversationRepository(database)
+
+
+def conversation_context_builder(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> ConversationContextBuilder:
+    """The bounded conversation context: recent messages, recent entities, planning timezone."""
+    return ConversationContextBuilder(
+        conversation_repository(database),
+        commitment_repository(database),
+        planning_repository(database),
+        scheduler_repository(database),
+        clock,
+        planning_timezone=_planning_timezone_of(config),
+    )
+
+
+def conversation_interpreter(
+    config: AssistantConfig | None, *, model: ModelPort
+) -> ConversationInterpreterService:
+    """The typed conversation interpreter over an already-built adapter.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+    """
+    return ConversationInterpreterService(model, require_model_config(config))
+
+
+def conversation_capabilities(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    model: ModelPort,
+) -> ConversationCapabilityRegistry:
+    """The frozen Phase 10A capability set, over the existing application services."""
+    handlers = ConversationHandlers(
+        tasks=task_service(database, clock, config),
+        calendar=calendar_service(database, clock, config),
+        work=work_service(database, clock, config),
+        planner=planner_service(database, clock, config),
+        scheduler=scheduler_repository(database),
+        knowledge=grounded_answer_service(
+            grounded_context_builder(clock, database), config, model=model
+        ),
+        commitments=commitment_repository(database),
+        clock=clock,
+    )
+    return build_phase_10a_registry(handlers)
+
+
+def conversation_service(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    model: ModelPort | None = None,
+) -> ConversationService:
+    """The Tree conversation runtime — one service, used by `rings` and by `pw chat`.
+
+    The adapter is built once and shared by the interpreter and the grounded-answer handler, so a
+    conversation holds one HTTP client rather than one per capability.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    adapter = model if model is not None else model_adapter(config)
+    return ConversationService(
+        repository=conversation_repository(database),
+        interpreter=conversation_interpreter(config, model=adapter),
+        capabilities=conversation_capabilities(database, clock, config, model=adapter),
+        context_builder=conversation_context_builder(database, clock, config),
+        clock=clock,
+        planning_timezone=_planning_timezone_of(config),
+    )
+
+
 __all__ = [
     "MODEL_API_KEY_ENV",
     "AppPaths",
@@ -1191,6 +1285,11 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "conversation_capabilities",
+    "conversation_context_builder",
+    "conversation_interpreter",
+    "conversation_repository",
+    "conversation_service",
     "ehall_certificate_executor",
     "ehall_certificate_gateway",
     "ehall_certificate_service",

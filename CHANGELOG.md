@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Tree Conversation (Phase 10A, ADR-0033).** `rings`, and `pw chat` for the same runtime, are the
+  primary conversational surface: a sentence is interpreted into a closed set of typed local
+  operations (tasks, calendar, work sessions, weekly planning, the notification inbox and grounded
+  knowledge questions) and a deterministic runtime decides what is allowed, what needs an explicit
+  confirmation and who executes it. `plan.apply_proposal` is the one operation in the
+  conversational capability set that requires a confirmation, answered by a fixed vocabulary
+  instead of a model call.
+- Migration `0016_conversations.sql`: durable threads, messages, turns and operation outcomes,
+  with `APPLYING` → `APPLIED` as the crash fence and `UNKNOWN_LOCAL` for a write whose outcome is
+  unknown. `pw integrity check` audits the relational invariants.
+
+### Changed
+
+- The README's quick start now leads with `uv run rings`; the `pw` commands remain documented as
+  the advanced/admin surface, unchanged.
+- `pw model status` no longer claims that natural-language interpretation is unimplemented.
+
+### Fixed
+
+- The CLI planner tests derived "next week" from hardcoded dates, so they failed on any day after
+  the week they were written; they now compute the window the way `pw plan week --next` does.
+- Three `pw doctor` tests graded the developer's own machine instead of the code, so any real
+  `config.toml` with a model section but no exported key made them fail.
+
+### Not in this phase
+
+Conversational external actions (mail send, eHall submission, approvals and executions) are
+deliberately absent and need their own ADR and phase. Conversation statements do not become
+`ConfirmedFact`s, conversation history is not indexed as knowledge, and there is no generic model
+tool loop.
 
 ## [1.0.0] - 2026-09-26
 

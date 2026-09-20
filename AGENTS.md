@@ -539,6 +539,21 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 ## 6. Phase 现状
 
+### 6.1 Tree Conversation Runtime 规则（Phase 10A，ADR-0033）
+
+- Tree conversation 是**编排层**：handler 必须调用既有 application service，不得写 SQL、
+  不得复制 Task / Planner 逻辑、不得建并行任务模型。
+- 模型只能提出 `ConversationCapabilityRegistry` 里显式存在的 typed operation；
+  操作集合是封闭的，新增操作 = 改 schema + registry + ADR，不是加一个字符串。
+- 模型不接触 service、数据库、shell、filesystem、browser、HTTP、`Approval` 或 executor；
+  没有 `ModelTool` / `ToolExecutor` / agent tool loop。
+- 相对民用时间只依据显式配置的 `[planning].timezone`；缺失就提问，禁止用宿主机时区兜底。
+- 对话中的陈述**不会**自动变成 `ConfirmedFact`；Fact confirmation 仍是人类流程。
+- 外部动作（`mail.send`、eHall、`action.*`、`approval.*`）不进入对话能力集；要接入必须先写
+  新的 ADR 并设计对话式审批。
+- 本地写入必须先落 `APPLYING`，中断即 `UNKNOWN_LOCAL`，永不自动重放；对话日志不记录原始
+  消息文本。
+
 **Phase 1 已完成（v0.1.0）**：durable event core。包括 SQLite 持久层与迁移系统
 （`store/db.py`、`store/migrations.py`、`store/events.py`）、`InboundEvent` 领域模型与
 状态机、数据库级去重、async repository 边界（ADR-0009）、`EventInbox` 幂等摄取入口、

@@ -132,6 +132,7 @@ def _run_with_argv(
 def _entry_point_for(name: str) -> tuple[str, str]:
     return {
         "pw": ("assistant.cli", "main"),
+        "rings": ("assistant.cli_chat", "main"),
         "assistantd": ("assistant.daemon", "main"),
         "growing-assistant-mcp": ("assistant.adapters.mcp.server", "main"),
     }[name]
@@ -158,9 +159,9 @@ def test_the_wheel_carries_the_migrations_and_the_static_assets(wheel: Path) -> 
     migrations = sorted(name for name in names if name.startswith("assistant/migrations/"))
     static = sorted(name for name in names if name.startswith("assistant/adapters/web/static/"))
 
-    assert len(migrations) == 15, migrations
+    assert len(migrations) == 16, migrations
     assert migrations[0].endswith("0001_initial.sql")
-    assert migrations[-1].endswith("0015_inbound_observations.sql")
+    assert migrations[-1].endswith("0016_conversations.sql")
     assert {Path(name).name for name in static} == {
         "app.js",
         "approve.html",
@@ -181,8 +182,8 @@ def test_the_sdist_carries_the_migrations(wheel: Path, sdist: Path) -> None:
 
     migrations = sorted(name for name in names if "/migrations/0" in name and name.endswith(".sql"))
 
-    assert len(migrations) == 15, migrations
-    assert any(name.endswith("migrations/0015_inbound_observations.sql") for name in migrations)
+    assert len(migrations) == 16, migrations
+    assert any(name.endswith("migrations/0016_conversations.sql") for name in migrations)
 
 
 def test_no_release_artifact_carries_secrets_or_runtime_state(wheel: Path, sdist: Path) -> None:
@@ -272,8 +273,12 @@ def test_the_installed_package_migrates_and_audits_a_fresh_runtime(
     assert status.returncode == 0, status.stdout + status.stderr
 
 
-def test_the_installed_package_declares_exactly_three_entry_points(installed: Path) -> None:
-    """The console scripts are the artifact's public interface, and three is the whole set."""
+def test_the_installed_package_declares_exactly_four_entry_points(installed: Path) -> None:
+    """The console scripts are the artifact's public interface, and four is the whole set.
+
+    `rings` is the primary conversational entry point (ADR-0033 §17); `pw` stays the
+    advanced/admin surface, and the daemon and the MCP server keep their v1 identifiers.
+    """
     completed = subprocess.run(
         [
             sys.executable,
@@ -295,7 +300,8 @@ def test_the_installed_package_declares_exactly_three_entry_points(installed: Pa
     assert entry_points == (
         "[('assistantd', 'assistant.daemon:main'), "
         "('growing-assistant-mcp', 'assistant.adapters.mcp.server:main'), "
-        "('pw', 'assistant.cli:main')]"
+        "('pw', 'assistant.cli:main'), "
+        "('rings', 'assistant.cli_chat:main')]"
     )
 
 
@@ -323,6 +329,6 @@ def test_the_installed_package_finds_its_migrations_and_assets(installed: Path) 
     assert completed.returncode == 0, completed.stderr
     migrations, count, static = completed.stdout.strip().splitlines()
     assert Path(migrations) == Path(installed) / "assistant" / "migrations"
-    assert count == "15"
+    assert count == "16"
     assert Path(static) == Path(installed) / "assistant" / "adapters" / "web" / "static"
     assert Path(static).is_dir()

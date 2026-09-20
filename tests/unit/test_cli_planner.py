@@ -8,7 +8,9 @@ temporary XDG tree, so the real database is never touched.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from typer.testing import CliRunner
 
@@ -16,8 +18,24 @@ from assistant.cli import app
 
 runner = CliRunner()
 
-NEXT_WEEK_MONDAY = "2026-09-21T09:00:00+08:00"
-DEADLINE = "2026-09-25T23:59:00+08:00"
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+"""The planner's week is the *user's* week, so "next week" is computed in the planning timezone.
+
+These tests used to hardcode 2026-09-21 as "next Monday", which made them pass only during the week
+they were written and fail every day after: `plan week --next` plans the week after today, so a
+deadline pinned to a specific date stops falling inside the window. The dates are now derived from
+the day the test runs, which is what the command actually promises.
+"""
+
+_TODAY = datetime.now(SHANGHAI).date()
+_DAYS_UNTIL_NEXT_MONDAY = (7 - _TODAY.weekday()) % 7 or 7
+NEXT_WEEK_MONDAY_DATE = _TODAY + timedelta(days=_DAYS_UNTIL_NEXT_MONDAY)
+NEXT_WEEK_MONDAY = f"{NEXT_WEEK_MONDAY_DATE.isoformat()}T09:00:00+08:00"
+NEXT_WEEK_MONDAY_LOCAL = f"{NEXT_WEEK_MONDAY_DATE.isoformat()}T09:00+08:00"
+NEXT_WEEK_MONDAY_1100 = f"{NEXT_WEEK_MONDAY_DATE.isoformat()}T11:00:00+08:00"
+DEADLINE = (
+    f"{(NEXT_WEEK_MONDAY_DATE + timedelta(days=4)).isoformat()}T23:59:00+08:00"
+)
 CONFIG = "\n".join(
     (
         "format_version = 1",
@@ -82,7 +100,7 @@ def test_plan_week_proposes_without_touching_plan_blocks(
     assert "timezone: Asia/Shanghai" in proposed.output
     assert "pw plan show" in proposed.output
     assert "pw plan apply" in proposed.output
-    assert "2026-09-21T09:00+08:00" in proposed.output
+    assert NEXT_WEEK_MONDAY_LOCAL in proposed.output
     assert "nothing scheduled" in calendar.output  # proposing is not applying
 
 
@@ -154,7 +172,7 @@ def test_manual_plan_blocks_are_shown_as_manual_and_never_replaced(tmp_path: Pat
             "--start",
             NEXT_WEEK_MONDAY,
             "--end",
-            "2026-09-21T11:00:00+08:00",
+            NEXT_WEEK_MONDAY_1100,
         ],
         env=_env(tmp_path),
     )

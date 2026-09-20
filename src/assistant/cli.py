@@ -33,6 +33,7 @@ from assistant import (
     cli_actions,
     cli_ask,
     cli_cases,
+    cli_chat,
     cli_commitments,
     cli_daemon,
     cli_ehall,
@@ -102,6 +103,7 @@ cli_commitments.register(app)
 cli_scheduler.register(app)
 cli_model.register(app)
 cli_interpreter.register(app)
+cli_chat.register(app)
 cli_ask.register(app)
 cli_mail.register(app)
 cli_cases.register(app)

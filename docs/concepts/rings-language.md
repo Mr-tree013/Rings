@@ -96,9 +96,14 @@ being recorded, one row at a time.
 
 **The main assistant and coordinator that faces the user.**
 
-The Tree talks to you through the surfaces that already exist: the CLI (`pw`), the trusted-LAN mobile
-page, the local MCP server, and whatever conversational surface comes later. It coordinates Roots,
-Seeds, Branches, Leaves and Rings.
+The Tree talks to you through the surfaces that already exist: the conversation (`rings`, and
+`pw chat` for the same runtime), the CLI (`pw`), the trusted-LAN mobile page and the local MCP
+server. It coordinates Roots, Seeds, Branches, Leaves and Rings.
+
+The conversation is the Tree's primary surface and still only a surface: a sentence is interpreted
+into a closed set of typed local operations, and the deterministic runtime — never the model —
+decides which of them is allowed, which one needs your confirmation, and which one executes. The
+daemon and the other surfaces keep their existing roles.
 
 > Tree is not an unrestricted autonomous agent.
 

@@ -84,8 +84,32 @@ uv run assistantd
 然后在第二个终端中运行：
 
 ```bash
-uv run pw status
+uv run rings
+uv run pw status      # 高级接口：状态总览
 ```
+
+日常入口是对话，不是命令：
+
+```text
+Tree > 你好，我是 Tree。今天想安排什么？
+You > 明天下午三点提醒我交软件工程报告
+Tree > 已创建任务「交软件工程报告」，截止 2026-09-21 15:00（+08:00）。
+You > 帮我安排一下这周
+Tree > 周计划提案（3 个时间块）。要应用这个计划吗？回复「可以」我就写进计划。
+You > 可以
+Tree > 已应用周计划提案：新增 3 个时间块，替换 0 个。
+```
+
+Tree 用自然语言处理本地日常：任务、日历、工作记录、周计划和资料问答。外部动作（发邮件、
+eHall 提交）**不会**从对话里执行，它们仍然必须走 `pw` 的审批链。
+
+| 入口 | 用途 |
+| --- | --- |
+| `uv run rings` | 对话式主入口，日常使用 |
+| `uv run pw chat` | 进入同一个对话运行时 |
+| `pw …` | 高级 / 管理员接口：完整命令集 |
+| `assistantd` | 后台运行时：索引、提醒、邮件、监控、手机页 |
+| `growing-assistant-mcp` | 编辑器集成 |
 
 示例配置在你主动修改之前不会启用任何外部能力：Mail、eHall、Mobile 和 MCP 默认关闭，也没有配置任何 watcher。
 
@@ -142,6 +166,7 @@ uv run pw backup verify ~/assistant-backup.gab
 
 | 主题 | 文档 |
 | --- | --- |
+| 对话式主入口：Tree Conversation | [docs/guides/conversation.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/conversation.md) |
 | 快速上手、配置、Credentials、WSL 启动 | [docs/guides/getting-started.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/getting-started.md) |
 | Rings / Tree 概念体系 | [docs/concepts/rings-language.md](https://github.com/Mr-tree013/Rings/blob/main/docs/concepts/rings-language.md) |
 | Tasks、Calendar、Work Sessions、Weekly Planning | [docs/guides/planning.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/planning.md) |
