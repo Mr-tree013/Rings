@@ -91,7 +91,10 @@ def model_status() -> None:
         "present" if bootstrap.model_api_key() is not None else "[yellow]missing[/yellow]",
     )
     console.print(table)
-    console.print("Natural-language interpretation is not implemented yet.")
+    console.print(
+        "The model proposes and answers only: `pw interpret` previews one command, and a model "
+        "never executes or approves anything."
+    )
 
 
 @model_app.command("test")

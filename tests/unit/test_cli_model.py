@@ -128,7 +128,9 @@ def test_model_status_reports_the_configuration_without_the_key(tmp_path: Path) 
     assert "4096" in result.output
     assert "120s" in result.output
     assert "missing" in result.output
-    assert "not implemented yet" in result.output
+    # The pre-Phase-4B banner claimed interpretation did not exist; `pw interpret` does.
+    assert "not implemented yet" not in result.output
+    assert "never executes or approves anything" in result.output
 
 
 def test_model_status_reports_a_present_key_without_printing_it(tmp_path: Path) -> None:
