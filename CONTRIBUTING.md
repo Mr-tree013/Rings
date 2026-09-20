@@ -49,7 +49,9 @@ uv run mypy src
 uv run pytest
 ```
 
-All three must pass. If your change touches packaging, migrations or the release contract, also run:
+All three must pass. Pull requests are expected to pass the GitHub Actions CI workflow, which runs
+the same gates on Python 3.13. If your change touches packaging, migrations or the release contract,
+also run:
 
 ```bash
 uv lock --check

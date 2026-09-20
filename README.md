@@ -1,7 +1,10 @@
-# Growing Personal Assistant
+# Rings
 
-A local-first personal operations system that observes, understands, plans, executes explicitly
-approved actions, and learns through human-reviewed state.
+A local-first personal operations system that grows with you.
+
+[![CI](https://github.com/Mr-tree013/Rings/actions/workflows/ci.yml/badge.svg)](https://github.com/Mr-tree013/Rings/actions/workflows/ci.yml)
+
+让每天的叶子，长成年轮。
 
 **Version:** 1.0.0
 **Reference environment:** Linux / WSL + Python 3.13
@@ -14,6 +17,29 @@ fingerprinted action.
 It is not a general computer agent. There is no shell, no filesystem control, no generic browser and
 no generic HTTP client in it, and the high-risk university errands are absent from its capability set
 rather than forbidden by a prompt.
+
+## The Tree Model
+
+Rings grows in rings. The words below are the product language for that idea; the technical
+architecture, and the frozen domain names behind it, are unchanged. The full vocabulary lives in
+[docs/concepts/rings-language.md](docs/concepts/rings-language.md).
+
+| Word | Meaning |
+| --- | --- |
+| **Roots** | Long-lived, traceable personal sources of truth: your knowledge roots, the provenance of every correction, and the confirmed facts they produced. |
+| **Seeds** | The intentions and commitments you plant deliberately — tasks, deadlines, calendar events and planning intent. |
+| **Branches** | The controlled capability areas the Tree can call on (mail, planning, knowledge, watchers, execution, learning, operations, mobile, MCP). Branches are capability modules, not autonomous sub-agents. |
+| **Leaves** | What arrives each day: mail, observations, pasted or forwarded text, and the events they become. A Leaf may be interpreted, but it never becomes a commitment or an action by itself. |
+| **Rings** | The growth record that accumulates over time: work sessions, executions, fact history, reviewed playbooks and proposals. |
+| **Tree** | The coordinator you talk to, through the CLI, the LAN mobile page, the local MCP server and future conversational surfaces. It is not an unrestricted autonomous agent. |
+
+The Tree coordinates Roots, Seeds, Branches, Leaves and Rings, and never bypasses an `ActionRequest`,
+a human `Approval`, an `ExecutionRun`, fact confirmation, playbook review or the capability registry.
+
+Rings is the public project name. Some v1 command, package and runtime identifiers retain the
+historical `growing-assistant` naming for compatibility: the Python package is still `assistant`, the
+distribution is still `growing-assistant`, and the `pw`, `assistantd` and `growing-assistant-mcp`
+entry points, the XDG directories and the `GROWING_ASSISTANT_*` environment variables are unchanged.
 
 ## Product model
 
@@ -68,7 +94,7 @@ services, and closing one changes nothing about what the system knows.
 | LAN mobile control plane | A trusted-LAN HTTP page for review and approval, off by default, with hashed single-use pairing tokens and no execution endpoint. |
 | Configured public HTTPS watchers | Fixed URLs from configuration only, no redirects, no JavaScript, no credentials, no automatic task creation. |
 | Manual / QQ-forwarded observations | `pw ingest text` stores pasted or forwarded text durably and queues it for bounded analysis. |
-| Human-confirmed personal facts | `Correction → FactCandidate → ConfirmedFact`, where only an explicit CLI confirmation makes a fact trusted. |
+| Human-confirmed personal facts | `Correction` → `FactCandidate` → `ConfirmedFact`, where only an explicit CLI confirmation makes a fact trusted. |
 | Reviewed non-executing Playbooks | A successful run can be named as a candidate, dry-run replayed, and promoted into a reference blueprint that does not execute. |
 | Controlled local MCP / VS Code integration | A local stdio server that exposes read-only resources by default, with optional bounded task writes and optional bounded knowledge excerpts. |
 | Integrity checking | `pw integrity check` audits the runtime database, its content objects and the configured roots without repairing anything. |
@@ -940,6 +966,9 @@ provider behaviour is exercised through mocked transports. That guard is intenti
 needs the network is a test that fails for the wrong reason, and a test that spends provider credit
 is not a unit test.
 
+Every pull request and push to main runs the repository quality gates in GitHub Actions
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
 Release gates additionally build the artifact and check the lock file:
 
 ```bash
@@ -986,7 +1015,7 @@ uv run pw --version          # pw 1.0.0
 uv run assistantd --version  # assistantd 1.0.0
 ```
 
-There is no CI badge on this page, because v1 does not run a hosted CI service for the release; the
-gates above are run locally. For the full v1 contract and how the project got here, see
+Rings has no coverage, license or package-registry badge, because no such service is configured. For
+the full v1 contract and how the project got here, see
 [docs/releases/1.0.0.md](docs/releases/1.0.0.md) and [CHANGELOG.md](CHANGELOG.md); for moving an older
 runtime forward, see [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md).

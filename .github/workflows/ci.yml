@@ -1,0 +1,65 @@
+name: CI
+
+# The repository quality gate. It runs exactly the commands a contributor runs locally, on the
+# reference runtime (Linux + Python 3.13). It needs no secrets, no credentials and no external
+# service: the test suite refuses outbound sockets on purpose.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only: this workflow never writes to the repository, a release or a package registry.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.13"
+          enable-cache: false
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Install the locked dependencies
+        run: uv sync --frozen
+
+      - name: Lock file is current
+        run: uv lock --check
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest
+
+      - name: No whitespace damage
+        run: git diff --check
+
+      - name: Build the wheel and the sdist
+        run: |
+          rm -rf dist
+          uv build
+
+      - name: The build left the tracked tree untouched
+        run: test -z "$(git status --porcelain --untracked-files=no)"

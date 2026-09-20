@@ -520,6 +520,23 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 
 **禁止把 `Case`、`Task`、`ScheduledJob` 混用。**
 
+### 5.1 公开产品语言（Rings，post-v1）
+
+- The public product name is **Rings**。
+- **Tree** is the user-facing coordinator metaphor.
+- **Roots**、**Seeds**、**Branches**、**Leaves** 与 **Rings** 是 product-language concepts；它们
+  **不替代**上述冻结的领域术语。
+- Do not rename `Task`、`Case`、`ActionRequest`、`Approval`、`ExecutionRun`、`FactCandidate`、
+  `ConfirmedFact`、`Playbook` 或其它既有 domain type，只为了让命名贴合 tree 比喻。
+- **Branches are capability modules, not autonomous sub-agents.**
+- **Tree never bypasses capability, approval, fact-confirmation or playbook-review boundaries.**
+- 这些词只用于 README、`docs/concepts/rings-language.md` 与对用户的解释：不在代码里新增
+  `Seed` / `Ring` / `BranchAgent` / `SubAgent` / `AgentRegistry`，也不新增 table 或 migration。
+- Compatibility 标识保持冻结，不因品牌改名：包名 `assistant`、distribution `growing-assistant`、
+  `pw` / `assistantd` / `growing-assistant-mcp`、XDG 目录 `growing-assistant`、
+  `GROWING_ASSISTANT_*` 环境变量、SQLite 表名、migration 名、event type、action type 与 MCP
+  resource/tool 名。
+
 ## 6. Phase 现状
 
 **Phase 1 已完成（v0.1.0）**：durable event core。包括 SQLite 持久层与迁移系统
@@ -767,8 +784,10 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。
 - 不重写历史、不强推、不删除用户已有提交。
 - `uv.lock` 必须入库；不要提交其它锁文件。
-- **当前没有配置 git remote，也从未推送**：按阶段在本地提交并打 annotated tag，等用户明确要求时
-  再一次性上传（步骤见 `docs/ops/remote-upload.md`）。不要擅自 `git remote add` 或 `git push`。
+- **已发布到 GitHub**：`origin` = `ssh://git@ssh.github.com:443/Mr-tree013/Rings.git`，本地 `main`
+  与 `origin/main` 同步，`v1.0.0` 与全部历史 tag 已推送。只做用户明确要求的推送；不要
+  `git push --force`、不要改写或重建已发布的 tag、不要擅自替换既有 remote
+  （步骤见 `docs/ops/remote-upload.md`）。
 - 阶段收尾必须：工作树 clean、tag 已打且信息明确、提交里不含 `*.db`/`*.sqlite3`/`secrets/`/
   `state/`/个人 Vault；并定期在仓库外做 `git bundle` 备份。
 - 已发布的 tag（`v0.0.1`、`v0.1.0`、`v0.2.0`）永不改写，也不要在其上追加提交。

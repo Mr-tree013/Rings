@@ -168,6 +168,32 @@ classification
 
 禁止把 `Case`、`Task`、`ScheduledJob` 混用。
 
+### 6.1 Product Language（公开概念词汇，post-v1）
+
+公开产品名是 **Rings**。围绕这个名字存在一组**公开概念词汇**：`Roots`、`Seeds`、`Branches`、
+`Leaves`、`Rings`、`Tree`（完整定义见 `docs/concepts/rings-language.md`）。
+
+这些词是 **public conceptual vocabulary**，用于 README、产品说明与用户对话；它们**不是
+replacement domain model**：
+
+- 不新增、也不替换任何 domain entity。§6 的全部正式技术名（`Task`、`Deadline`、
+  `CalendarEvent`、`PlanBlock`、`WorkSession`、`Case`、`ScheduledJob`、`InboundEvent`、
+  `ActionRequest`、`Approval`、`ExecutionRun`、`FactCandidate`、`ConfirmedFact`、
+  `PlaybookCandidate`、`Playbook`）**全部保留**：代码类型名、表名、迁移名、event type 与 action
+  type 都不因产品语言而改名。
+- 概念词汇只做映射，不引入新概念：Roots ↔ 知识 root 与来源可追溯性（catalog / 索引 /
+  `Correction` provenance / `ConfirmedFact` 历史）；Seeds ↔ commitment 与 planning intent；
+  Branches ↔ capability modules（**不是 autonomous sub-agent**）；Leaves ↔ 外部输入
+  （`MailMessage` / `WebObservation` / `ManualInput` / `InboundEvent`）；Rings ↔ 已有的 durable
+  history（`WorkSession` / `ExecutionRun` / fact supersession / reviewed `Playbook` / 提案与通知）；
+  Tree ↔ 面向用户的 coordinator，通过 CLI / LAN mobile / MCP 交互。
+- `Tree` **不是**无限制的 autonomous agent，也没有新的权限：`ActionRequest`、人工 `Approval`、
+  `ExecutionRun`、fact confirmation、playbook review 与 capability registry 这些边界（§7）对产品
+  语言层同样成立，产品语言不得被用来描述一个绕过审批的执行者。
+- 兼容性标识属于 v1 compatibility surface，保持冻结：Python 包 `assistant`、distribution
+  `growing-assistant`、`pw` / `assistantd` / `growing-assistant-mcp`、XDG 目录
+  `growing-assistant`、`GROWING_ASSISTANT_*` 环境变量、MCP resource/tool 名。
+
 ## 7. 四条不可破坏的安全约束
 
 ### 7.1 幂等由代码与持久状态保证
