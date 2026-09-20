@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.0.0] - 2026-09-26
+
+Growing Personal Assistant v1.0: the release that freezes the system. Phase 9B adds **no**
+capability — it makes the runtime single-instance, private by default, strict about the artifacts it
+produces, honest about what "upgrade" means, installable outside a checkout, and covered by release
+gates that fail if any of that drifts.
+
+### Added
+
+- Single-instance daemon (ADR-0032): `assistantd` holds `flock(LOCK_EX|LOCK_NB)` on
+  `<runtime>/assistantd.lock` (mode `0600`) for its whole lifetime, so exactly one daemon may serve
+  one runtime data directory. A second instance exits non-zero with
+  `Another assistantd instance is already running for this runtime data directory.` *before* any
+  supervisor starts; a lock file whose lock is not held (a machine that lost power) never blocks
+  startup. `pw daemon status` answers from the same lock and labels the pid/start-time header as
+  informational, and `assistantd --version` now exists, answers without opening anything and reports
+  an unknown argument instead of starting.
+- Private runtime permissions: directories the project creates (runtime root, mail raw, web
+  snapshots, restore staging, eHall profile, knowledge index cache) are `0700`, and files it creates
+  (runtime database, raw mail objects, web snapshots, backup archives and their temporaries, the
+  daemon lock, restored content) are `0600` — verified under `umask 0`, so the modes come from the
+  project rather than the shell. Existing files and user-owned directories are never rewritten:
+  `pw integrity check` reports them in a new `permissions` section (`FAIL` for a world-writable
+  database or content root, `WARN` for group/other bits, nothing repaired).
+- Strict `.gab` end-of-archive: the final ZIP end-of-central-directory record must sit at the very
+  end of the file with an empty comment, and the central directory must end exactly where it begins.
+  `valid.gab + junk`, `valid.gab + another-archive` and an archive carrying a ZIP comment are now
+  invalid for both `pw backup verify` and `pw backup restore` (this closes the known limit recorded
+  in Phase 9A). Zip64 archives stay supported.
+- Migration forward compatibility: a runtime whose `schema_migrations` contains a version this build
+  does not ship — or a known version whose recorded name was rewritten — is refused with
+  `DatabaseMigrationIncompatible` by bootstrap, by `assistantd` and by mutating commands. The
+  read-only `pw integrity check` reports `INCOMPATIBLE`/`FAIL` and changes nothing. Nothing is
+  ignored and no downgrade path exists.
+- Upgrade matrix coverage: every migration prefix (`0001` … `0015`) is created and upgraded to the
+  current schema, and six representative eras (`0001` events, `0003` storage, `0006` commitments and
+  scheduler, `0009` mail and drafts, `0012` cases and mobile, `0015` facts and observations) are
+  seeded with rows of their era, upgraded, and checked for preserved data, integrity, foreign keys
+  and a usable schema.
+- Installable release artifact: the wheel carries `assistant/migrations/0001–0015` and the mobile
+  web assets, and resolves them from the installed package, so an installed `pw`/`assistantd` can
+  migrate and serve a runtime with no checkout. Release tests build the wheel and sdist, check their
+  contents (no tests, no `.env`, no runtime state, no fixture sentinels), install the wheel into a
+  temporary target, and run all three console entry points, `pw status`, `pw doctor` and
+  `pw integrity check` from outside the source tree.
+- Safe-by-default sample configuration: `docs/examples/config.toml` now parses with no mail account,
+  no watcher target, `ehall.enabled = false`, `mobile.enabled = false`, `mcp.enabled = false`,
+  `mcp.write_scope = "none"` and `mcp.expose_knowledge = false`, and composes no external executor at
+  all. Every capability it documents is commented out with the environment variable it would need.
+- Release gates: `tests/release/` adds upgrade-matrix, future-database, config-safety, daemon
+  subprocess lifecycle, permission, archive-boundary, package-smoke, CLI/version-surface,
+  capability-freeze, stress-invariant, restart-safety, fresh/historical/backup-release acceptance and
+  privacy-sweep coverage. The stress suites drive 1 000 events, 500 scheduled jobs and hundreds of
+  commitments with a `FakeClock`, and assert dedup, leash/fencing, notification uniqueness and
+  bounded read surfaces rather than timings.
+- Documentation for a first release: README quick start, product boundary and known limitations;
+  `docs/upgrade-to-v1.md`; `docs/releases/1.0.0.md`; Windows/WSL daemon startup example; and an
+  ADR-0032 runtime/release contract that freezes the rules above.
+
+### Changed
+
+- `pw status` reports the v1 capability set explicitly (execution names both production executors,
+  external inputs include watchers and manual text, and new `learning`/`mobile`/`operational` rows),
+  without claiming autonomy, automatic execution, autofill or cloud sync.
+- `pw doctor` now distinguishes an incompatible migration history (and fails) and points at
+  `pw integrity check` for the full audit; it remains local and network-free.
+- Duplicate-member warnings the archive tests provoke deliberately are asserted with
+  `pytest.warns`, so a green test run has no unexpected warnings.
+
+### Security
+
+- Restoring an archive cannot widen permissions: extracted content is written `0600` inside `0700`
+  staging, and ZIP external attributes are never applied.
+- The release suite stays network-free: fake or in-process adapters only, and installing the built
+  wheel uses `--no-deps --target` instead of a package index.
+
+### Operational hardening (Phase 9A, first released in 1.0.0)
+
 Phase 9A: operational hardening before v1.0. No new business capability, no new external
 integration, no schema change — the runtime can now be inspected without touching it, backed up
 consistently, and recovered into a fresh directory that comes back *without* the authorization it
