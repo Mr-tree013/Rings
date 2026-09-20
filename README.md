@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 4 进行中（v0.4.0：model 边界 + 自然语言命令预览）
+## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信）
 
 已完成：
 
@@ -107,6 +107,35 @@ pw ask "What is the deadline for my SE lab?"
 - `pw search` 仍然是不调用模型的本地搜索。
 **尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
 conversation memory、answer persistence / FactCandidate、web search、mail/eHall/browser。
+
+收信（Phase 5A）：**已实现** durable IMAP inbound sync —— 配置 `[[mail.accounts]]`（host/port/
+username/mailbox，仅 TLS），凭据只从环境变量读取：
+
+```bash
+export GROWING_ASSISTANT_MAIL_SMAIL_PASSWORD='...'
+pw mail sync              # 显式连接 IMAP 服务器并同步（会联网）
+pw mail accounts          # 只读：账号与凭据是否存在
+pw mail status            # 只读：UIDVALIDITY / cursor / 已存邮件数
+pw mail messages          # 只读：已存邮件列表（不打印正文）
+pw mail show MESSAGE      # 只读：单封邮件详情
+```
+
+要点：
+
+- 邮件位置身份是 `(account, mailbox, uidvalidity, uid)`，**UID 从不单独作为持久身份**；服务器
+  重建邮箱（UIDVALIDITY 变化）时执行 bounded reconciliation，能确认是同一封时复用稳定 UUID，
+  确认不了（例如同一 Message-ID 但内容不同）就新建并记录 conflict。
+- cursor 只推进到**本批次已 durable 处理**的 UID；一批（messages + locations + attachments +
+  cursor）在一个事务里完成，失败整体回滚，所以崩溃只会重放、不会跳过。
+- 原始 `.eml` 按 SHA-256 内容寻址保存在 runtime data 目录（`~/.local/share/growing-assistant/
+  mail/raw/...`），不进 repo、不进 vault、不进 cache；附件只保存 metadata（文件名/类型/大小/
+  SHA-256），不落地、不执行。
+- 每封邮件最终都会 bridge 成恰好一个 `InboundEvent`（`source=mail:<account>`、
+  `event_type=mail.message.received`、`external_id=message:<UUID>`）；event 里只有 message UUID
+  和 account id，**不含正文/标题/附件**。两个 crash 窗口都会在后续 sync 中修复。
+- 只读邮箱：`select(readonly=True)` + `BODY.PEEK`，同步不会把邮件标记为已读。
+**尚未实现**：邮件分类、thread UI、正文索引/问答、回复起草、SMTP 发送与审批流程、事件删除同步
+（server-side deletion）、attachment materialization。
 
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。

@@ -11,6 +11,12 @@ from assistant.adapters.config.toml_config import TomlConfigLoader, default_conf
 from assistant.domain.config import (
     DEFAULT_DEADLINE_REMINDER_OFFSETS,
     DEFAULT_INDEX_INTERVAL_SECONDS,
+    DEFAULT_MAIL_INITIAL_FETCH_LIMIT,
+    DEFAULT_MAIL_MAX_MESSAGE_BYTES,
+    DEFAULT_MAIL_MAX_MESSAGES_PER_POLL,
+    DEFAULT_MAIL_POLL_SECONDS,
+    DEFAULT_MAIL_RECONCILIATION_WINDOW,
+    DEFAULT_MAIL_TIMEOUT_SECONDS,
     DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL_NAME,
     DEFAULT_MODEL_PROVIDER,
@@ -462,3 +468,94 @@ def test_the_shipped_example_configuration_is_valid() -> None:
     assert config.model.provider == DEFAULT_MODEL_PROVIDER
     assert config.planning is not None
     assert config.reminders.deadline_offsets_minutes == (1440, 120)
+
+
+# ------------------------------------------------------------------------------- mail
+
+
+def _account(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "id": "smail",
+        "host": "imap.example.edu",
+        "username": "student@example.edu",
+        "mailbox": "INBOX",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_a_missing_mail_section_means_no_accounts() -> None:
+    config = AssistantConfig.from_mapping(_mapping())
+
+    assert config.mail.accounts == ()
+    assert config.mail.enabled_accounts == ()
+    assert config.mail.poll_interval_seconds == DEFAULT_MAIL_POLL_SECONDS
+    assert config.mail.max_messages_per_poll == DEFAULT_MAIL_MAX_MESSAGES_PER_POLL
+    assert config.mail.initial_fetch_limit == DEFAULT_MAIL_INITIAL_FETCH_LIMIT
+    assert config.mail.reconciliation_window == DEFAULT_MAIL_RECONCILIATION_WINDOW
+    assert config.mail.max_message_bytes == DEFAULT_MAIL_MAX_MESSAGE_BYTES
+    assert config.mail.timeout_seconds == DEFAULT_MAIL_TIMEOUT_SECONDS
+
+
+def test_a_valid_mail_section_is_parsed_and_order_is_preserved() -> None:
+    config = AssistantConfig.from_mapping(
+        _mapping(
+            mail={
+                "accounts": [
+                    _account(id="smail"),
+                    _account(id="personal", port=143, enabled=False),
+                ]
+            }
+        )
+    )
+
+    assert [account.id for account in config.mail.accounts] == ["smail", "personal"]
+    assert config.mail.accounts[1].port == 143
+    assert config.mail.accounts[1].enabled is False
+    assert [account.id for account in config.mail.enabled_accounts] == ["smail"]
+    assert config.mail.find("personal") is not None
+    assert config.mail.find("nope") is None
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        {"accounts": [_account(id="Smail")]},
+        {"accounts": [_account(id="student@example.edu")]},
+        {"accounts": [_account(host="  ")]},
+        {"accounts": [_account(username="")]},
+        {"accounts": [_account(mailbox=" ")]},
+        {"accounts": [_account(port=0)]},
+        {"accounts": [_account(port=70000)]},
+        {"accounts": [_account(password="hunter2")]},
+        {"accounts": [_account(secret="hunter2")]},
+        {"accounts": [_account(), _account()]},  # duplicate id
+        {"accounts": [_account(enabled="yes")]},
+        {"poll_interval_seconds": 5},
+        {"poll_interval_seconds": 3601},
+        {"max_messages_per_poll": 0},
+        {"max_messages_per_poll": 1001},
+        {"initial_fetch_limit": 0},
+        {"reconciliation_window": 0},
+        {"max_message_bytes": 1024},
+        {"max_message_bytes": 200 * 1024 * 1024},
+        {"timeout_seconds": 5},
+        {"timeout_seconds": 301},
+        {"unknown": 1},
+        {"accounts": "smail"},
+    ),
+)
+def test_invalid_mail_sections_are_rejected(section: dict[str, object]) -> None:
+    with pytest.raises(InvalidAssistantConfig):
+        AssistantConfig.from_mapping(_mapping(mail=section))
+
+
+def test_a_mail_password_key_is_rejected_by_name() -> None:
+    """The strict parser is what keeps app passwords out of `config.toml`."""
+    with pytest.raises(InvalidAssistantConfig) as excinfo:
+        AssistantConfig.from_mapping(
+            _mapping(mail={"accounts": [_account(password="hunter2")]})
+        )
+
+    assert "password" in str(excinfo.value)
+    assert "hunter2" not in str(excinfo.value)

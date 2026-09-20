@@ -8,6 +8,7 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -17,9 +18,14 @@ from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
+from assistant.adapters.mail.credentials import require_password
+from assistant.adapters.mail.imap import ImapMailSource
+from assistant.adapters.mail.parser import Rfc822MailParser
+from assistant.adapters.mail.raw_store import RawMailStore
 from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.system_clock import SystemClock
 from assistant.application.calendar_service import CalendarService
+from assistant.application.event_inbox import EventInbox
 from assistant.application.greedy_planner import GreedyPlanner
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.grounded_context import GroundedContextBuilder
@@ -28,6 +34,7 @@ from assistant.application.interpreter import InterpreterService
 from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
+from assistant.application.mail_sync import MailSyncService
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.retry import RetryPolicy
@@ -37,14 +44,27 @@ from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.structured_model import StructuredModel
 from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
-from assistant.domain.config import AssistantConfig, ModelConfig, SchedulerConfig
-from assistant.domain.errors import ModelCredentialsMissing, ModelNotConfigured
+from assistant.domain.config import (
+    DEFAULT_MAIL_TIMEOUT_SECONDS,
+    AssistantConfig,
+    MailAccountConfig,
+    ModelConfig,
+    SchedulerConfig,
+)
+from assistant.domain.errors import (
+    MailConfigurationError,
+    ModelCredentialsMissing,
+    ModelNotConfigured,
+)
 from assistant.ports.clock import Clock
+from assistant.ports.mail_source import MailSource
 from assistant.ports.model import ModelPort
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
+from assistant.store.events import SqliteEventRepository
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
+from assistant.store.mail import SqliteMailRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
@@ -66,6 +86,71 @@ def runtime_database(clock: Clock) -> Database:
 def catalog_repository(database: Database) -> SqliteCatalogRepository:
     """The host catalog store."""
     return SqliteCatalogRepository(database)
+
+
+def mail_repository(database: Database) -> SqliteMailRepository:
+    """Durable inbound mail: messages, locations, attachments and the mailbox cursor."""
+    return SqliteMailRepository(database)
+
+
+def raw_mail_store() -> RawMailStore:
+    """Content-addressed raw message storage under the runtime data directory."""
+    return RawMailStore(AppPaths.resolve().runtime / "mail")
+
+
+def event_inbox(database: Database, clock: Clock) -> EventInbox:
+    """The single ingestion entry point every external source writes through."""
+    return EventInbox(SqliteEventRepository(database, clock), clock)
+
+
+def mail_source(
+    account: MailAccountConfig, *, timeout_seconds: int = DEFAULT_MAIL_TIMEOUT_SECONDS
+) -> MailSource:
+    """Build the IMAP source for one account.
+
+    The credential is read here, at composition time, and never stored on the config object.
+
+    Raises:
+        MailCredentialsMissing: the environment holds no secret for this account.
+    """
+    return ImapMailSource(
+        host=account.host,
+        port=account.port,
+        username=account.username,
+        password=require_password(account.id),
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def mail_sync_service(
+    config: AssistantConfig,
+    clock: Clock,
+    database: Database,
+    *,
+    source_factory: Callable[[MailAccountConfig], MailSource] | None = None,
+) -> MailSyncService:
+    """The daemon's mail service.
+
+    Raises:
+        MailConfigurationError: the host configured no mail accounts.
+    """
+    if not config.mail.accounts:
+        raise MailConfigurationError("no mail accounts are configured")
+    factory = source_factory or (
+        lambda account: mail_source(
+            account, timeout_seconds=config.mail.timeout_seconds
+        )
+    )
+    return MailSyncService(
+        config.mail,
+        mail_repository(database),
+        event_inbox(database, clock),
+        raw_mail_store(),
+        clock,
+        factory,
+        Rfc822MailParser(),
+        waiter=AsyncioIntervalWaiter(),
+    )
 
 
 def catalog_service(
@@ -348,14 +433,19 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "event_inbox",
     "grounded_answer_service",
     "grounded_context_builder",
     "interpreter_service",
     "knowledge_indexer",
+    "mail_repository",
+    "mail_source",
+    "mail_sync_service",
     "model_adapter",
     "model_api_key",
     "planner_service",
     "planning_repository",
+    "raw_mail_store",
     "require_model_config",
     "rolling_replan_requester",
     "runtime_database",

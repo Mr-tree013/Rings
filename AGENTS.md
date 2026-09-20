@@ -173,6 +173,25 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Knowledge-answer paths are read-only and must not import mutation services.**
   `pw ask` 路径不得 import store/adapters/sqlite/httpx，也不得 import Task/Calendar/Work/
   Planner/Scheduler/Interpreter service；不新增 durable state、不写 index。
+- **IMAP UIDs are meaningful only together with account, mailbox, and UIDVALIDITY.**
+  邮件位置身份固定为 `(account_id, mailbox_name, uidvalidity, uid)` 且 DB UNIQUE；禁止把 UID 当成
+  全局持久身份。
+- **A mailbox cursor must never be described as a permanent exactly-once guarantee.**
+  cursor 只是增量优化：只能推进到本批次已 durable 处理的 UID；UIDVALIDITY 变化时做 bounded
+  reconciliation，且文档不得声称“永不重复/永不漏”。
+- **Inbound mail content, HTML, headers, and attachment names are untrusted data.**
+  正文/标题/HTML/附件名只存储、不渲染、不执行；HTML 只做最小 text extraction，附件不落地。
+- **Mail synchronization must not mark messages read.** 只读 select + `BODY.PEEK`；禁止
+  `BODY[]`/`RFC822` 之类会设置 `\Seen` 的取法。
+- **A persisted MailMessage must eventually be bridged to exactly one logical InboundEvent
+  through durable reconciliation.**
+  每轮 sync 都要修复未 link 的 message（bounded），两个 crash 窗口都必须可恢复；`InboundEvent`
+  只带 message UUID/account id，绝不含正文。
+- **Mail passwords and app passwords are environment-only secrets.**
+  `GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_PASSWORD`；config 里的 `password`/`secret` 键必须被拒绝，
+  secret 不进入 domain object、日志或异常。
+- **Phase 5A mail ingress is receive-only; no SMTP capability exists.** 不分类、不起草、不发送、
+  不建 Task/Case。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -265,6 +284,13 @@ deterministic retrieval（question 原样检索，miss 后按本地关键词回�
 （每 chunk 4000 / 总 24000 字符、按 rank 编号、`(root_id, chunk_id)` 去重）、logical URI +
 SourceSpan 保留、strict grounded-answer schema（每个 segment 必须有 citation）、本地
 citation-id 校验、来源元数据本地解析、零证据不调用模型、无一般知识回退、`pw ask`（只读）。
+
+**Phase 5A 已完成（仍是 0.4.0）**：durable IMAP inbound mail（ADR-0020）：`[mail]` 配置 +
+环境变量凭据、TLS-only IMAP adapter（read-only select / `BODY.PEEK`）、RFC822 parser、
+content-addressed raw `.eml` 存档、`(account, mailbox, uidvalidity, uid)` 位置身份、
+bounded initial history、增量 cursor、UIDVALIDITY reconciliation、attachment metadata、
+MailMessage → InboundEvent bridge（两个 crash 窗口可恢复）、daemon `mail-sync` service、
+`pw mail accounts|sync|status|messages|show`。仍无分类/起草/发送/SMTP，也未启动 EventWorker。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 

@@ -32,10 +32,12 @@ from assistant import (
     cli_ask,
     cli_commitments,
     cli_interpreter,
+    cli_mail,
     cli_model,
     cli_scheduler,
 )
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
+from assistant.adapters.mail.credentials import available_password as available_mail_password
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
 from assistant.cli_support import console, error_console, fail
 from assistant.domain.catalog import CatalogScanResult
@@ -83,6 +85,7 @@ cli_scheduler.register(app)
 cli_model.register(app)
 cli_interpreter.register(app)
 cli_ask.register(app)
+cli_mail.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -127,6 +130,23 @@ def _model_diagnostic(config: AssistantConfig) -> tuple[str, str]:
     )
 
 
+def _mail_diagnostics(
+    config: AssistantConfig,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Report configured mail accounts and credential presence. Never contacts a server."""
+    accounts = config.mail.accounts
+    if not accounts:
+        return "not configured", []
+    rows: list[tuple[str, str]] = []
+    for account in accounts:
+        if not account.enabled:
+            rows.append((account.id, "configured (disabled)"))
+            continue
+        present = available_mail_password(account.id) is not None
+        rows.append((account.id, "present" if present else "[red]missing[/red]"))
+    return f"{len(accounts)} configured", rows
+
+
 def _scheduler_store_available(database_file: Path) -> bool:
     """Read-only capability probe: are the scheduler tables migrated in?
 
@@ -163,6 +183,7 @@ def status() -> None:
     )
     table.add_row("interpreter", "natural-language command preview (never executes)")
     table.add_row("execution", "structured CLI confirmation required")
+    table.add_row("external inputs", "IMAP inbound mail (receive-only)")
     table.add_row("agent execution", "[yellow]not implemented[/yellow]")
     table.add_row(
         "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
@@ -239,6 +260,10 @@ def doctor() -> None:
         model_row = _model_diagnostic(config)
         table.add_row("model config", model_row[0])
         table.add_row("model API key", model_row[1])
+        mail_rows = _mail_diagnostics(config)
+        table.add_row("mail accounts", mail_rows[0])
+        for label, value in mail_rows[1]:
+            table.add_row(f"{label} credential", value)
     else:
         table.add_row("config", f"[red]ERROR[/red] ({config_error})")
     console.print(table)
@@ -255,6 +280,8 @@ def doctor() -> None:
             f"model is configured but {bootstrap.MODEL_API_KEY_ENV} is missing from the "
             "environment"
         )
+    if mail_rows[1] and any("missing" in value for _, value in mail_rows[1]):
+        _fail("a mail account is enabled but its credential is missing from the environment")
 
     console.print("[green]environment looks usable[/green]")
 

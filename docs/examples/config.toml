@@ -54,3 +54,25 @@ model = "deepseek-flash"
 reasoning_effort = "low"
 max_output_tokens = 4096
 timeout_seconds = 120
+
+# Inbound mail (Phase 5A). Accounts are explicit; there is no discovery.
+# Fictional values only: never put a real address, host or app password here.
+[mail]
+poll_interval_seconds = 60
+max_messages_per_poll = 100
+initial_fetch_limit = 500
+reconciliation_window = 500
+max_message_bytes = 26214400
+timeout_seconds = 30
+
+[[mail.accounts]]
+id = "smail"
+host = "imap.example.edu"
+port = 993
+username = "student@example.edu"
+mailbox = "INBOX"
+enabled = true
+
+# The credential comes from the environment, never from this file:
+#   export GROWING_ASSISTANT_MAIL_SMAIL_PASSWORD='...'
+# A `password` or `secret` key here is rejected by the config parser.

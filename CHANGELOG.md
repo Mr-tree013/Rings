@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Durable IMAP inbound mail (ADR-0020): `[[mail.accounts]]` configuration (host, port, user,
+  mailbox) with TLS-only transport (`IMAP4_SSL` and `ssl.create_default_context()`), read-only
+  mailbox access (`select(readonly=True)`) and `BODY.PEEK` fetches, so a sync never marks mail as
+  read. Credentials are environment-only (`GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_PASSWORD`) and a
+  `password`-style config key is rejected.
+- Mail identity that respects IMAP: a stable internal `MailMessage` UUID independent of any UID, a
+  `MailMessageLocation` whose durable identity is `(account, mailbox, uidvalidity, uid)`, the
+  Message-ID and threading headers preserved as evidence rather than identity, and attachment
+  metadata (filename, content type, disposition, size, SHA-256) without materialising files.
+- Raw RFC822 archive: content-addressed by SHA-256 under the runtime data directory, written
+  atomically (temp file in the same directory, flush, `fsync`, rename) and verified/reused rather
+  than overwritten. Database rows only ever reference a relative storage key.
+- Bounded, resumable synchronization: the first sync imports the newest `initial_fetch_limit`
+  messages (default 500) rather than whole history, each poll imports at most
+  `max_messages_per_poll`, oversize messages are fetched header-only and recorded with
+  `body_status = oversize`, and the cursor only advances to the highest UID the batch durably
+  stored. Messages, locations, attachments and the cursor commit in one transaction.
+- UIDVALIDITY reconciliation: when the server reports a new UIDVALIDITY, a bounded window is
+  re-read and matched against stored raw hashes, Message-ID plus content fingerprints, or
+  fingerprints with matching size/sender/date. Stable message ids are reused and new locations
+  added; the same Message-ID with different content is never merged — a new message is created and
+  the conflict is counted. Historical messages and locations are never deleted.
+- Mail-to-event bridge: every stored message is bridged to exactly one `InboundEvent`
+  (`source = mail:<account>`, `event_type = mail.message.received`, `external_id = message:<uuid>`)
+  with identity-only content. The bridge is repaired every round (bounded), so both crash windows —
+  message without event, and event without link — recover without duplicating an event. The
+  `EventWorker` is still not started, because there is still no mail handler.
+- Daemon and CLI: a supervised `mail-sync` service appears only when at least one account is
+  configured, `pw mail accounts|status|messages|show` are read-only local views, and
+  `pw mail sync [--account]` is the one command that connects to a server. `pw doctor` reports
+  account credential presence without any network request, and `pw status` lists inbound mail.
 - Source-grounded knowledge answers (ADR-0019): `pw ask "…"` answers only from indexed personal
   sources, with every answer segment citing evidence the user can check. The command is
   read-only: it does not modify files, does not write the index, creates no durable state, and

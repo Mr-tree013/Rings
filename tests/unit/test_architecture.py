@@ -61,6 +61,22 @@ def _imported_names(path: Path) -> set[str]:
     return names
 
 
+def _identifiers(path: Path) -> set[str]:
+    """Every identifier the module mentions: names, attributes, arguments and identifiers."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    identifiers: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+        elif isinstance(node, ast.arg) or (isinstance(node, ast.keyword) and node.arg is not None):
+            identifiers.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            identifiers.add(node.name)
+    return identifiers
+
+
 def _domain_modules() -> list[Path]:
     modules = sorted(DOMAIN_DIR.glob("*.py"))
     assert modules, f"no domain modules found under {DOMAIN_DIR}"
@@ -469,12 +485,110 @@ def test_the_interpreter_does_not_read_credentials_or_the_environment() -> None:
     assert not offenders, offenders
 
 
-def test_no_migration_was_added_for_this_phase() -> None:
-    """Interpretations are not durable state yet, so the schema must not grow for them."""
+def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
+    """Every migration is a deliberate, reviewed step: nothing appears here by accident."""
     migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
 
-    assert migrations[-1] == "0006_scheduler_notifications.sql"
-    assert not [name for name in migrations if name.startswith("0007")]
+    assert migrations == [
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
+        "0006_scheduler_notifications.sql",
+        "0007_inbound_mail.sql",
+    ]
+
+
+MAIL_MODULES = (
+    "application/mail_sync.py",
+    "ports/mail_source.py",
+    "ports/mail_repository.py",
+    "ports/mail_parser.py",
+    "domain/mail.py",
+)
+
+
+def test_mail_protocol_details_stay_in_the_adapter() -> None:
+    """`imaplib`, `ssl`, sockets and the RFC822 parser belong to `adapters/mail`."""
+    forbidden = ("imaplib", "ssl", "socket", "smtplib", "email.parser", "email.message")
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MAIL_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden)
+    ]
+
+    assert not offenders, offenders
+
+
+def test_only_the_mail_adapter_imports_imaplib() -> None:
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(
+            name == "imaplib" or name.startswith("imaplib.")
+            for name in _imported_modules(path)
+        )
+        and path.parent.name != "mail"
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_mail_path_cannot_reach_a_mutation_service_or_the_model() -> None:
+    """Mail ingress stores mail and bridges an event; it classifies and sends nothing."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MAIL_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.store",
+                "assistant.adapters",
+                "assistant.application.task_service",
+                "assistant.application.calendar_service",
+                "assistant.application.planner_service",
+                "assistant.application.scheduler_service",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.ports.model",
+                "sqlite3",
+                "httpx",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+
+
+def test_credentials_and_passwords_stay_out_of_the_core_layers() -> None:
+    """Only the composition root and the mail adapter may handle a mail credential.
+
+    Checked on identifiers rather than raw text, so documentation may still explain *why* a
+    password never lives in configuration.
+    """
+    forbidden_names = {"password", "passwd", "secret", "api_key", "credential"}
+    offenders: list[str] = []
+    for layer in ("domain", "application", "ports"):
+        for path in sorted((SOURCE_ROOT / layer).glob("*.py")):
+            for name in _identifiers(path) & forbidden_names:
+                offenders.append(f"{layer}/{path.name} names {name}")
+
+    assert not offenders, offenders
+
+
+def test_no_smtp_or_sending_capability_exists() -> None:
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(
+            name == "smtplib" or name.startswith("smtplib.")
+            for name in _imported_modules(path)
+        )
+    ]
+
+    assert not offenders, offenders
 
 
 GROUNDED_MODULES = (

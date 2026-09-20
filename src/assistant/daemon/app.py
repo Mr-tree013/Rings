@@ -48,13 +48,17 @@ def build_services(
     """Compose the services the daemon supervises today.
 
     `index-sync` keeps derived views current; `scheduler` runs durable reminders and rolling
-    replans. The durable `EventWorker` is deliberately absent: there is still no real inbound
-    handler, and a fake handler would only pretend that mail is being processed.
+    replans; `mail-sync` receives inbound mail when at least one account is configured. The
+    durable `EventWorker` is deliberately absent: there is still no real inbound handler, and a
+    fake handler would only pretend that mail is being processed.
     """
-    return [
+    services: list[AsyncService] = [
         bootstrap.sync_service(config, clock, database),
         bootstrap.scheduler_service(database, clock, config),
     ]
+    if config.mail.enabled_accounts:
+        services.append(bootstrap.mail_sync_service(config, clock, database))
+    return services
 
 
 async def load_config(config_path: Path | None = None) -> AssistantConfig:

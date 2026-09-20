@@ -99,7 +99,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0001", "0002", "0003", "0004", "0005", "0006",
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007",
     ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
@@ -108,6 +108,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
         "0004_commitment_core.sql",
         "0005_planning_proposals.sql",
         "0006_scheduler_notifications.sql",
+        "0007_inbound_mail.sql",
     ]
 
 
@@ -131,7 +132,118 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     apply_migrations(database, clock=clock)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
+
+
+def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) -> None:
+    """0007 adds durable mail and leaves every earlier row untouched."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
+        "0006_scheduler_notifications.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    apply_migrations(database, clock=clock, directory=legacy_directory)
+    event_id = str(uuid4())
+    task_id = str(uuid4())
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO inbound_events (id, source, external_id, event_type, content, "
+            "status, attempts, received_at, created_at, updated_at) VALUES (?, 'cli', 'x', "
+            "'local.note', 'body', 'RECEIVED', 0, ?, ?, ?)",
+            (event_id, NOW, NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO tasks (id, title, status, priority, estimated_minutes, created_at, "
+            "updated_at) VALUES (?, 'Write report', 'open', 'high', 300, ?, ?)",
+            (task_id, NOW, NOW),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0007"]
+    with database.connect() as connection:
+        names = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        events = connection.execute(
+            "SELECT count(*) AS total FROM inbound_events"
+        ).fetchone()
+        tasks = connection.execute("SELECT count(*) AS total FROM tasks").fetchone()
+    assert {
+        "mailbox_sync_state",
+        "mail_messages",
+        "mail_message_locations",
+        "mail_attachments",
+        "mail_event_links",
+    } <= names
+    assert events["total"] == 1 and tasks["total"] == 1  # older data survived
+
+    _assert_mail_constraints(database)
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
+
+
+def _assert_mail_constraints(database: Database) -> None:
+    """The mail schema's identity, status and provenance rules are enforced by SQLite."""
+    message_id = str(uuid4())
+    stamp = NOW
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO mail_messages (id, account_id, references_json, to_addresses_json, "
+            "cc_addresses_json, body_status, content_fingerprint, size_bytes, parse_warnings, "
+            "first_seen_at, last_seen_at) VALUES (?, 'smail', '[]', '[]', '[]', 'available', ?, "
+            "10, 0, ?, ?)",
+            (message_id, "f" * 64, stamp, stamp),
+        )
+        # Message-ID is not unique: real mailboxes contain duplicates.
+        for _ in range(2):
+            connection.execute(
+                "INSERT INTO mail_messages (id, account_id, message_id_header, "
+                "references_json, to_addresses_json, cc_addresses_json, body_status, "
+                "content_fingerprint, size_bytes, parse_warnings, first_seen_at, last_seen_at) "
+                "VALUES (?, 'smail', '<dup@example.edu>', '[]', '[]', '[]', 'available', ?, 10, "
+                "0, ?, ?)",
+                (str(uuid4()), "e" * 64, stamp, stamp),
+            )
+        connection.execute(
+            "INSERT INTO mail_message_locations (message_id, account_id, mailbox_name, "
+            "uidvalidity, uid, first_seen_at, last_seen_at) VALUES (?, 'smail', 'INBOX', 1, 1, "
+            "?, ?)",
+            (message_id, stamp, stamp),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                "INSERT INTO mail_message_locations (message_id, account_id, mailbox_name, "
+                "uidvalidity, uid, first_seen_at, last_seen_at) VALUES (?, 'smail', 'INBOX', 1, "
+                "1, ?, ?)",
+                (message_id, stamp, stamp),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="body_status_is_known"):
+            connection.execute(
+                "INSERT INTO mail_messages (id, account_id, references_json, "
+                "to_addresses_json, cc_addresses_json, body_status, content_fingerprint, "
+                "size_bytes, parse_warnings, first_seen_at, last_seen_at) VALUES (?, 'smail', "
+                "'[]', '[]', '[]', 'unknown', ?, 1, 0, ?, ?)",
+                (str(uuid4()), "d" * 64, stamp, stamp),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="mailbox_sync_state_cursor_not_negative"):
+            connection.execute(
+                "INSERT INTO mailbox_sync_state (account_id, mailbox_name, uidvalidity, "
+                "last_seen_uid, mode, updated_at) VALUES ('smail', 'BAD', 1, -1, 'normal', ?)",
+                (stamp,),
+            )
 
 
 def test_upgrade_adds_scheduled_jobs_and_notifications(
@@ -183,7 +295,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0006"]
+    assert [migration.version for migration in applied] == ["0006", "0007"]
     with database.connect() as connection:
         tables = {
             str(row["name"])
@@ -207,7 +319,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     _assert_scheduler_constraints(database)
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
 
 
 def _assert_scheduler_constraints(database: Database) -> None:
@@ -445,7 +557,9 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0002", "0003", "0004", "0005", "0006"]
+    assert [migration.version for migration in applied] == [
+        "0002", "0003", "0004", "0005", "0006", "0007",
+    ]
     with database.connect() as connection:
         migrated = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_row["id"],)
@@ -508,7 +622,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     # Re-running the migration set after the upgrade stays a no-op.
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
 
 
 def test_upgraded_schema_rejects_a_half_written_lease(
@@ -577,7 +691,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0003", "0004", "0005", "0006"]
+    assert [migration.version for migration in applied] == ["0003", "0004", "0005", "0006", "0007"]
     with database.connect() as connection:
         event_row = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (legacy_event["id"],)
@@ -658,7 +772,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
 
 
 def test_upgrade_from_v0_2_0_adds_the_commitment_core(
@@ -713,7 +827,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0004", "0005", "0006"]
+    assert [migration.version for migration in applied] == ["0004", "0005", "0006", "0007"]
     with database.connect() as connection:
         stored_event = connection.execute(
             "SELECT * FROM inbound_events WHERE id = ?", (event_row["id"],)
@@ -764,7 +878,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")
 
 
 def test_upgrade_adds_planning_proposals_and_block_provenance(
@@ -801,7 +915,7 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0005", "0006"]
+    assert [migration.version for migration in applied] == ["0005", "0006", "0007"]
     with database.connect() as connection:
         block = connection.execute(
             "SELECT origin, proposal_id, task_id FROM plan_blocks WHERE id = ?", (block_id,)
@@ -858,4 +972,4 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
         )
 
     assert apply_migrations(database, clock=clock) == ()
-    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006")
+    assert applied_versions(database) == ("0001", "0002", "0003", "0004", "0005", "0006", "0007")

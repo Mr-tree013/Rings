@@ -19,7 +19,12 @@ from enum import StrEnum
 from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from assistant.domain.errors import InvalidAssistantConfig, InvalidStorageRoot
+from assistant.domain.errors import (
+    InvalidAssistantConfig,
+    InvalidMailMessage,
+    InvalidStorageRoot,
+)
+from assistant.domain.mail import validate_account_id
 from assistant.domain.storage import StorageKind, validate_root_id
 
 CONFIG_FORMAT_VERSION: Final[int] = 1
@@ -49,6 +54,7 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "reminders",
         "scheduler",
         "model",
+        "mail",
     }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
@@ -63,6 +69,37 @@ _KNOWN_SCHEDULER_KEYS = frozenset({"poll_interval_seconds", "replan_debounce_sec
 _KNOWN_MODEL_KEYS = frozenset(
     {"provider", "model", "reasoning_effort", "max_output_tokens", "timeout_seconds"}
 )
+_KNOWN_MAIL_KEYS = frozenset(
+    {
+        "poll_interval_seconds",
+        "max_messages_per_poll",
+        "initial_fetch_limit",
+        "reconciliation_window",
+        "max_message_bytes",
+        "timeout_seconds",
+        "accounts",
+    }
+)
+_KNOWN_MAIL_ACCOUNT_KEYS = frozenset(
+    {"id", "host", "port", "username", "mailbox", "enabled"}
+)
+
+DEFAULT_MAIL_POLL_SECONDS: Final[int] = 60
+MIN_MAIL_POLL_SECONDS: Final[int] = 10
+MAX_MAIL_POLL_SECONDS: Final[int] = 3600
+
+DEFAULT_MAIL_MAX_MESSAGES_PER_POLL: Final[int] = 100
+DEFAULT_MAIL_INITIAL_FETCH_LIMIT: Final[int] = 500
+DEFAULT_MAIL_RECONCILIATION_WINDOW: Final[int] = 500
+MAX_MAIL_BATCH: Final[int] = 10000
+
+DEFAULT_MAIL_MAX_MESSAGE_BYTES: Final[int] = 25 * 1024 * 1024
+MIN_MAIL_MAX_MESSAGE_BYTES: Final[int] = 1024 * 1024
+MAX_MAIL_MAX_MESSAGE_BYTES: Final[int] = 100 * 1024 * 1024
+
+DEFAULT_MAIL_TIMEOUT_SECONDS: Final[int] = 30
+MIN_MAIL_TIMEOUT_SECONDS: Final[int] = 10
+MAX_MAIL_TIMEOUT_SECONDS: Final[int] = 300
 
 SUPPORTED_MODEL_PROVIDERS: Final[tuple[str, ...]] = ("deepseek",)
 DEFAULT_MODEL_PROVIDER: Final[str] = "deepseek"
@@ -285,6 +322,112 @@ class IndexingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MailAccountConfig:
+    """One explicitly configured IMAP account.
+
+    There is no credential field on purpose: a password never lives in configuration, and the
+    identity is a stable local id, never the address or the host.
+    """
+
+    id: str
+    host: str
+    username: str
+    mailbox: str
+    port: int = 993
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        try:
+            validate_account_id(self.id)
+        except InvalidMailMessage as exc:
+            raise InvalidAssistantConfig(str(exc)) from exc
+        for value, field_name in (
+            (self.host, "host"),
+            (self.username, "username"),
+            (self.mailbox, "mailbox"),
+        ):
+            if not value.strip():
+                raise InvalidAssistantConfig(f"mail account {field_name} must not be blank")
+            if "\x00" in value:
+                raise InvalidAssistantConfig(
+                    f"mail account {field_name} must not contain NUL bytes"
+                )
+        if not 1 <= self.port <= 65535:
+            raise InvalidAssistantConfig("mail account port must be between 1 and 65535")
+        if not isinstance(self.enabled, bool):
+            raise InvalidAssistantConfig("mail account enabled must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class MailConfig:
+    """How inbound mail is synchronized. A host with no accounts polls nothing."""
+
+    accounts: tuple[MailAccountConfig, ...] = ()
+    poll_interval_seconds: int = DEFAULT_MAIL_POLL_SECONDS
+    max_messages_per_poll: int = DEFAULT_MAIL_MAX_MESSAGES_PER_POLL
+    initial_fetch_limit: int = DEFAULT_MAIL_INITIAL_FETCH_LIMIT
+    reconciliation_window: int = DEFAULT_MAIL_RECONCILIATION_WINDOW
+    max_message_bytes: int = DEFAULT_MAIL_MAX_MESSAGE_BYTES
+    timeout_seconds: int = DEFAULT_MAIL_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        seen: set[str] = set()
+        for account in self.accounts:
+            if account.id in seen:
+                raise InvalidAssistantConfig(f"duplicate mail account id {account.id!r}")
+            seen.add(account.id)
+        _validate_range(
+            "mail.poll_interval_seconds",
+            self.poll_interval_seconds,
+            MIN_MAIL_POLL_SECONDS,
+            MAX_MAIL_POLL_SECONDS,
+        )
+        _validate_range(
+            "mail.max_messages_per_poll", self.max_messages_per_poll, 1, 1000
+        )
+        _validate_range(
+            "mail.initial_fetch_limit", self.initial_fetch_limit, 1, MAX_MAIL_BATCH
+        )
+        _validate_range(
+            "mail.reconciliation_window",
+            self.reconciliation_window,
+            1,
+            MAX_MAIL_BATCH,
+        )
+        _validate_range(
+            "mail.max_message_bytes",
+            self.max_message_bytes,
+            MIN_MAIL_MAX_MESSAGE_BYTES,
+            MAX_MAIL_MAX_MESSAGE_BYTES,
+        )
+        _validate_range(
+            "mail.timeout_seconds",
+            self.timeout_seconds,
+            MIN_MAIL_TIMEOUT_SECONDS,
+            MAX_MAIL_TIMEOUT_SECONDS,
+        )
+
+    @property
+    def enabled_accounts(self) -> tuple[MailAccountConfig, ...]:
+        """The accounts the daemon should synchronize."""
+        return tuple(account for account in self.accounts if account.enabled)
+
+    def find(self, account_id: str) -> MailAccountConfig | None:
+        """Return the configured account with that id, or `None`."""
+        for account in self.accounts:
+            if account.id == account_id:
+                return account
+        return None
+
+
+def _validate_range(name: str, value: int, minimum: int, maximum: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise InvalidAssistantConfig(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise InvalidAssistantConfig(f"{name} must be between {minimum} and {maximum}")
+
+
+@dataclass(frozen=True, slots=True)
 class ConfiguredStorageRoot:
     """One explicitly authorised storage root."""
 
@@ -333,6 +476,7 @@ class AssistantConfig:
     reminders: ReminderConfig = field(default_factory=ReminderConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     model: ModelConfig | None = None
+    mail: MailConfig = field(default_factory=MailConfig)
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -371,6 +515,7 @@ class AssistantConfig:
             reminders=_parse_reminders(data.get("reminders")),
             scheduler=_parse_scheduler(data.get("scheduler")),
             model=_parse_model(data.get("model")),
+            mail=_parse_mail(data.get("mail")),
             format_version=format_version,
         )
 
@@ -576,6 +721,74 @@ def _model_int(value: Mapping[str, object], key: str, default: int) -> int:
     return raw
 
 
+def _parse_mail(value: object) -> MailConfig:
+    """Parse `[mail]`. Credentials are rejected here on purpose: they are never config."""
+    if value is None:
+        return MailConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[mail] must be a table")
+    unknown = sorted(set(value) - _KNOWN_MAIL_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [mail] keys: {', '.join(unknown)}")
+    entries = value.get("accounts", ())
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise InvalidAssistantConfig("[[mail.accounts]] must be a list of tables")
+    return MailConfig(
+        accounts=tuple(_parse_mail_account(entry) for entry in entries),
+        poll_interval_seconds=_mail_int(
+            value, "poll_interval_seconds", DEFAULT_MAIL_POLL_SECONDS
+        ),
+        max_messages_per_poll=_mail_int(
+            value, "max_messages_per_poll", DEFAULT_MAIL_MAX_MESSAGES_PER_POLL
+        ),
+        initial_fetch_limit=_mail_int(
+            value, "initial_fetch_limit", DEFAULT_MAIL_INITIAL_FETCH_LIMIT
+        ),
+        reconciliation_window=_mail_int(
+            value, "reconciliation_window", DEFAULT_MAIL_RECONCILIATION_WINDOW
+        ),
+        max_message_bytes=_mail_int(
+            value, "max_message_bytes", DEFAULT_MAIL_MAX_MESSAGE_BYTES
+        ),
+        timeout_seconds=_mail_int(value, "timeout_seconds", DEFAULT_MAIL_TIMEOUT_SECONDS),
+    )
+
+
+def _mail_int(value: Mapping[str, object], key: str, default: int) -> int:
+    raw = value.get(key, default)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise InvalidAssistantConfig(f"mail.{key} must be an integer")
+    return raw
+
+
+def _parse_mail_account(entry: object) -> MailAccountConfig:
+    if not isinstance(entry, Mapping):
+        raise InvalidAssistantConfig("each [[mail.accounts]] entry must be a table")
+    unknown = sorted(set(entry) - _KNOWN_MAIL_ACCOUNT_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown mail account keys: {', '.join(unknown)}")
+    values: dict[str, object] = {}
+    for key in ("id", "host", "username", "mailbox"):
+        raw = entry.get(key)
+        if not isinstance(raw, str):
+            raise InvalidAssistantConfig(f"a mail account needs a string {key}")
+        values[key] = raw
+    port = entry.get("port", 993)
+    if not isinstance(port, int) or isinstance(port, bool):
+        raise InvalidAssistantConfig("mail account port must be an integer")
+    enabled = entry.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise InvalidAssistantConfig("mail account enabled must be a boolean")
+    return MailAccountConfig(
+        id=str(values["id"]).strip(),
+        host=str(values["host"]).strip(),
+        username=str(values["username"]).strip(),
+        mailbox=str(values["mailbox"]).strip(),
+        port=port,
+        enabled=enabled,
+    )
+
+
 def _parse_availability(entry: object) -> WeeklyAvailabilityRule:
     if not isinstance(entry, Mapping):
         raise InvalidAssistantConfig("each [[planning.availability]] entry must be a table")
@@ -626,6 +839,12 @@ __all__ = [
     "CONFIG_FORMAT_VERSION",
     "DEFAULT_DEADLINE_REMINDER_OFFSETS",
     "DEFAULT_INDEX_INTERVAL_SECONDS",
+    "DEFAULT_MAIL_INITIAL_FETCH_LIMIT",
+    "DEFAULT_MAIL_MAX_MESSAGES_PER_POLL",
+    "DEFAULT_MAIL_MAX_MESSAGE_BYTES",
+    "DEFAULT_MAIL_POLL_SECONDS",
+    "DEFAULT_MAIL_RECONCILIATION_WINDOW",
+    "DEFAULT_MAIL_TIMEOUT_SECONDS",
     "DEFAULT_MODEL_MAX_OUTPUT_TOKENS",
     "DEFAULT_MODEL_NAME",
     "DEFAULT_MODEL_PROVIDER",
@@ -652,6 +871,8 @@ __all__ = [
     "ConfiguredStorageRoot",
     "ConfiguredVaultRoot",
     "IndexingConfig",
+    "MailAccountConfig",
+    "MailConfig",
     "ModelConfig",
     "PlanningConfig",
     "ReminderConfig",

@@ -565,6 +565,53 @@ class GroundedAnswerInvalidCitation(GroundedAnswerSemanticError):
     """
 
 
+class MailConfigurationError(DomainError):
+    """The `[mail]` configuration itself is unusable."""
+
+
+class MailCredentialsMissing(DomainError):
+    """No credential is available in the environment for a configured mail account.
+
+    The message names the environment variable to set and never contains a credential.
+    """
+
+
+class MailAuthenticationError(DomainError):
+    """The mail server rejected the credential."""
+
+
+class MailConnectionError(DomainError):
+    """The mail server could not be reached, or the connection failed mid-conversation."""
+
+
+class MailProtocolError(DomainError):
+    """The mail server answered with something this adapter cannot interpret."""
+
+
+class MailMessageNotFound(DomainError):
+    """No mail message exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"mail message {reference} does not exist")
+
+
+class InvalidMailMessage(DomainError):
+    """A mail message, location, attachment or sync state breaks its invariants."""
+
+
+class InvalidMailboxState(DomainError):
+    """A mailbox cursor or UIDVALIDITY value is not a usable mailbox state."""
+
+
+class MailRawStorageError(DomainError):
+    """The raw message store could not persist or verify an object."""
+
+
+class MailReconciliationConflict(DomainError):
+    """Reconciliation evidence conflicts, so no automatic match may be made."""
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -605,6 +652,8 @@ __all__ = [
     "InvalidInboundEvent",
     "InvalidInterpretationResult",
     "InvalidKnowledgeDocument",
+    "InvalidMailMessage",
+    "InvalidMailboxState",
     "InvalidModelRequest",
     "InvalidModelSchema",
     "InvalidNotification",
@@ -623,6 +672,14 @@ __all__ = [
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
     "KnowledgeIndexNeedsRebuild",
+    "MailAuthenticationError",
+    "MailConfigurationError",
+    "MailConnectionError",
+    "MailCredentialsMissing",
+    "MailMessageNotFound",
+    "MailProtocolError",
+    "MailRawStorageError",
+    "MailReconciliationConflict",
     "ModelAuthenticationError",
     "ModelBillingError",
     "ModelConfigurationError",

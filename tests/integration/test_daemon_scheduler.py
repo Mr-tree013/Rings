@@ -84,6 +84,49 @@ async def test_the_daemon_composes_index_sync_and_the_scheduler(
     assert [service.name for service in services] == ["index-sync", "scheduler"]
 
 
+async def test_the_daemon_only_supervises_mail_when_accounts_are_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No mail accounts means no mail service, and still no event worker."""
+    _isolate(monkeypatch, tmp_path)
+    clock = bootstrap.system_clock()
+    config = await load_config()
+    database = bootstrap.runtime_database(clock)
+
+    without_mail = build_services(config, clock, database)
+    with_mail = build_services(
+        _config_with_mail(config), clock, database
+    )
+
+    assert [service.name for service in without_mail] == ["index-sync", "scheduler"]
+    assert [service.name for service in with_mail] == [
+        "index-sync",
+        "scheduler",
+        "mail-sync",
+    ]
+
+
+def _config_with_mail(config: object) -> object:
+    """The same host config, with one explicitly configured mail account."""
+    from dataclasses import replace
+
+    from assistant.domain.config import MailAccountConfig, MailConfig
+
+    return replace(  # type: ignore[type-var]
+        config,
+        mail=MailConfig(
+            accounts=(
+                MailAccountConfig(
+                    id="smail",
+                    host="imap.example.edu",
+                    username="student@example.edu",
+                    mailbox="INBOX",
+                ),
+            )
+        ),
+    )
+
+
 async def test_a_reminder_that_became_due_while_the_daemon_was_down_is_delivered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
