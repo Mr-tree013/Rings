@@ -66,6 +66,7 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "ehall",
         "mobile",
         "watchers",
+        "mcp",
     }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
@@ -125,6 +126,7 @@ _KNOWN_WATCHER_KEYS = frozenset(
     }
 )
 _KNOWN_WEB_TARGET_KEYS = frozenset({"id", "url", "enabled"})
+_KNOWN_MCP_KEYS = frozenset({"enabled", "write_scope", "expose_knowledge"})
 
 DEFAULT_EHALL_ENABLED: Final[bool] = False
 DEFAULT_EHALL_TIMEOUT_SECONDS: Final[int] = 30
@@ -172,6 +174,13 @@ MAX_WATCHER_MAX_RESPONSE_BYTES: Final[int] = 32 * 1024 * 1024
 DEFAULT_WATCHER_FULL_FETCH_EVERY: Final[int] = 24
 MIN_WATCHER_FULL_FETCH_EVERY: Final[int] = 1
 MAX_WATCHER_FULL_FETCH_EVERY: Final[int] = 1000
+
+DEFAULT_MCP_ENABLED: Final[bool] = False
+DEFAULT_MCP_WRITE_SCOPE: Final[str] = "none"
+MCP_WRITE_SCOPES: Final[tuple[str, ...]] = ("none", "tasks")
+"""The only two write scopes. There is deliberately no "all", no "actions" and no "mail"."""
+
+DEFAULT_MCP_EXPOSE_KNOWLEDGE: Final[bool] = False
 
 SUPPORTED_MODEL_PROVIDERS: Final[tuple[str, ...]] = ("deepseek",)
 DEFAULT_MODEL_PROVIDER: Final[str] = "deepseek"
@@ -751,6 +760,36 @@ class WatchersConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class McpConfig:
+    """The local MCP surface this host exposes to an editor (ADR-0030).
+
+    Three keys, and the defaults are the point: the server is off until it is switched on, it can
+    read but not write until a write scope is chosen, and it exposes no personal knowledge until the
+    user says so. There is deliberately no key that names a transport, a port, a trusted client or a
+    capability list — the surface is fixed by code, and the configuration only decides how much of
+    it exists.
+    """
+
+    enabled: bool = DEFAULT_MCP_ENABLED
+    write_scope: str = DEFAULT_MCP_WRITE_SCOPE
+    expose_knowledge: bool = DEFAULT_MCP_EXPOSE_KNOWLEDGE
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise InvalidAssistantConfig("mcp.enabled must be a boolean")
+        if self.write_scope not in MCP_WRITE_SCOPES:
+            allowed = ", ".join(MCP_WRITE_SCOPES)
+            raise InvalidAssistantConfig(f"mcp.write_scope must be one of: {allowed}")
+        if not isinstance(self.expose_knowledge, bool):
+            raise InvalidAssistantConfig("mcp.expose_knowledge must be a boolean")
+
+    @property
+    def allows_task_writes(self) -> bool:
+        """Whether the task write tools exist at all on this host."""
+        return self.write_scope == "tasks"
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantConfig:
     """The whole host configuration."""
 
@@ -764,6 +803,7 @@ class AssistantConfig:
     ehall: EHallConfig = field(default_factory=lambda: EHallConfig())
     mobile: MobileConfig = field(default_factory=lambda: MobileConfig())
     watchers: WatchersConfig = field(default_factory=lambda: WatchersConfig())
+    mcp: McpConfig = field(default_factory=lambda: McpConfig())
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -806,6 +846,7 @@ class AssistantConfig:
             ehall=_parse_ehall(data.get("ehall")),
             mobile=_parse_mobile(data.get("mobile")),
             watchers=_parse_watchers(data.get("watchers")),
+            mcp=_parse_mcp(data.get("mcp")),
             format_version=format_version,
         )
 
@@ -1087,6 +1128,31 @@ def _watcher_int(value: Mapping[str, object], key: str, default: int) -> int:
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise InvalidAssistantConfig(f"watchers.{key} must be an integer")
     return raw
+
+
+def _parse_mcp(value: object) -> McpConfig:
+    """Parse `[mcp]`. No transport, port, trusted client or capability list is accepted here."""
+    if value is None:
+        return McpConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[mcp] must be a table")
+    unknown = sorted(set(value) - _KNOWN_MCP_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [mcp] keys: {', '.join(unknown)}")
+    enabled = value.get("enabled", DEFAULT_MCP_ENABLED)
+    if not isinstance(enabled, bool):
+        raise InvalidAssistantConfig("mcp.enabled must be a boolean")
+    write_scope = value.get("write_scope", DEFAULT_MCP_WRITE_SCOPE)
+    if not isinstance(write_scope, str):
+        raise InvalidAssistantConfig("mcp.write_scope must be a string")
+    expose_knowledge = value.get("expose_knowledge", DEFAULT_MCP_EXPOSE_KNOWLEDGE)
+    if not isinstance(expose_knowledge, bool):
+        raise InvalidAssistantConfig("mcp.expose_knowledge must be a boolean")
+    return McpConfig(
+        enabled=enabled,
+        write_scope=write_scope.strip(),
+        expose_knowledge=expose_knowledge,
+    )
 
 
 def _parse_ehall(value: object) -> EHallConfig:

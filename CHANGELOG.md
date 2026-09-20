@@ -5,7 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-09-20
+
+Phase 8: the assistant can watch, listen and be looked at. It observes configured public pages and
+text a person pastes in, and it serves a controlled local MCP surface to VS Code — the same
+read-mostly view of open tasks, open cases and the current plan, with nothing that can approve,
+execute, send, submit, confirm, promote or generalise anything.
 
 Phase 8A (observation): the assistant can watch a page it was told to watch and can be handed
 text by a person, turning both into durable, versioned observations that feed one bounded
@@ -56,6 +61,62 @@ analysis — without a generic HTTP client, without a browser, and without creat
 - `pw watch targets|status|sync|observations|observation show`, where only `sync` uses the network
   and every other view reads local state. Observation output shows hashes, a bounded preview and
   the analysis, and never a filesystem path.
+
+Phase 8B (MCP): VS Code can look at the assistant through a local stdio server whose surface is
+fixed by code and narrowed by configuration — read-only by default, four bounded resources, two
+read tools, and exactly two capabilities it can be granted: bounded local knowledge search and task
+writes through `TaskService`.
+
+### Added
+
+- A controlled local MCP interface (ADR-0030), built on the official MCP Python SDK v2
+  (`MCPServer`, `mcp>=2,<3`). `growing-assistant-mcp` is a separate console script that runs the
+  server over **stdio only**: it is not hosted by `assistantd` or the mobile web service, it opens
+  no socket, it works with the daemon stopped, and it refuses any argument other than `--version`
+  (so `--transport http` fails loudly instead of quietly serving stdio). Logging goes to stderr, and
+  a disabled server writes one line to stderr and exits non-zero, leaving stdout empty.
+- Three configuration keys, all conservative: `[mcp] enabled` (default false),
+  `write_scope = "none" | "tasks"` (default `none`) and `expose_knowledge` (default false). There is
+  no transport, port, host, trusted-client or capability key, and unknown keys are refused.
+- A bounded application surface in `application/mcp_facade.py` that contains no SDK import and no
+  side-effect service at all: it wraps `TaskService`, `CaseService`, the commitment read model, the
+  existing weekly planning window, the notification inbox and (optionally) the local knowledge
+  search into small immutable DTOs.
+- Four fixed resources: `assistant://status` (version, transport, write scope, knowledge flag, open
+  task/case and unread notification counts, capability list), `assistant://tasks/open` (≤50 tasks
+  with id, title, priority, status, estimate and deadline),
+  `assistant://cases/open` (≤50 cases with their lifecycle fields — never their actions) and
+  `assistant://plan/current` (the current week's blocks, ≤100, or `configured=false` when planning
+  is unconfigured). Reading the plan never generates, applies or replans one.
+- `assistant_get_task` and `assistant_get_case`, annotated `readOnlyHint`, accepting a full UUID or
+  a unique prefix and returning only the entity's own fields, with typed refusals
+  (`{"error": {"kind", "message"}}`) that carry no SQL, path or stack trace.
+- Optional, independently opt-in knowledge exposure: `assistant_search_knowledge` exists only when
+  `expose_knowledge = true`, calls the deterministic **local** full-text search (never
+  `GroundedAnswerService`, never a provider), takes a query ≤1000 characters, an optional `root_id`
+  and a limit of 1–8, and returns logical URIs, source spans and excerpts capped at 1200 characters
+  each and 6000 in total. The tool description says the excerpts go to the connected MCP client.
+- Optional task writes behind `write_scope = "tasks"`: `assistant_create_task` and
+  `assistant_complete_task` call `TaskService` — so deadline reminders and rolling replan requests
+  are materialized exactly as `pw task add` does — with no `force`, no bulk completion, a deadline
+  that must carry an explicit offset, `destructiveHint = false` on creation and `destructiveHint =
+  true` (never `idempotentHint`) on the terminal completion. With `write_scope = "none"` those tools
+  are not registered at all, so a client that asks for one by name gets an unknown tool.
+- `pw mcp status` (local, prints the surface this host would actually register, built from the same
+  registration functions the server uses) and `pw mcp vscode-config` (prints a `servers` snippet
+  with `type: stdio`, `command: uv`, `args` and a `cwd`, and writes nothing anywhere).
+  `pw status` now names the integration as a local stdio surface with controlled capabilities.
+
+### Notes
+
+- There is no migration: MCP keeps no durable server state, no session and no authentication, so
+  migrations still end at `0015_inbound_observations.sql`.
+- The MCP surface cannot reach approval, execution, SMTP, eHall, facts, playbooks, filesystem,
+  shell, HTTP, browser, sampling, elicitation, prompts or workspace roots. The absence is
+  structural — the facade and the adapter do not import those services — and it is asserted by
+  architecture tests, by a table-snapshot no-mutation test and by sentinel tests that seed a mail
+  body, a draft body, a fact value, a playbook note, an eHall payload and an approval token and
+  check that none of them appears anywhere on the default surface.
 
 ## [0.7.0] - 2026-09-20
 

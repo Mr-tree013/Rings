@@ -38,6 +38,7 @@ from assistant import (
     cli_ingest,
     cli_interpreter,
     cli_mail,
+    cli_mcp,
     cli_mobile,
     cli_model,
     cli_playbooks,
@@ -108,6 +109,7 @@ cli_facts.register(app)
 cli_playbooks.register(app)
 cli_watch.register(app)
 cli_ingest.register(app)
+cli_mcp.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -265,8 +267,13 @@ def status() -> None:
         "whitelisted certificate pipeline (approval-gated, headed browser)",
     )
     table.add_row(
+        "developer integration",
+        "MCP / VS Code: local stdio, controlled capabilities "
+        "(read-only by default; no agent runtime, no execution, no approval)",
+    )
+    table.add_row(
         "integrations",
-        "[yellow]not implemented[/yellow] (web, push, other eHall services)",
+        "[yellow]not implemented[/yellow] (push, other eHall services)",
     )
     console.print(table)
     console.print(

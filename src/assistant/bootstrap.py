@@ -78,6 +78,7 @@ from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.mail_threading import MailThreadLinker
 from assistant.application.manual_input_service import ManualInputService
+from assistant.application.mcp_facade import McpFacade
 from assistant.application.mobile_auth import MobileAuthService
 from assistant.application.observation_context import ObservationContextBuilder
 from assistant.application.observation_event_handler import (
@@ -689,6 +690,43 @@ def search_service(clock: Clock, database: Database) -> KnowledgeSearchService:
     )
 
 
+def assistant_version() -> str:
+    """The installed application version, as reported to an MCP client."""
+    from assistant import __version__
+
+    return __version__
+
+
+def mcp_facade(
+    config: AssistantConfig,
+    *,
+    clock: Clock | None = None,
+    database: Database | None = None,
+) -> McpFacade:
+    """The bounded application surface the local MCP server is allowed to speak to.
+
+    Every capability the surface has comes from a service that already existed — `TaskService`,
+    `CaseService`, the commitment read model, the deterministic planner window, the notification
+    inbox and (only when the host opts in) the local knowledge search. Nothing that can approve,
+    execute, send, submit, confirm, promote or reach a network is constructed here.
+    """
+    chosen_clock = clock if clock is not None else system_clock()
+    chosen_database = database if database is not None else runtime_database(chosen_clock)
+    knowledge = search_service(chosen_clock, chosen_database)
+    return McpFacade(
+        task_service(chosen_database, chosen_clock, config),
+        case_service(chosen_clock, chosen_database),
+        commitment_repository(chosen_database),
+        planner_service(chosen_database, chosen_clock, config),
+        scheduler_repository(chosen_database),
+        chosen_clock,
+        version=assistant_version(),
+        write_scope=config.mcp.write_scope,
+        expose_knowledge=config.mcp.expose_knowledge,
+        knowledge=knowledge,
+    )
+
+
 def sync_service(
     config: AssistantConfig, clock: Clock, database: Database
 ) -> IndexSyncService:
@@ -1098,6 +1136,7 @@ __all__ = [
     "action_repository",
     "action_service",
     "approval_service",
+    "assistant_version",
     "calendar_service",
     "case_repository",
     "case_service",
@@ -1133,6 +1172,7 @@ __all__ = [
     "mail_sync_service",
     "manual_input_repository",
     "manual_input_service",
+    "mcp_facade",
     "mobile_auth_service",
     "mobile_session_repository",
     "mobile_web_dependencies",

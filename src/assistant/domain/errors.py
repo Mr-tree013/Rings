@@ -1394,6 +1394,34 @@ class WebSnapshotStorageError(DomainError):
     """A normalized snapshot could not be written or verified against its content address."""
 
 
+class McpDisabled(DomainError):
+    """The host has not enabled the local MCP surface."""
+
+
+class McpToolUnavailable(DomainError):
+    """A capability the MCP surface does not have on this host was requested.
+
+    It is raised rather than advertised-and-refused: when a capability is not configured, its tool
+    does not exist in the server's registry at all, so a client cannot call it by guessing a name.
+    """
+
+    def __init__(self, capability: str) -> None:
+        self.capability = capability
+        super().__init__(
+            f"this MCP server does not expose {capability}; enable it in the host configuration "
+            "if you want it"
+        )
+
+
+class McpInvalidArgument(DomainError):
+    """An MCP tool was called with an argument the tool does not accept."""
+
+    def __init__(self, argument: str, reason: str) -> None:
+        self.argument = argument
+        self.reason = reason
+        super().__init__(f"{argument}: {reason}")
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1512,6 +1540,9 @@ __all__ = [
     "MailReconciliationConflict",
     "MailReplyRecipientUnavailable",
     "MailThreadNotFound",
+    "McpDisabled",
+    "McpInvalidArgument",
+    "McpToolUnavailable",
     "MobileClientRejected",
     "MobileCsrfRejected",
     "MobileDisabled",

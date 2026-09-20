@@ -2237,3 +2237,232 @@ def test_the_event_worker_dispatches_exactly_three_event_types() -> None:
         encoding="utf-8"
     )
     assert "no handler is registered for event type" in dispatcher
+
+
+MCP_ADAPTER_MODULES = (
+    "adapters/mcp/__init__.py",
+    "adapters/mcp/server.py",
+    "adapters/mcp/resources.py",
+    "adapters/mcp/tools.py",
+)
+
+MCP_FACADE_MODULE = "application/mcp_facade.py"
+
+MCP_FORBIDDEN_IN_FACADE = (
+    "mcp",
+    "assistant.store",
+    "assistant.adapters",
+    "sqlite3",
+    "httpx",
+    "socket",
+    "subprocess",
+    "assistant.ports.model",
+    "assistant.application.structured_model",
+    "assistant.application.action_execution",
+    "assistant.application.approval_service",
+    "assistant.application.learning_service",
+    "assistant.application.playbook_service",
+    "assistant.ports.action_executor",
+)
+"""Everything the MCP application surface must not be able to reach."""
+
+MCP_FORBIDDEN_IN_ADAPTER = (
+    "assistant.adapters.mail",
+    "assistant.adapters.ehall",
+    "assistant.adapters.web_watch",
+    "assistant.application.action_execution",
+    "assistant.application.approval_service",
+    "assistant.application.learning_service",
+    "assistant.application.playbook_service",
+    "assistant.application.mail_drafts",
+    "assistant.application.mail_send_actions",
+    "assistant.application.ehall_certificate",
+    "assistant.ports.action_executor",
+    "assistant.ports.web_source",
+    "assistant.ports.ehall_certificate",
+    "smtplib",
+    "playwright",
+    "subprocess",
+    "socket",
+)
+"""Everything the MCP adapter must not be able to reach, even with a task write scope."""
+
+
+def test_only_the_mcp_adapter_imports_the_mcp_sdk() -> None:
+    """§48: the SDK is one package deep; the application and domain never see it."""
+    offenders = [
+        _relative(path)
+        for path in _source_modules()
+        if any(
+            imported == "mcp" or imported.startswith("mcp.")
+            for imported in _imported_modules(path)
+        )
+        and _relative(path) not in MCP_ADAPTER_MODULES
+    ]
+
+    assert not offenders, offenders
+    for relative in MCP_ADAPTER_MODULES:
+        assert (SOURCE_ROOT / relative).is_file()
+
+
+def test_the_mcp_facade_cannot_reach_a_store_a_model_or_a_side_effect() -> None:
+    """§48: the facade speaks to application services and read-only port methods, nothing else."""
+    path = SOURCE_ROOT / MCP_FACADE_MODULE
+    offenders = [
+        f"{MCP_FACADE_MODULE} imports {imported}"
+        for imported in _imported_modules(path)
+        if imported.startswith(MCP_FORBIDDEN_IN_FACADE)
+        or imported in set(MCP_FORBIDDEN_IN_FACADE)
+    ]
+
+    assert not offenders, offenders
+    named = _identifiers(path) & {
+        "ActionExecutionService",
+        "ApprovalService",
+        "LearningService",
+        "PlaybookService",
+        "ModelPort",
+        "StructuredModel",
+        "ActionExecutor",
+        "WebSource",
+        "connect",
+        "execute",
+        "approve",
+        "promote",
+        "confirm_fact",
+    }
+    assert not named, named
+
+
+def test_the_mcp_adapter_cannot_reach_a_side_effect_or_a_transport() -> None:
+    """§27: even a task write scope grants nothing beyond local commitment state."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in MCP_ADAPTER_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(MCP_FORBIDDEN_IN_ADAPTER)
+        or imported in set(MCP_FORBIDDEN_IN_ADAPTER)
+    ]
+
+    assert not offenders, offenders
+    banned_identifiers = {
+        "ActionExecutionService",
+        "ApprovalService",
+        "LearningService",
+        "PlaybookService",
+        "ActionExecutor",
+        "WebSource",
+        "SmtpMailExecutor",
+        "EHallCertificateExecutor",
+        "Playwright",
+        "run_shell",
+        "read_file",
+        "write_file",
+        "open_url",
+    }
+    named = [
+        f"{relative} names {name}"
+        for relative in MCP_ADAPTER_MODULES
+        for name in _identifiers(SOURCE_ROOT / relative) & banned_identifiers
+    ]
+    assert not named, named
+
+
+def test_the_mcp_server_is_stdio_only() -> None:
+    """§3: no streamable HTTP, no SSE, no listener of any kind."""
+    banned = {
+        "streamable_http_app",
+        "sse_app",
+        "run_sse_async",
+        "run_streamable_http_async",
+        "run_streamable_http",
+        "uvicorn",
+        "HTTPServer",
+        "listen",
+        "bind",
+    }
+    for relative in MCP_ADAPTER_MODULES:
+        path = SOURCE_ROOT / relative
+        assert not _identifiers(path) & banned, relative
+        for imported in _imported_modules(path):
+            assert not imported.startswith(("uvicorn", "starlette", "fastapi")), imported
+    server = (SOURCE_ROOT / "adapters" / "mcp" / "server.py").read_text(encoding="utf-8")
+    assert "run_stdio_async" in server
+
+
+def test_the_mcp_surface_has_no_prompts_sampling_or_roots() -> None:
+    """§29/§30: the server answers resources and tools, and asks the client nothing."""
+    banned = {
+        "sample",
+        "elicit",
+        "list_roots",
+        "roots_callback",
+        "add_prompt",
+        "prompt",
+        "complete",
+        "sampling_callback",
+        "ctx",
+        "Context",
+    }
+    named = [
+        f"{relative} names {name}"
+        for relative in MCP_ADAPTER_MODULES
+        for name in _identifiers(SOURCE_ROOT / relative) & banned
+    ]
+    assert not named, named
+    # The facade's prose mentions offline *search* roots, so the check is about identifiers and
+    # imports rather than about words: no protocol callback, no prompt, no client request.
+    facade = SOURCE_ROOT / MCP_FACADE_MODULE
+    assert not _identifiers(facade) & banned
+    for imported in _imported_modules(facade):
+        assert not imported.startswith("mcp"), imported
+
+
+def test_the_mcp_resource_and_tool_names_are_pinned() -> None:
+    """§41: the surface is reviewed, so adding anything to it is a deliberate change."""
+    from assistant.adapters.mcp.resources import RESOURCE_URIS
+    from assistant.adapters.mcp.tools import (
+        COMPLETE_TASK_TOOL,
+        CREATE_TASK_TOOL,
+        GET_CASE_TOOL,
+        GET_TASK_TOOL,
+        READ_TOOL_NAMES,
+        SEARCH_KNOWLEDGE_TOOL,
+        WRITE_TOOL_NAMES,
+    )
+
+    assert RESOURCE_URIS == (
+        "assistant://status",
+        "assistant://tasks/open",
+        "assistant://cases/open",
+        "assistant://plan/current",
+    )
+    assert READ_TOOL_NAMES == (GET_TASK_TOOL, GET_CASE_TOOL)
+    assert WRITE_TOOL_NAMES == (CREATE_TASK_TOOL, COMPLETE_TASK_TOOL)
+    assert SEARCH_KNOWLEDGE_TOOL == "assistant_search_knowledge"
+    assert {GET_TASK_TOOL, GET_CASE_TOOL, CREATE_TASK_TOOL, COMPLETE_TASK_TOOL} == {
+        "assistant_get_task",
+        "assistant_get_case",
+        "assistant_create_task",
+        "assistant_complete_task",
+    }
+    assert not [uri for uri in RESOURCE_URIS if "mail" in uri or "fact" in uri]
+
+
+def test_the_mcp_surface_adds_no_schema() -> None:
+    """§49: MCP keeps no durable server state, so migrations still end at 0015."""
+    migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
+
+    assert migrations[-1] == "0015_inbound_observations.sql"
+    assert not [name for name in migrations if "mcp" in name]
+
+
+def test_the_status_command_advertises_the_mcp_surface_honestly() -> None:
+    """§51: the status view names the integration without claiming an agent runtime."""
+    text = (SOURCE_ROOT / "cli.py").read_text(encoding="utf-8")
+
+    assert "MCP / VS Code: local stdio, controlled capabilities" in text
+    assert "read-only by default" in text
+    # The row says what it is not, and it is not dressed up as a working agent.
+    assert "no agent runtime, no execution, no approval" in text
+    assert "developer integration" in text

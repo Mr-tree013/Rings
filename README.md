@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.7.0（邮件 + eHall + 手机控制面 + 人工确认的事实与 Playbook + 网页/手工观察）
+## 当前状态：v0.8.0（邮件 + eHall + 手机控制面 + 人工确认的事实与 Playbook + 观察 + 受控 MCP）
 
 已完成：
 
@@ -553,6 +553,56 @@ pw ingest show INPUT
   repair 修复（即使这一轮没有任何页面变化）。一个目标失败只影响它自己，daemon 的其它 service 照常运行。
 - **没有 model 时不丢数据**：没有可用 model 时 `event-worker` 不启动，观察与事件保持 durable 的
   `RECEIVED` 状态，配置好 provider 后会被处理；`web-watch` 只在有 enabled target 时才加入 daemon。
+
+受控的 MCP / VS Code 集成（Phase 8B）：**已实现** 一个本地 stdio MCP server —— 让编辑器（和你
+在编辑器里使用的 agent）看到开放的 task / case / 本周计划，而**不能**审批、执行或发送任何东西：
+
+```toml
+# ~/.config/growing-assistant/config.toml
+[mcp]
+enabled = true
+write_scope = "none"        # none | tasks
+expose_knowledge = false    # 只有你明确需要时才打开
+```
+
+```bash
+# 1. 看看这个 host 实际会暴露什么（本地、只读、不启动 server）
+pw mcp status
+
+# 2. 打印 VS Code 配置片段（只打印，不写任何文件）
+pw mcp vscode-config
+
+# 3. 把 snippet 放进 VS Code 的 MCP 配置（workspace 或 user 的 mcp.json），
+#    然后启动/信任这个 server，先检查 read-only 的 resources / tools。
+```
+
+要点：
+
+- **只是一个本地适配器，不是 Agent Runtime**：它是 VS Code 启动的 stdio 子进程，
+  不托管在 `assistantd`、不需要 daemon 在跑、不监听任何端口。stdout 只承载 MCP 协议消息，
+  日志全部走 stderr。
+- **默认只读、默认关闭**：`enabled = false` 时 server 会在 stderr 说明原因并以非零码退出
+  （stdout 保持为空）；开启后默认 `write_scope = "none"`、`expose_knowledge = false`。
+  默认 surface 恰好是 4 个 resource（`assistant://status`、`assistant://tasks/open`、
+  `assistant://cases/open`、`assistant://plan/current`）与 2 个只读 tool
+  （`assistant_get_task`、`assistant_get_case`）。case 只返回生命周期字段，不展开其中的 action。
+- **写能力必须由你在服务器端显式打开**：只有 `write_scope = "tasks"` 才会注册
+  `assistant_create_task` / `assistant_complete_task`，并且只调用既有 `TaskService`
+  （deadline reminder、commitment revision、rolling replan 语义完全一致）。
+  未开启时这两个 tool **不存在**（客户端按名字调用得到 unknown tool）——
+  VS Code 的 tool-call 确认框只是 UX，不是授权边界。
+- **MCP 永远不能做的事**：创建 Approval、执行 ActionRequest、发送邮件、提交 eHall、
+  确认/拒绝 fact、创建/晋升 Playbook、读写文件、执行 shell、访问任意 HTTP/browser、
+  使用 sampling/elicitation/prompts，或通过 MCP roots 读 workspace 文件。
+  它也不 import `/proc` 或凭据：server 读的是和你其它命令同一份 host 配置。
+- **知识库是显式 opt-in**：只有 `expose_knowledge = true` 才会出现
+  `assistant_search_knowledge`，它是**本地 deterministic 全文检索**（不调用任何模型），
+  只返回 logical URI + source span + bounded excerpt（单条 ≤1200 字符、总计 ≤6000），
+  绝不返回物理路径或整篇文档。tool 描述明确写着：这些 excerpt 会被交给连接的 MCP client/model。
+- **MCP 不产生新状态**：没有 migration、没有 session、没有 durable server state；
+  它只是把既有 SQLite 状态读出来（以及在允许时写 task）。
+- **VS Code 的信任提示是客户端的事**：VS Code 会要求你信任本地 MCP server，
+  这个项目不去修改你的编辑器配置（`pw mcp vscode-config` 只打印），也不把那段信任当成自己的授权。
 
 **尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
 公网部署 / cloud relay / VPN / 第三方登录、手机推送（APNs / FCM / Web Push）、

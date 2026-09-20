@@ -1,6 +1,6 @@
 [project]
 name = "growing-assistant"
-version = "0.7.0"
+version = "0.8.0"
 description = "A personal assistant that grows: mail, personal knowledge, eHall errands and mobile approval in one auditable loop."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -14,11 +14,13 @@ dependencies = [
     "playwright>=1.63.0",
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
 pw = "assistant.cli:main"
 assistantd = "assistant.daemon:main"
+growing-assistant-mcp = "assistant.adapters.mcp.server:main"
 
 [dependency-groups]
 dev = [

@@ -397,6 +397,36 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   `pw ingest text` 先写 `manual_inputs` 再幂等 ingest `manual.input.received`（`external_id =
   manual-input:<uuid>`，content 只含 `manual_input_id` 与 `source`）；两个 crash window 都由每轮 bounded
   repair 修复。source 只有 `manual` / `qq-forward` / `other` 三个名字，不含可执行语义。
+- **MCP is a local adapter, not an autonomous runtime.** 它是 VS Code 启动的本地 stdio 子进程，
+  不托管在 `assistantd` / `mobile-web`，不需要 daemon 运行，也不通过 localhost RPC 联系 daemon。
+- **MCP is stdio-only in V1.** 没有 streamable-http / SSE / websocket / TCP / Unix listener；
+  `growing-assistant-mcp` 最多接受 `--version`，`--transport http` 之类的参数直接报错退出。
+  **MCP protocol stdout must contain protocol messages only**：日志一律走 stderr，server 内不得 `print`。
+- **The default MCP surface is read-only.** 默认 `[mcp] enabled = false`；即便开启，
+  `write_scope = "none"`、`expose_knowledge = false`，只注册 4 个 resource
+  （`assistant://status|tasks/open|cases/open|plan/current`）与 2 个 read tool
+  （`assistant_get_task` / `assistant_get_case`，均标 `readOnlyHint`）。
+- **MCP task writes require explicit server-side write_scope=tasks.**
+  只有 `write_scope = "tasks"` 时才注册 `assistant_create_task` / `assistant_complete_task`，
+  且只能调用既有 `TaskService`（deadline reminder、commitment revision、rolling replan 语义照旧）。
+  capability 未开启时工具**不存在**（客户端按名字调用得到 unknown tool），
+  绝不依赖 VS Code 的确认框作为授权边界。没有 `force` / `bulk-complete` / `complete-all`。
+- **MCP cannot create Approval or execute ActionRequest.**
+  整个 `adapters/mcp/` 与 `application/mcp_facade.py` 不得 import/name `ApprovalService`、
+  `create_challenge`、`approve`、`ActionExecutionService`、`ActionExecutor`，
+  也不得暴露 SMTP/eHall/browser/Sent lookup：MCP client 永不成为“人类 Approval”。
+- **MCP cannot confirm facts or promote playbooks.**
+  两个模块都不得 import `LearningService` / `PlaybookService`，因此无法确认/拒绝 fact、
+  无法创建/晋升/拒绝/退休 playbook —— Phase 7 的人类边界继续保持 CLI-only。
+- **MCP never exposes generic filesystem, shell, HTTP or browser capabilities.**
+  没有 SQLite 查询工具、没有文件读写、没有 shell/subprocess、没有任意 HTTP/browser tool，
+  也不使用 MCP roots 访问 workspace 文件；没有 sampling / elicitation / prompts / MCP Apps。
+- **Knowledge exposure through MCP is opt-in and bounded.**
+  只有 `[mcp] expose_knowledge = true` 才注册 `assistant_search_knowledge`：本地 deterministic
+  full-text search（不调用 `GroundedAnswerService` / `StructuredModel` / ModelPort / web search），
+  输入 query ≤1000 / root_id 可选 / limit 1..8，输出只有 logical URI + source span + bounded excerpt
+  （单条 ≤1200、总计 ≤6000），绝不含物理路径、挂载路径、rowid 或整篇文档；tool description 明确说明
+  内容会被发送给连接的 MCP client/model。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -607,6 +637,22 @@ model 错误分类）、`observation_analyses` durable 审计、daemon `web-watc
 worker 启动条件改为「有可用 model」、`pw watch targets|status|sync|observations|observation show`。
 **本阶段无 Task/Case/Fact/Playbook/Action/Approval/Notification 自动创建，无 generic HTTP/browser
 能力，无模型生成 URL。**
+
+**Phase 8B 已完成（v0.8.0）**：controlled MCP / VS Code integration（ADR-0030）：
+official MCP Python SDK v2（`mcp>=2,<3`，`from mcp.server import MCPServer`）、
+`[mcp]` 配置（`enabled` / `write_scope=none|tasks` / `expose_knowledge`，默认全关）、
+独立 console script `growing-assistant-mcp`（stdio-only，最多 `--version`，日志走 stderr，
+disabled 时 stderr 报错且 stdout 为空）、`adapters/mcp/{server,resources,tools}.py`
+（唯一 import MCP SDK 的包）、`application/mcp_facade.py`（不 import MCP SDK，只把既有
+TaskService / CaseService / commitment 读模型 / planner week window / notification inbox /
+可选 knowledge search 整理成 bounded DTO）、4 个 resource（status / tasks/open / cases/open /
+plan/current）、2 个 read tool + 可选 `assistant_search_knowledge` +
+可选 `assistant_create_task` / `assistant_complete_task`（仅 `TaskService`）、
+typed tool error（`{"error":{"kind","message"}}`，不含 SQL/路径/stack trace）、
+`pw mcp status` / `pw mcp vscode-config`（只打印 snippet，绝不写 `.vscode`）、
+in-process contract tests + 真实 stdio subprocess integration test。
+**本阶段无 migration（仍 0001–0015）、无 durable MCP state、无 Approval/Execution/Fact/Playbook
+能力、无 filesystem/shell/HTTP/browser/sampling。**
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
