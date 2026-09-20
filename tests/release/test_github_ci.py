@@ -143,6 +143,15 @@ def test_the_workflow_reaches_for_no_secret_and_no_bootstrap() -> None:
         assert forbidden not in text, forbidden
 
 
+def test_the_workflow_pins_no_timezone() -> None:
+    """CI must stay timezone-neutral: the runner's UTC default is what finds host-timezone bugs."""
+    text = _without_comments()
+
+    for pinned in ("TZ:", "TZ="):
+        assert pinned not in text, pinned
+    assert "Asia/Shanghai" not in text
+
+
 def test_the_readme_shows_the_ci_badge_for_this_workflow() -> None:
     readme = README.read_text(encoding="utf-8")
 

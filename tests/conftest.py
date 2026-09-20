@@ -13,6 +13,8 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.support.timezone import machine_timezone
+
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -24,3 +26,16 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket.socket, "connect_ex", refuse)
     yield
+
+
+@pytest.fixture
+def shanghai_local_timezone() -> Iterator[None]:
+    """Run one test as if the machine's local timezone were Asia/Shanghai.
+
+    Display timestamps are rendered in the machine timezone (v1 contract), so a test that asserts a
+    rendered `+08:00` string has to control that timezone rather than inherit whatever the developer
+    machine or the CI runner happens to use. It is deliberately *not* autouse: a test that silently
+    depends on the host timezone should keep failing loudly.
+    """
+    with machine_timezone("Asia/Shanghai"):
+        yield

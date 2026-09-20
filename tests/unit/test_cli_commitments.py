@@ -85,7 +85,10 @@ def test_unknown_task_is_reported_cleanly(tmp_path: Path) -> None:
     assert "does not exist" in result.output
 
 
-def test_deadline_can_be_set_updated_and_cleared(tmp_path: Path) -> None:
+def test_deadline_can_be_set_updated_and_cleared(
+    tmp_path: Path, shanghai_local_timezone: None
+) -> None:
+    """The rendered deadline is a machine-local display string (see `format_local`)."""
     task_id = _add_task(tmp_path)
 
     first = runner.invoke(

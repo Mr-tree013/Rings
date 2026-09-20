@@ -68,7 +68,10 @@ def _proposal_id(output: str) -> str:
     return match.group(1)
 
 
-def test_plan_week_proposes_without_touching_plan_blocks(tmp_path: Path) -> None:
+def test_plan_week_proposes_without_touching_plan_blocks(
+    tmp_path: Path, shanghai_local_timezone: None
+) -> None:
+    """The proposal window is rendered in the machine-local timezone (see `format_local`)."""
     _add_task(tmp_path, "--deadline", DEADLINE)
 
     proposed = runner.invoke(app, ["plan", "week", "--next"], env=_env(tmp_path))
