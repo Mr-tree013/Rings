@@ -470,6 +470,67 @@ async def test_a_statement_in_chat_does_not_become_a_fact(
     assert messages[0].text == "记住我办公室在仙林"
 
 
+# ------------------------------------------------------------- calendar and work (§22)
+
+
+async def test_a_sentence_records_a_calendar_event(harness: ConversationHarness) -> None:
+    thread = await _thread(harness)
+    harness.queue(
+        plan(
+            operation(
+                "calendar.create",
+                {
+                    "title": "SE 课",
+                    "starts_at": "2026-09-24T06:00:00+00:00",
+                    "ends_at": "2026-09-24T08:00:00+00:00",
+                    "description": None,
+                },
+            )
+        )
+    )
+
+    reply = await harness.service.send(thread.id, "周四下午两点到四点是课")
+
+    assert reply.status is ConversationTurnStatus.COMPLETED
+    assert "已记录日程" in reply.text
+    events = await harness.commitments.list_calendar_events(
+        query_start=NOW, query_end=NOW + timedelta(days=7)
+    )
+    assert [event.title for event in events] == ["SE 课"]
+
+
+async def test_a_sentence_records_work_already_done(harness: ConversationHarness) -> None:
+    from assistant import bootstrap
+    from assistant.application.work_service import WorkService
+
+    thread = await _thread(harness)
+    task = await harness.create_task("写论文", estimated_minutes=300)
+    harness.queue(
+        plan(
+            operation(
+                "work.record",
+                {
+                    "task_id": str(task.id),
+                    "started_at": "2026-09-21T05:00:00+00:00",
+                    "ended_at": "2026-09-21T06:30:00+00:00",
+                },
+            )
+        )
+    )
+
+    reply = await harness.service.send(thread.id, "今天论文写了一个半小时")
+
+    assert reply.status is ConversationTurnStatus.COMPLETED
+    assert "已记录" in reply.text and "90 分钟" in reply.text
+    work = WorkService(
+        bootstrap.work_repository(harness.database),
+        harness.commitments,
+        harness.clock,
+        replan=None,
+    )
+    assert await work.get_task_actual_seconds(task.id) == 90 * 60
+
+
 # ------------------------------------------------------------------- knowledge (§24)
 
 
