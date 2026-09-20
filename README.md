@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 5 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 线程/分类 + 回复草稿）
+## 当前状态：Phase 6 进行中（v0.4.0：model 边界 + 自然语言预览 + IMAP 收信 + 线程/分类 + 回复草稿 + 审批/执行边界）
 
 已完成：
 
@@ -20,6 +20,9 @@
 **同时**配置了 mail 与可用 model 时的 `event-worker`（唯一的真实业务 handler）。没有 model 时
 不启动 `event-worker`：一个连不上 provider 的 worker 只会把每封邮件 dead-letter，而停在
 `RECEIVED` 的积压可以在配置好 model 后继续处理。
+
+**没有任何真实外部副作用能力**：Phase 6A 的 action/approval/execution 边界已经落地，但
+executor 注册表为空，所以今天没有任何 action 能被真正执行（也没有 SMTP / eHall / browser）。
 
 **尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
 因此变更检测有一个有界延迟（默认 300 秒，可配置到 10 秒）。
@@ -78,9 +81,8 @@ pw interpret "add a task to write the SE lab report, high priority, 5 hours, due
 最多 50 条）、current time、planning timezone。**task description、knowledge 内容、文件、
 notification、scheduler payload 都不会发送。** 模型给出的 task UUID 必须来自本次 context，否则
 直接拒绝；没有 `[planning].timezone` 时任何涉及时间的命令一律转为 clarification。
-**尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
-conversation memory、answer persistence / FactCandidate、web search、eHall/browser、
-mail 回复起草与发送。
+**尚未实现**：agent tool loop、read-only multi-tool composition、conversation memory、
+answer persistence / FactCandidate、web search、eHall/browser、mail 回复发送。
 
 基于来源的个人知识问答（Phase 4C）：**已实现** `pw ask` —— 只根据你自己已索引的资料回答，
 每句话都必须带 citation，来源路径/页码/行号由本地解析：
@@ -107,8 +109,8 @@ pw ask "What is the deadline for my SE lab?"
   当作证据。
 - `pw ask` is read-only；它不修改文件、不写 index、不创建任何 durable state，也不执行命令。
 - `pw search` 仍然是不调用模型的本地搜索。
-**尚未实现**：agent tool loop、read-only multi-tool composition、command execution boundary、
-conversation memory、answer persistence / FactCandidate、web search、eHall/browser。
+**尚未实现**：agent tool loop、read-only multi-tool composition、conversation memory、
+answer persistence / FactCandidate、web search、eHall/browser。
 
 收信（Phase 5A）：**已实现** durable IMAP inbound sync —— 配置 `[[mail.accounts]]`（host/port/
 username/mailbox，仅 TLS），凭据只从环境变量读取：
@@ -201,9 +203,49 @@ pw mail draft edit DRAFT --body "..." --subject "..." # 本地编辑（乐观并
 - **没有任何背景起草**：`EventWorker`、`mail-sync`、scheduler 与 daemon 启动都不会创建草稿；只有
   `pw mail draft create` 会调用模型（因此可能产生费用）。生成草稿**不等于发送**。
 
-**尚未实现**：正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、分类结果自动转
-Task/Case、SMTP 发送与审批流程（本阶段无 `ActionRequest`、无 Approval）、事件删除同步
-（server-side deletion）、attachment materialization、QQ 与站点 watcher。
+审批与执行边界（Phase 6A）：**已实现** Case / ActionRequest / Approval / ExecutionRun 安全基础：
+
+```bash
+pw cases                       # 只读：case 列表
+pw case add "报名课程"          # 建一个多步骤事务容器
+pw case show CASE              # 只读：容器 + 里面准备好的 action
+pw case done CASE / cancel CASE
+
+pw actions                     # 只读：action 列表（含 approval / execution 状态）
+pw action show ACTION          # 只读：exact payload + fingerprint + 当前状态
+pw action challenge ACTION     # 生成一次性 approval token（只显示一次）
+pw action approve ACTION TOKEN # 人工 approve 这个 exact action
+pw action execute ACTION       # 执行（Phase 6A production capability set 为空）
+pw action cancel ACTION        # 取消，使其永远不能被执行
+```
+
+要点：
+
+- **每个外部副作用都必须由人 approve，且绑定到 exact fingerprint**：`Approval` 绑定
+  `action_id + action_fingerprint`（= SHA256(canonical JSON payload)）。payload 创建后不可修改，
+  内容一变就是新的 `ActionRequest`，旧 approval 自动失效。执行前会重新 hash payload 校验，
+  绝不只信数据库里的 fingerprint 字段。
+- **token 只用一次、寿命 10 分钟、只存 hash**：challenge token 是 256-bit 随机串，DB 只保存
+  `sha256(token)`；明文只在 `pw action challenge` 输出一次，不会写日志、不会在其它命令再显示、
+  错误信息也不会回显。approve 是 single-use，expired/已消费/错误 token 一律拒绝。
+- **同一 action 同时只能有一个有效 approval**：DB partial unique index +
+  service 双重保证；approve 后再 approve 会被拒绝（先等待过期，过期后被 supersede 并保留历史）。
+- **执行先消费 approval，再调用 executor，二者同一 transaction**：任何时刻都只有一个调用者能
+  消费成功，并发执行只会真正执行一次。`FAILED` 也会花掉 approval（想重试必须重新人工 approve）。
+- **不确定的结果绝不自动重试**：`UNKNOWN`（外部结果不可判定）与崩溃留下的 `RUNNING` 会阻塞同一
+  action 的再次执行，直到未来的 executor-specific reconciliation；`CancelledError` 直接传播，
+  不会被悄悄标成失败。
+- **capability 集合默认为空**：Phase 6A 不注册任何真实 executor，所以 `pw action execute` 对任何
+  action 都返回 `CapabilityUnavailable`，并且**不消费 approval、不创建 execution run**。没有
+  generic shell/browser/HTTP executor，高风险能力是「实现不存在」而不是「prompt 禁止」。
+- **模型与自动化无法 approve**：Interpreter / GroundedAnswer / MailAnalysis / MailEventHandler /
+  MailDraftService / EventWorker / Scheduler 都没有创建 Approval 的代码路径；`pw action` 也没有
+  `--force`/`--approve-all`，并且没有 `pw action create`（ActionRequest 只能由 typed factory 或
+  应用 API 准备）。
+
+**尚未实现**：SMTP executor（Phase 6B）、eHall executor、browser executor、mobile approval UI、
+正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、分类结果自动转 Task/Case、
+事件删除同步（server-side deletion）、attachment materialization、QQ 与站点 watcher。
 
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
@@ -217,10 +259,11 @@ smail
   ↓  IMAP incremental fetch (UIDVALIDITY + UID)
 MailMessage → deterministic thread → InboundEvent → MailAnalysis (candidates only)
   ↓  pw mail draft create（显式；可选 --context-query 才读个人知识）
-MailDraft（本地草稿；不发送、无 Approval / ActionRequest）
+MailDraft（本地草稿；不发送）
   ↓  (后续 Phase：Case → knowledge search → material checklist)
-  → draft/prepare → ActionRequest → approval → execute → result → archive
-  → PlaybookCandidate → review/test → Playbook
+  → draft/prepare → ActionRequest（immutable + fingerprint）
+  → Approval（人类、exact fingerprint、single-use）→ execute（executor 能力集为空）
+  → result → archive → PlaybookCandidate → review/test → Playbook
 ```
 
 进程模型：一个长期运行的 `assistantd`（Python 3.13 + asyncio），未来内部承载四类长期服务，
@@ -230,8 +273,10 @@ MailDraft（本地草稿；不发送、无 Approval / ActionRequest）
 四条不可破坏的安全约束（详见 spec 与 ADR）：
 
 1. 幂等由代码与持久状态保证，模型不参与幂等判断。
-2. 任何外部副作用必须绑定具体 `ActionRequest` 的人工 `Approval`（approval 绑定 action fingerprint，
-   内容变化即失效；runtime 没有自行批准的代码路径）。
+2. 任何外部副作用必须绑定具体 `ActionRequest` 的人工 `Approval`（approval 绑定 action
+   fingerprint，内容变化即失效；runtime 没有自行批准的代码路径）。Phase 6A 已实现该边界：
+   approval 只能由 `pw action approve` 用一次性 token 创建，执行前重新校验 fingerprint，
+   且 production executor 能力集为空（ADR-0023）。
 3. 事实区分 `FactCandidate` 与 `ConfirmedFact`；自动填表只允许使用已确认、未过期、来源可追溯、
    且被目标字段许可的事实。
 4. 高风险能力（退课、撤销申请、退宿等）在代码能力集合中物理不存在，不靠 prompt 禁止。

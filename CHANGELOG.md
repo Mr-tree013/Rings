@@ -124,6 +124,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance preserved. Reading and editing need no provider at all, and nothing in the daemon,
   the event worker or the sync path can create a draft.
 
+- Case / ActionRequest / Approval / ExecutionRun safety foundation (ADR-0023): a durable `Case`
+  container, an immutable `ActionRequest` whose payload is canonicalised once and whose SHA-256 is
+  its identity, a hash-only single-use approval challenge, a human approval bound to one exact
+  fingerprint, and one recorded execution attempt per approval. There is no SMTP, eHall, browser
+  or shell capability anywhere: the production executor set is empty, so every action type that
+  can be named today is one that cannot be performed.
+- Canonical, tamper-resistant action payloads: only JSON data is accepted (`NaN`, infinities,
+  `bytes`, datetimes and arbitrary objects are refused), the fingerprint is
+  `SHA256(canonical JSON)`, and it is re-derived whenever an action is loaded — a row whose payload
+  and fingerprint disagree cannot even be materialised, and an execution re-hashes before it
+  touches an approval.
+- Approval challenge secrets that cannot leak: a 256-bit random token is returned exactly once by
+  `pw action challenge`, and only `sha256(token)` is stored. Tokens are single-use with a 600-second
+  TTL, are never logged, are never echoed in an error, and are never shown again by a later command.
+  At most one approval may be outstanding per action; re-approving after expiry supersedes the old
+  record instead of deleting or overwriting it, so the audit trail keeps every decision.
+- Atomic approval consumption and execution start: one transaction re-verifies the fingerprint,
+  refuses an unresolved earlier attempt, consumes the exact approval with a compare-and-set and
+  creates the `RUNNING` run, so two concurrent callers cannot both execute and the executor runs
+  once. A successful outcome marks the action `EXECUTED` in the same transaction; a definite failure
+  leaves it `PREPARED` with the approval spent; an `UNKNOWN` result — including an executor that
+  raised or a process that was cancelled — blocks any further execution until a future
+  executor-specific reconciliation, and is never retried automatically.
+- `pw cases` / `pw case add|show|done|cancel` and `pw actions` / `pw action
+  show|challenge|approve|execute|cancel`: the CLI shows the exact payload and fingerprint, renders
+  approval and execution state honestly, refuses a wrong or expired token without echoing it, and
+  answers `CapabilityUnavailable` (without consuming anything) for every action in a deployment with
+  no registered executor. There is deliberately no `pw action create`, no `--force` and no
+  `--approve-all`.
+
 ## [0.4.0] - 2026-09-20
 
 Phase 4 (in progress): a model boundary the rest of the project can trust, and natural-language

@@ -29,7 +29,9 @@ from rich.table import Table
 from assistant import (
     __version__,
     bootstrap,
+    cli_actions,
     cli_ask,
+    cli_cases,
     cli_commitments,
     cli_interpreter,
     cli_mail,
@@ -86,6 +88,8 @@ cli_model.register(app)
 cli_interpreter.register(app)
 cli_ask.register(app)
 cli_mail.register(app)
+cli_cases.register(app)
+cli_actions.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -182,7 +186,11 @@ def status() -> None:
         "model", "provider-independent boundary (DeepSeek adapter); structured output validated"
     )
     table.add_row("interpreter", "natural-language command preview (never executes)")
-    table.add_row("execution", "structured CLI confirmation required")
+    table.add_row(
+        "execution",
+        "human-approved actions only (approval bound to one exact fingerprint; "
+        "no executor capability registered yet)",
+    )
     table.add_row(
         "external inputs",
         "IMAP inbound mail (receive-only: sync, deterministic threading, structured "
@@ -197,7 +205,7 @@ def status() -> None:
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
         "integrations",
-        "[yellow]not implemented[/yellow] (sending, cases, web, push, eHall)",
+        "[yellow]not implemented[/yellow] (SMTP sending, web, push, eHall, browser)",
     )
     console.print(table)
     console.print(

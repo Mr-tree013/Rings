@@ -499,6 +499,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0007_inbound_mail.sql",
         "0008_mail_intelligence.sql",
         "0009_mail_reply_drafts.sql",
+        "0010_case_action_approval.sql",
     ]
 
 
@@ -999,13 +1000,141 @@ def test_nothing_outside_the_cli_can_create_a_draft() -> None:
     assert "mail_draft_writer" in (SOURCE_ROOT / "cli_mail.py").read_text(encoding="utf-8")
 
 
-def test_no_sending_approval_or_action_request_capability_exists() -> None:
-    """The vocabulary of acting on the user's behalf is absent, not merely disabled."""
-    forbidden = {"smtplib", "ActionRequest", "Approval", "Outbox", "send_mail", "ehall"}
+def test_the_draft_path_still_cannot_reach_the_action_layer() -> None:
+    """Drafting produces drafts. It never prepares, approves or executes an action."""
+    forbidden = ("assistant.application.approval_service", "assistant.application.action_execution",
+                 "assistant.application.action_service", "assistant.ports.action_repository",
+                 "assistant.ports.action_executor", "assistant.domain.approval",
+                 "assistant.domain.execution")
     offenders = [
-        f"{path.relative_to(SOURCE_ROOT)} names {name}"
-        for path in sorted(SOURCE_ROOT.rglob("*.py"))
-        for name in _identifiers(path) & forbidden
+        f"{relative} imports {imported}"
+        for relative in DRAFT_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden)
+    ]
+    assert not offenders, offenders
+    # Checked on identifiers, not on prose: a docstring may *explain* that drafting approves
+    # nothing without the module being able to name an approval in code.
+    named = [
+        f"{relative} names {name}"
+        for relative in DRAFT_MODULES
+        for name in _identifiers(SOURCE_ROOT / relative)
+        & {"Approval", "ApprovalRecord", "ActionRequest", "ExecutionRun", "ActionExecutor"}
+    ]
+    assert not named, named
+
+
+ACTION_MODULES = (
+    "application/case_service.py",
+    "application/action_service.py",
+    "application/approval_service.py",
+    "application/action_execution.py",
+    "domain/case.py",
+    "domain/action.py",
+    "domain/approval.py",
+    "domain/execution.py",
+    "ports/case_repository.py",
+    "ports/action_repository.py",
+    "ports/action_executor.py",
+)
+
+MODULES_ALLOWED_TO_KNOW_THE_EXECUTOR_PROTOCOL = frozenset(
+    {
+        "ports/action_executor.py",
+        "application/action_execution.py",
+        "bootstrap.py",
+        "cli_actions.py",
+    }
+)
+
+
+def test_the_action_layer_has_no_transport_and_no_model() -> None:
+    """No SMTP, no HTTP, no browser, no shell — and no model anywhere near approval."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in ACTION_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "smtplib",
+                "imaplib",
+                "socket",
+                "ssl",
+                "subprocess",
+                "assistant.adapters",
+                "assistant.store",
+                "assistant.ports.model",
+                "assistant.application.structured_model",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.application.mail_drafts",
+                "assistant.application.mail_event_handler",
+            )
+        )
+        or imported in {"sqlite3", "httpx"}
     ]
 
     assert not offenders, offenders
+    for relative in ACTION_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        for needle in (
+            "smtplib",
+            "ModelPort",
+            "StructuredModel",
+            "tool_call",
+            "agent_loop",
+            "os.system",
+            "eval(",
+            "exec(",
+        ):
+            assert needle not in text, f"{relative} mentions {needle}"
+
+
+def test_only_the_composition_root_and_the_execution_path_know_an_executor() -> None:
+    """A concrete executor cannot be imported anywhere it could be wired by accident."""
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(
+            name.endswith("ActionExecutor") or name.endswith("action_executor")
+            for name in _imported_names(path)
+        )
+        and str(path.relative_to(SOURCE_ROOT))
+        not in MODULES_ALLOWED_TO_KNOW_THE_EXECUTOR_PROTOCOL
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_production_executor_set_is_empty() -> None:
+    """Phase 6A ships no capability at all: every named action type is unperformable."""
+    from assistant.bootstrap import registered_action_executors
+
+    assert registered_action_executors() == {}
+
+
+def test_no_smtp_shell_or_browser_capability_exists() -> None:
+    """High-risk capabilities are missing from the code, not forbidden by a prompt."""
+    forbidden_modules = ("smtplib", "selenium", "playwright", "pyppeteer", "requests")
+    offenders = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {imported}"
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for imported in _imported_modules(path)
+        if imported.startswith(forbidden_modules)
+    ]
+
+    assert not offenders, offenders
+    banned_identifiers = {
+        "send_mail",
+        "sendmail",
+        "submit_form",
+        "open_browser",
+        "run_shell",
+        "ActionRequestCreate",
+    }
+    named = [
+        f"{path.relative_to(SOURCE_ROOT)} names {name}"
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for name in _identifiers(path) & banned_identifiers
+    ]
+    assert not named, named

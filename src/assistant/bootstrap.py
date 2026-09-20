@@ -8,7 +8,7 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import timedelta
 from pathlib import Path
 
@@ -23,8 +23,13 @@ from assistant.adapters.mail.imap import ImapMailSource
 from assistant.adapters.mail.parser import Rfc822MailParser
 from assistant.adapters.mail.raw_store import RawMailStore
 from assistant.adapters.model.deepseek import DeepSeekAdapter
+from assistant.adapters.security.tokens import secure_approval_token_factory
 from assistant.adapters.system_clock import SystemClock
+from assistant.application.action_execution import ActionExecutionService
+from assistant.application.action_service import ActionService
+from assistant.application.approval_service import ApprovalService
 from assistant.application.calendar_service import CalendarService
+from assistant.application.case_service import CaseService
 from assistant.application.event_inbox import EventInbox
 from assistant.application.event_worker import EventWorker
 from assistant.application.greedy_planner import GreedyPlanner
@@ -53,6 +58,7 @@ from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.structured_model import StructuredModel
 from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
+from assistant.domain.action import ActionType
 from assistant.domain.config import (
     DEFAULT_MAIL_TIMEOUT_SECONDS,
     AssistantConfig,
@@ -65,9 +71,12 @@ from assistant.domain.errors import (
     ModelCredentialsMissing,
     ModelNotConfigured,
 )
+from assistant.ports.action_executor import ActionExecutor
 from assistant.ports.clock import Clock
 from assistant.ports.mail_source import MailSource
 from assistant.ports.model import ModelPort
+from assistant.store.actions import SqliteActionRepository
+from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
@@ -97,6 +106,62 @@ def runtime_database(clock: Clock) -> Database:
 def catalog_repository(database: Database) -> SqliteCatalogRepository:
     """The host catalog store."""
     return SqliteCatalogRepository(database)
+
+
+def case_repository(database: Database) -> SqliteCaseRepository:
+    """The durable case container store."""
+    return SqliteCaseRepository(database)
+
+
+def action_repository(database: Database) -> SqliteActionRepository:
+    """Durable actions, approval challenges, approvals and execution runs."""
+    return SqliteActionRepository(database)
+
+
+def case_service(clock: Clock, database: Database) -> CaseService:
+    """Cases and the actions prepared inside them."""
+    return CaseService(case_repository(database), action_repository(database), clock)
+
+
+def action_service(clock: Clock, database: Database) -> ActionService:
+    """Read-only views of actions, their approvals and their executions."""
+    return ActionService(action_repository(database), clock)
+
+
+def approval_service(clock: Clock, database: Database) -> ApprovalService:
+    """Human approval of one exact action fingerprint.
+
+    The token factory is the only randomness in the approval path, and it is injected here at the
+    composition root rather than imported by the layers that use it.
+    """
+    return ApprovalService(
+        action_repository(database), clock, token_factory=secure_approval_token_factory
+    )
+
+
+def registered_action_executors() -> dict[ActionType, ActionExecutor]:
+    """The external capabilities this deployment can actually perform.
+
+    Phase 6A ships an **empty** registry. Every action type that can be named — `mail.send`,
+    `ehall.submit-certificate` — is therefore unperformable, and `pw action execute` answers
+    `CapabilityUnavailable` without consuming an approval. A later phase registers a real
+    executor here, one capability at a time and with its own review.
+    """
+    return {}
+
+
+def action_execution_service(
+    clock: Clock,
+    database: Database,
+    *,
+    executors: Mapping[ActionType, ActionExecutor] | None = None,
+) -> ActionExecutionService:
+    """The executor boundary, over the registered capability set."""
+    return ActionExecutionService(
+        action_repository(database),
+        registered_action_executors() if executors is None else executors,
+        clock,
+    )
 
 
 def mail_repository(database: Database) -> SqliteMailRepository:
@@ -598,7 +663,13 @@ __all__ = [
     "MODEL_API_KEY_ENV",
     "AppPaths",
     "VaultManifestFile",
+    "action_execution_service",
+    "action_repository",
+    "action_service",
+    "approval_service",
     "calendar_service",
+    "case_repository",
+    "case_service",
     "catalog_repository",
     "catalog_service",
     "close_model",
@@ -625,6 +696,7 @@ __all__ = [
     "planner_service",
     "planning_repository",
     "raw_mail_store",
+    "registered_action_executors",
     "require_model_config",
     "rolling_replan_requester",
     "runtime_database",

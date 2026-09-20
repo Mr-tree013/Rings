@@ -33,7 +33,18 @@ def test_help_lists_only_implemented_commands() -> None:
     assert result.exit_code == 0, result.output
     assert "status" in result.output
     assert "doctor" in result.output
-    assert "approve" not in result.output
+    # Phase 6A added the case/action groups; approval lives inside `pw action`, and there is no
+    # bare top-level `approve`, `send` or `execute` command.
+    assert "cases" in result.output
+    assert "actions" in result.output
+    names = {
+        line.split("\u2502", 2)[1].strip().split(" ")[0]
+        for line in result.output.splitlines()
+        if line.startswith("\u2502") and line.split("\u2502", 2)[1].strip()
+    }
+    assert "approve" not in names
+    assert "execute" not in names
+    assert "send" not in names
 
 
 def test_doctor_succeeds_on_python_313() -> None:

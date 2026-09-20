@@ -224,6 +224,27 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   `needs_user_input`，不得编造。
 - **MailDraft edits use optimistic concurrency.** `UPDATE … WHERE id=? AND version=?`；版本不匹配
   必须抛 `StaleMailDraftUpdate`，禁止静默覆盖；编辑不允许改 recipient。
+- **Every external side effect must be authorized by a human Approval bound to one exact
+  ActionRequest fingerprint.** `Approval` 永远绑定 `action_id + action_fingerprint`；fingerprint
+  变化即失效，必须重新走 `pw action challenge` → `pw action approve`。
+- **ActionRequest payloads are immutable; changed content requires a new ActionRequest.**
+  没有 update/edit API；payload 只能是 JSON 数据（拒绝 NaN/Infinity/bytes/datetime/任意对象），
+  fingerprint = SHA256(canonical JSON)，且加载时重新 hash 校验，绝不只信 fingerprint 字段。
+- **Approval challenge secrets are single-use, short-lived, and stored only as hashes.**
+  token >=256-bit 随机、TTL 600s、DB 只存 `sha256(token)`；plaintext 只在
+  `create_challenge()` 返回一次，禁止 log、禁止在其它命令再次显示、错误信息不得回显 token。
+- **Approval is consumed before execution begins and can never authorize a second execution.**
+  `begin_execution` 必须在同一 transaction 内消费 Approval + 创建 `RUNNING` ExecutionRun；
+  FAILED 的 approval 也已消费，再次执行必须重新人工 approve。
+- **An ambiguous external execution result must never be blindly retried.**
+  `UNKNOWN`（以及崩溃留下的 `RUNNING`）必须阻塞同一 ActionRequest 的再次执行，直到未来的
+  executor-specific reconciliation；`CancelledError` 直接传播，不得自动标 FAILED。
+- **High-risk capabilities are absent from the executor set unless explicitly implemented.**
+  Phase 6A 的 production executor set 为空；禁止 generic shell/browser/HTTP executor，也禁止动态
+  import executor；「能命名某个 action type」不等于「有能力执行它」。
+- **Models and autonomous workers have no code path to create Approval records.**
+  Interpreter / GroundedAnswer / MailAnalysis / MailEventHandler / MailDraftService / EventWorker /
+  Scheduler 都不得 import ApprovalService；ApprovalService 也不得依赖 ModelPort/StructuredModel。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -341,12 +362,24 @@ generation_input_fingerprint）+ `mail_draft_sources`（仅 root/entry/chunk/log
 closed draft schema（body / used_source_ids / needs_user_input）、本地 source-id 校验、
 **默认不检索个人知识**（只有显式 `--context-query` 才调用既有 bounded GroundedContext）、
 oversize 无正文直接拒绝、optimistic edit（CAS）、`pw mail drafts|draft create|show|edit`。
+仍然不发送、无 SMTP、无 EventWorker 自动起草。
+
+**Phase 6A 已完成（仍是 0.4.0）**：Case + ActionRequest + Approval + ExecutionRun 安全基础
+（ADR-0023）：durable `Case`（OPEN→COMPLETED/CANCELLED，无 reopen）、不可变 `ActionRequest`
+（canonical JSON payload + SHA256 fingerprint + 加载时重新校验）、`ApprovalChallenge`（随机 token、
+DB 只存 hash、TTL 600s、single-use）、`Approval`（exact fingerprint 绑定、一次消费、
+`superseded_at` 保留历史、partial unique index 保证同一 action 同时只有一个有效 approval）、
+`ExecutionRun`（RUNNING/SUCCEEDED/FAILED/UNKNOWN）、atomic begin-execution（消费 approval + 建
+RUNNING 同 transaction）、并发 fencing、UNKNOWN/崩溃语义（不自动 retry）、`ActionExecutor` port +
+**空的 production capability set**、`pw cases|case add|show|done|cancel` 与
+`pw actions|action show|challenge|approve|execute|cancel`。仍然不发送、无 SMTP/eHall/browser。
 仍然不发送、无 SMTP / Approval / ActionRequest、无 EventWorker 自动起草。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task / SMTP 发送与审批 /
-site watcher / QQ 渠道 / eHall / browser / 个人估时学习 /
+mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
+SMTP executor（Phase 6B）/ eHall executor / browser executor / mobile approval UI /
+site watcher / QQ 渠道 / 个人估时学习 /
 agent tool loop / 多工具只读编排 / command execution boundary（`pw interpret --apply` 之类）/
 重复任务与重复事件 / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
 filesystem watcher 快速路径 / Web Server / Playwright /

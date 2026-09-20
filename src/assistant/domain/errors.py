@@ -693,6 +693,170 @@ class MailThreadNotFound(DomainError):
         super().__init__(f"mail thread {reference} does not exist")
 
 
+class InvalidCase(DomainError):
+    """A case was built with values that break its invariants."""
+
+
+class InvalidCaseTransition(DomainError):
+    """A status transition was attempted that the case lifecycle forbids."""
+
+    def __init__(self, current: object, target: object) -> None:
+        self.current = current
+        self.target = target
+        super().__init__(f"case cannot move from {current} to {target}")
+
+
+class CaseNotFound(DomainError):
+    """No case exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"case {reference} does not exist")
+
+
+class StaleCaseUpdate(DomainError):
+    """An update was built on a case version that has since changed, or that never existed."""
+
+    def __init__(
+        self, case_id: object, expected_updated_at: object, actual_updated_at: object
+    ) -> None:
+        self.case_id = case_id
+        self.expected_updated_at = expected_updated_at
+        self.actual_updated_at = actual_updated_at
+        super().__init__(
+            f"case {case_id} was modified since {expected_updated_at} "
+            f"(it is now {actual_updated_at}); reload and retry"
+        )
+
+
+class InvalidActionRequest(DomainError):
+    """An action request, its payload or its fingerprint breaks an invariant."""
+
+
+class InvalidActionPayload(DomainError):
+    """A payload is not JSON data: `NaN`, bytes, a datetime or an arbitrary object."""
+
+
+class ActionRequestNotFound(DomainError):
+    """No action request exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"action request {reference} does not exist")
+
+
+class ActionNotExecutable(DomainError):
+    """The action is not PREPARED, so it cannot be executed any more."""
+
+
+class ActionFingerprintMismatch(DomainError):
+    """The payload no longer hashes to the fingerprint the action claims.
+
+    Raised after re-hashing the stored payload, never by comparing the stored field with itself.
+    """
+
+    def __init__(self, action_id: object) -> None:
+        self.action_id = action_id
+        super().__init__(
+            f"action request {action_id} no longer matches its stored fingerprint"
+        )
+
+
+class CapabilityUnavailable(DomainError):
+    """No executor is registered for this action type.
+
+    The registered set is deliberately small; a type that can be *named* is not a type that can
+    be performed.
+    """
+
+    def __init__(self, action_type: object) -> None:
+        self.action_type = action_type
+        super().__init__(f"capability unavailable for action type {action_type}")
+
+
+class InvalidApproval(DomainError):
+    """An approval, a challenge or its token breaks an invariant."""
+
+
+class ApprovalChallengeNotFound(DomainError):
+    """No approval challenge exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"approval challenge {reference} does not exist")
+
+
+class InvalidApprovalToken(DomainError):
+    """The presented token is not the one this challenge was issued with.
+
+    The message never contains the presented token: a wrong secret is not echoed back.
+    """
+
+
+class ApprovalChallengeExpired(DomainError):
+    """The challenge is past its expiry and cannot be redeemed."""
+
+
+class ApprovalChallengeConsumed(DomainError):
+    """The challenge has already been redeemed. Single use means single use."""
+
+
+class ApprovalAlreadyOutstanding(DomainError):
+    """A live approval for this action already exists.
+
+    The previous one must be used, must expire, or must be superseded explicitly — a second
+    approval for the same action may never exist while the first is still valid.
+    """
+
+
+class ApprovalUnavailable(DomainError):
+    """No usable approval exists for this action and fingerprint.
+
+    Raised when an execution finds no unconsumed, unexpired approval — including when another
+    caller consumed the only one a moment earlier.
+    """
+
+
+class InvalidExecutionRun(DomainError):
+    """An execution run was built with values that break its invariants."""
+
+
+class ExecutionRunNotFound(DomainError):
+    """No execution run exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"execution run {reference} does not exist")
+
+
+class ActionExecutionUnresolved(DomainError):
+    """A previous attempt has no decidable outcome, so nothing may start another one.
+
+    A `RUNNING` run (a crash) or an `UNKNOWN` result (an ambiguous external outcome) both mean the
+    side effect may already have happened. Retrying is a decision for a later reconciliation, not
+    for an automatic retry or a fresh approval.
+    """
+
+    def __init__(self, action_id: object, status: object) -> None:
+        self.action_id = action_id
+        self.status = status
+        super().__init__(
+            f"action request {action_id} has an unresolved execution ({status}); "
+            "do not retry it blindly"
+        )
+
+
+class ActionExecutionUnknown(DomainError):
+    """An execution ended without a decidable result and was recorded as UNKNOWN."""
+
+    def __init__(self, action_id: object) -> None:
+        self.action_id = action_id
+        super().__init__(
+            f"execution of action request {action_id} is unknown: "
+            "the external effect may or may not have happened"
+        )
+
+
 class NotificationNotFound(DomainError):
     """No notification exists for the requested identity."""
 
@@ -702,9 +866,21 @@ class NotificationNotFound(DomainError):
 
 
 __all__ = [
+    "ActionExecutionUnknown",
+    "ActionExecutionUnresolved",
+    "ActionFingerprintMismatch",
+    "ActionNotExecutable",
+    "ActionRequestNotFound",
     "AmbiguousId",
+    "ApprovalAlreadyOutstanding",
+    "ApprovalChallengeConsumed",
+    "ApprovalChallengeExpired",
+    "ApprovalChallengeNotFound",
+    "ApprovalUnavailable",
     "CalendarEventNotActive",
     "CalendarEventNotFound",
+    "CapabilityUnavailable",
+    "CaseNotFound",
     "ConfiguredRootNotFound",
     "ContentExtractionError",
     "ContentTooLarge",
@@ -713,6 +889,7 @@ __all__ = [
     "DuplicateCommitment",
     "DuplicateInboundEvent",
     "EventNotFound",
+    "ExecutionRunNotFound",
     "FileChangedDuringExtraction",
     "Fts5Unavailable",
     "GroundedAnswerInputTooLong",
@@ -721,14 +898,21 @@ __all__ = [
     "InterpreterInputTooLong",
     "InterpreterInvalidReference",
     "InterpreterSemanticError",
+    "InvalidActionPayload",
+    "InvalidActionRequest",
+    "InvalidApproval",
+    "InvalidApprovalToken",
     "InvalidAssistantConfig",
     "InvalidCalendarEvent",
+    "InvalidCase",
+    "InvalidCaseTransition",
     "InvalidCatalogEntry",
     "InvalidCommandDraft",
     "InvalidCommitment",
     "InvalidDeadline",
     "InvalidEventClaim",
     "InvalidEventTransition",
+    "InvalidExecutionRun",
     "InvalidGroundedAnswer",
     "InvalidInboundEvent",
     "InvalidInterpretationResult",
@@ -794,6 +978,7 @@ __all__ = [
     "PlanningSnapshotChanged",
     "PlanningStateUnstable",
     "ScheduledJobNotFound",
+    "StaleCaseUpdate",
     "StaleEventClaim",
     "StaleMailDraftUpdate",
     "StalePlanProposal",

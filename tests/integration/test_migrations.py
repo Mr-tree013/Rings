@@ -99,7 +99,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
     ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
@@ -111,6 +111,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
         "0007_inbound_mail.sql",
         "0008_mail_intelligence.sql",
         "0009_mail_reply_drafts.sql",
+        "0010_case_action_approval.sql",
     ]
 
 
@@ -135,7 +136,7 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -174,7 +175,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0007", "0008", "0009"]
+    assert [migration.version for migration in applied] == ["0007", "0008", "0009", "0010"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -197,7 +198,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -290,7 +291,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0008", "0009"]
+    assert [migration.version for migration in applied] == ["0008", "0009", "0010"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -309,7 +310,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -425,7 +426,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0009"]
+    assert [migration.version for migration in applied] == ["0009", "0010"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -449,7 +450,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -539,6 +540,231 @@ def _assert_mail_draft_constraints(
         )
 
 
+def test_upgrade_adds_the_case_action_approval_tables(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """0010 adds the action boundary and leaves every earlier row untouched."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
+        "0006_scheduler_notifications.sql",
+        "0007_inbound_mail.sql",
+        "0008_mail_intelligence.sql",
+        "0009_mail_reply_drafts.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    apply_migrations(database, clock=clock, directory=legacy_directory)
+    message_id = str(uuid4())
+    task_id = str(uuid4())
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO mail_messages (id, account_id, message_id_header, references_json, "
+            "to_addresses_json, cc_addresses_json, reply_to_addresses_json, body_status, "
+            "content_fingerprint, size_bytes, parse_warnings, first_seen_at, last_seen_at) "
+            "VALUES (?, 'smail', '<a@example.edu>', '[]', '[]', '[]', '[]', 'available', ?, "
+            "10, 0, ?, ?)",
+            (message_id, "a" * 64, NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO tasks (id, title, status, priority, estimated_minutes, created_at, "
+            "updated_at) VALUES (?, 'Write report', 'open', 'high', 300, ?, ?)",
+            (task_id, NOW, NOW),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0010"]
+    with database.connect() as connection:
+        names = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        messages = connection.execute(
+            "SELECT count(*) AS total FROM mail_messages"
+        ).fetchone()
+        tasks = connection.execute("SELECT count(*) AS total FROM tasks").fetchone()
+    assert {
+        "cases",
+        "action_requests",
+        "approval_challenges",
+        "approvals",
+        "execution_runs",
+    } <= names
+    assert messages["total"] == 1 and tasks["total"] == 1  # older data survived
+
+    _assert_action_constraints(database)
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == (
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
+    )
+
+
+def _assert_action_constraints(database: Database) -> None:
+    """The action boundary's rules are enforced by SQLite, not only by the services."""
+    case_id = str(uuid4())
+    action_id = str(uuid4())
+    challenge_id = str(uuid4())
+    approval_id = str(uuid4())
+    insert_case = (
+        "INSERT INTO cases (id, title, status, created_at, updated_at, completed_at, "
+        "cancelled_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    insert_action = (
+        "INSERT INTO action_requests (id, case_id, action_type, payload_json, fingerprint, "
+        "status, created_at, executed_at, cancelled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    insert_challenge = (
+        "INSERT INTO approval_challenges (id, action_id, action_fingerprint, token_hash, "
+        "created_at, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    insert_approval = (
+        "INSERT INTO approvals (id, action_id, action_fingerprint, approved_at, expires_at, "
+        "consumed_at, superseded_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    later = "2026-09-23T09:10:00.000000+00:00"
+    with database.connect() as connection:
+        connection.execute(
+            insert_case, (case_id, "Register", "open", NOW, NOW, None, None)
+        )
+        connection.execute(
+            insert_action,
+            (
+                action_id,
+                case_id,
+                "mail.send",
+                '{"body":"hello"}',
+                "a" * 64,
+                "prepared",
+                NOW,
+                None,
+                None,
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="action_requests_status_is_known"):
+            connection.execute(
+                insert_action,
+                (
+                    str(uuid4()),
+                    case_id,
+                    "mail.send",
+                    "{}",
+                    "a" * 64,
+                    "sent",
+                    NOW,
+                    None,
+                    None,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="action_requests_type_is_namespaced"):
+            connection.execute(
+                insert_action,
+                (
+                    str(uuid4()),
+                    case_id,
+                    "send",
+                    "{}",
+                    "a" * 64,
+                    "prepared",
+                    NOW,
+                    None,
+                    None,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="action_requests_payload_is_json"):
+            connection.execute(
+                insert_action,
+                (
+                    str(uuid4()),
+                    case_id,
+                    "mail.send",
+                    "not json",
+                    "a" * 64,
+                    "prepared",
+                    NOW,
+                    None,
+                    None,
+                ),
+            )
+        # An action belongs to a case that exists.
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                insert_action,
+                (
+                    str(uuid4()),
+                    str(uuid4()),
+                    "mail.send",
+                    "{}",
+                    "a" * 64,
+                    "prepared",
+                    NOW,
+                    None,
+                    None,
+                ),
+            )
+        # A challenge always expires after it was created, and its token hash is a hash.
+        connection.execute(
+            insert_challenge,
+            (challenge_id, action_id, "a" * 64, "b" * 64, NOW, later, None),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="expires_after_creation"):
+            connection.execute(
+                insert_challenge,
+                (str(uuid4()), action_id, "a" * 64, "c" * 64, later, NOW, None),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="token_hash_is_sha256"):
+            connection.execute(
+                insert_challenge,
+                (str(uuid4()), action_id, "a" * 64, "SECRET", NOW, later, None),
+            )
+        # Two challenges can never share a token hash.
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                insert_challenge,
+                (str(uuid4()), action_id, "a" * 64, "b" * 64, NOW, later, None),
+            )
+        # At most one live approval per action.
+        connection.execute(
+            insert_approval,
+            (approval_id, action_id, "a" * 64, NOW, later, None, None),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                insert_approval,
+                (str(uuid4()), action_id, "a" * 64, NOW, later, None, None),
+            )
+        # Consuming the first makes room for a later, explicit approval.
+        connection.execute(
+            "UPDATE approvals SET consumed_at = ? WHERE id = ?", (NOW, approval_id)
+        )
+        connection.execute(
+            insert_approval,
+            (str(uuid4()), action_id, "a" * 64, NOW, later, None, None),
+        )
+        # A run is finished exactly when its status says so.
+        with pytest.raises(sqlite3.IntegrityError, match="execution_runs_status_is_known"):
+            connection.execute(
+                "INSERT INTO execution_runs (id, action_id, approval_id, status, started_at, "
+                "finished_at, error_summary) VALUES (?, ?, ?, 'sent', ?, NULL, NULL)",
+                (str(uuid4()), action_id, approval_id, NOW),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="finished_matches_status"):
+            connection.execute(
+                "INSERT INTO execution_runs (id, action_id, approval_id, status, started_at, "
+                "finished_at, error_summary) VALUES (?, ?, ?, 'succeeded', ?, NULL, NULL)",
+                (str(uuid4()), action_id, approval_id, NOW),
+            )
+
+
 def test_upgrade_adds_scheduled_jobs_and_notifications(
     tmp_path: Path, clock: FakeClock
 ) -> None:
@@ -588,7 +814,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0006", "0007", "0008", "0009"]
+    assert [migration.version for migration in applied] == ["0006", "0007", "0008", "0009", "0010"]
     with database.connect() as connection:
         tables = {
             str(row["name"])
@@ -613,7 +839,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -853,7 +1079,7 @@ def test_upgrade_from_0001_preserves_existing_events(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
+        "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
     ]
     with database.connect() as connection:
         migrated = connection.execute(
@@ -918,7 +1144,7 @@ def test_upgrade_from_0001_preserves_existing_events(
     # Re-running the migration set after the upgrade stays a no-op.
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -989,7 +1215,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     ]
     with database.connect() as connection:
         event_row = connection.execute(
@@ -1072,7 +1298,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -1129,7 +1355,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0004", "0005", "0006", "0007", "0008", "0009"
+        "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     ]
     with database.connect() as connection:
         stored_event = connection.execute(
@@ -1182,7 +1408,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )
 
 
@@ -1220,7 +1446,9 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0005", "0006", "0007", "0008", "0009"]
+    assert [migration.version for migration in applied] == [
+        "0005", "0006", "0007", "0008", "0009", "0010"
+    ]
     with database.connect() as connection:
         block = connection.execute(
             "SELECT origin, proposal_id, task_id FROM plan_blocks WHERE id = ?", (block_id,)
@@ -1278,5 +1506,5 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
-        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
     )

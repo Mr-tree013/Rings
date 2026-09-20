@@ -470,14 +470,16 @@ async def test_drafting_changes_nothing_but_the_draft_tables(
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-    # No outbox, no approval, no action request, no send log.
-    assert not {
-        "outbox",
-        "approvals",
-        "action_requests",
-        "smtp_queue",
-        "sent_messages",
-    } & names
+        counts = {
+            table: int(
+                connection.execute(f"SELECT count(*) AS total FROM {table}").fetchone()[0]
+            )
+            for table in ("action_requests", "approvals", "execution_runs")
+        }
+    # Drafting prepares no action, approves nothing and executes nothing: the Phase 6A tables
+    # exist and stay empty, and there is no outbox or send log at all.
+    assert counts == {"action_requests": 0, "approvals": 0, "execution_runs": 0}
+    assert not {"outbox", "smtp_queue", "sent_messages"} & names
 
 
 async def test_the_stored_fingerprint_matches_the_inputs(
