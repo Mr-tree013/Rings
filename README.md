@@ -13,6 +13,9 @@
   文本/PDF 正文抽取与 SHA-256、per-root FTS5（trigram）索引、带 `page`/`lines` 定位的检索。
 - 持续索引（v0.2.0）：`~/.config/growing-assistant/config.toml` 配置 Local/Vault roots，
   `assistantd` 周期性 reconciliation（scan → catalog → index），root 失败隔离与 supervisor。
+- 运行态加固（仍是 0.8.0，Phase 9A）：`pw integrity check` 只读跨域体检、`pw backup create|verify|
+  inspect` 一致备份归档（`.gab`）、`pw backup restore … --to DIR` 只做 staging 恢复并失效恢复前的
+  授权能力。详见「完整性检查、备份与恢复」。
 
 外部输入侧只实现了收信：没有公网服务、没有 cloud relay、没有手机推送。`assistantd` 现在托管
 `index-sync`（启动时执行一次存储 reconciliation 并按配置周期重复）、`scheduler`（durable
@@ -613,6 +616,68 @@ QQ 协议/客户端自动接入、个人估时学习、把 Playbook 实例化为
 需要登录或渲染 JavaScript 的站点（Phase 8A 只观察公开 HTTPS 页面）。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
+
+## 完整性检查、备份与恢复（Phase 9A，ADR-0031）
+
+运行态的权威只有一个 SQLite 数据库（`assistant.db`）加上它引用的两类不可变对象：mail raw
+RFC822 与 web normalized snapshot。备份就是把它们**一致地**取出来，恢复就是把它们**安全地**放回去。
+
+```bash
+pw integrity check                     # 只读、离线；不建库、不迁移、不修复
+
+pw backup create ~/assistant-backup.gab
+pw backup verify ~/assistant-backup.gab
+pw backup inspect ~/assistant-backup.gab
+
+pw backup restore ~/assistant-backup.gab --to ~/recovery/growing-assistant
+```
+
+- **一致性**：备份使用 SQLite 官方 backup API 取快照，**绝不**复制 `assistant.db` 或它的
+  `-wal`/`-shm`（daemon 运行时复制出来的文件可能是撕裂的）。引用对象按数据库里记录的 SHA-256
+  逐个复核：缺失是 `BackupSourceMissing`，hash 不符是 `BackupSourceCorrupt`，两种都让整次备份失败
+  ——不会产生「成功但缺文件」的归档。
+- **归档形状固定**：`manifest.json`（只带身份与 hash，不带正文）+ `runtime.sqlite3` +
+  `mail/raw/…` + `web/snapshots/…`，顶层没有第五种成员。因此 **知识索引、原始 vault/local 文件、
+  eHall 浏览器 profile、`config.toml`、`.env`、凭据、日志都不在备份里**：索引是可重建的派生数据，
+  凭据与会话属于环境。
+- **校验是只读的**：`pw backup verify` 不写任何地方，只做成员名安全检查（拒绝绝对路径、`..`、
+  反斜杠、盘符、symlink、重复成员、未列出成员、缺失成员、超出大小/压缩比上界的「zip bomb」）、
+  manifest 严格解析、逐成员 size + SHA-256 校验，以及对归档内数据库的 `integrity_check`、
+  `foreign_key_check` 与迁移兼容检查。
+- **恢复只写 staging**：`--to` 的目录必须不存在或为空，且不能是当前 runtime 数据目录本身/父/子；
+  没有 `--in-place`、没有 `--force`。内容是先写到同 parent 的临时目录，验证 + finalization 全部通过后
+  才原子 rename 成最终目录；失败时只删掉这条命令自己创建的临时目录。恢复出来的目录就是**一个
+  完整的数据目录**（`assistant.db` + `mail/raw/…` + `web/snapshots/…`），等价于
+  `$XDG_DATA_HOME/growing-assistant/`，所以按下面的方式用 `XDG_DATA_HOME` 指向它即可。
+- **恢复会失效授权，但保留历史**：finalization 在恢复出来的数据库上把未消费的 `ApprovalChallenge`
+  置为 consumed、把仍然有效的 `Approval` 置为 superseded（不会假装它被使用过）、作废未使用的
+  mobile pairing token、revoke 所有 mobile session —— **恢复后必须重新 `pw mobile pair`**。
+  `ActionRequest` / `Approval` / `ExecutionRun` 的历史行一条都不会删。
+- **恢复不恢复凭据**：SMTP 密码、IMAP 密码、DeepSeek key、eHall 已登录的浏览器 profile 都不在备份里，
+  必须由你重新提供（也不会生成 `.env`）。
+- **`RUNNING` / `UNKNOWN` 的外部执行保持未决**：恢复不是对账，不声称外部副作用被回滚；这些
+  `ExecutionRun` 原样保留，并继续挡住 `pw action execute` 的盲重试。
+- **退出码**：`0` 成功/有效；`1` 归档或运行态有问题（或被策略拒绝，例如目标目录非空、指向 live
+  runtime）；`2` 命令用法问题（例如 `FILE` 不是一个文件）——恢复流程里"用错了参数"和"备份坏了"
+  值得区分。
+
+### Disaster recovery
+
+1. 停掉 `assistantd`（以及任何正在运行的 `growing-assistant-mcp` 会话）。
+2. 验证备份：`pw backup verify ~/assistant-backup.gab`。
+3. 恢复到新的 staging 目录：`pw backup restore ~/assistant-backup.gab --to ~/restored-assistant-data`。
+4. 对恢复出来的运行态体检（恢复目录的父目录就是它的 `XDG_DATA_HOME`）：
+   `XDG_DATA_HOME=~/recovery uv run pw integrity check`。
+5. 单独重新配置凭据（SMTP / IMAP / `DEEPSEEK_API_KEY`），备份里没有它们。
+6. 需要 eHall 时重新 `pw ehall login`（browser profile 不在备份里）。
+7. 重新配对手机：`pw mobile pair`（所有 session 已在恢复时被 revoke）。
+8. 在做任何事之前先看未决动作：`pw actions` / `pw action show …`，特别是 `RUNNING` / `UNKNOWN` 的
+   `ExecutionRun`，用 Sent 对账或人工检查确认，而不是重试。
+9. 重建知识索引：`pw reindex --root <id>`（索引是派生数据，从原始 root 重建）。
+10. 用恢复出来的数据目录启动：`XDG_DATA_HOME=~/recovery uv run assistantd`（配置仍来自
+    `XDG_CONFIG_HOME`，凭据仍来自环境变量）。
+
+**不要**在 daemon 运行时把备份里的文件拷到 live 数据库上；本项目不提供这种路径，也不需要它。
 
 ## Architecture summary
 

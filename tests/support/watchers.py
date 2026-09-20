@@ -9,6 +9,7 @@ exactly what was asked for, including whether conditional validators were sent.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,6 +105,36 @@ def snapshots(tmp_path: Path) -> WebSnapshotStore:
     return WebSnapshotStore(tmp_path)
 
 
+def observation_analysis_response(
+    *,
+    category: str = "actionable",
+    summary: str = "The notice sets a deadline.",
+    candidates: list[dict[str, object]] | None = None,
+) -> str:
+    """A model answer that satisfies the observation-analysis schema.
+
+    Deliberately not the mail schema: an observation has no `requires_reply`, and a provider that
+    returned one would be refused by local validation — which is itself worth knowing.
+    """
+    return json.dumps(
+        {
+            "category": category,
+            "summary": summary,
+            "action_candidates": candidates
+            if candidates is not None
+            else [
+                {
+                    "text": "Submit the SE lab report",
+                    "temporal_kind": "deadline",
+                    "time_text": "Friday 23:59",
+                    "interpreted_at": "2026-09-25T23:59:00+08:00",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
 def watchers_config(
     *,
     targets: tuple[WebTargetConfig, ...] | None = None,
@@ -145,6 +176,7 @@ __all__ = [
     "TARGET_URL",
     "FakeWebSource",
     "WebStores",
+    "observation_analysis_response",
     "snapshots",
     "watchers_config",
 ]

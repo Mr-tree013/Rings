@@ -427,6 +427,32 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   输入 query ≤1000 / root_id 可选 / limit 1..8，输出只有 logical URI + source span + bounded excerpt
   （单条 ≤1200、总计 ≤6000），绝不含物理路径、挂载路径、rowid 或整篇文档；tool description 明确说明
   内容会被发送给连接的 MCP client/model。
+- **Live SQLite backups must use the SQLite backup API, never filesystem copying.**
+  运行中的 WAL 数据库只能用 `sqlite3.Connection.backup()` 取一致快照（`store/backup.py`）；
+  禁止 `shutil.copy` / 手动拷贝 `assistant.db`+`-wal`+`-shm`，也禁止在 backup 里"补" live 之后的数据。
+  backup 引用的 mail raw / web snapshot 一律按 DB 里记录的 SHA-256 逐个复核，缺文件或 hash 不符即整次失败。
+- **Derived knowledge indexes are rebuildable and are not operational backup authorities.**
+  归档只允许 4 类顶层成员（`manifest.json` / `runtime.sqlite3` / `mail/raw/…` / `web/snapshots/…`）；
+  `cache/`、per-root FTS 索引、原始 vault 文件、eHall browser profile、`config.toml`、`.env`、
+  凭据与日志一律不进归档，恢复后索引从原始 root 重建。
+- **Restores must never preserve live authorization capability silently.**
+  恢复在 finalization 事务里把未消费的 `ApprovalChallenge` 置 `consumed_at`、把未消费的 `Approval` 置
+  `superseded_at`（绝不写 `consumed_at`，那等于声称它被使用过）；历史行永不删除，只失去"还能用"的属性。
+- **Mobile sessions and unconsumed approval capabilities are invalidated on restore.**
+  pairing token 置 `consumed_at`、所有 session 置 `revoked_at`；恢复后必须重新 `pw mobile pair`，
+  且恢复不会带回任何凭据（SMTP/IMAP/DeepSeek key、eHall 登录态都由用户重新提供）。
+- **RUNNING and UNKNOWN external executions survive recovery as unresolved audit state and must never
+  be blindly retried.** 恢复不改写任何 `ExecutionRun` / `ActionRequest` 历史；`RUNNING` / `UNKNOWN`
+  仍然挡住 `pw action execute`（restore 不是 reconciliation，也绝不声称外部副作用被回滚）。
+- **Backup restore targets a new staging directory; no in-place restore exists.**
+  `pw backup restore … --to DIR` 要求 DIR 不存在或为空，且不得是 active runtime data dir 的自身/父/子；
+  先写同 parent 的临时目录，验证 + finalization 通过后原子 rename；没有 `--in-place` / `--force`。
+- **Operational integrity checks are read-only and network-free.**
+  `pw integrity check` 只用只读连接（不建库、不迁移、不修复），只报告 `integrity_check`、
+  `foreign_key_check`、迁移状态与跨域一致性；pending migration 报 `PENDING`，offline vault 报 offline。
+- **Cross-system acceptance tests must use fake external adapters with the socket guard enabled.**
+  `tests/acceptance/` 只能用临时 XDG root + fake model/IMAP/SMTP/eHall/WebSource，真实 SQLite store、
+  migration runner、EventWorker、Scheduler 与审批链必须是真件；禁止用 mock application service 代替。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -654,6 +680,22 @@ in-process contract tests + 真实 stdio subprocess integration test。
 **本阶段无 migration（仍 0001–0015）、无 durable MCP state、无 Approval/Execution/Fact/Playbook
 能力、无 filesystem/shell/HTTP/browser/sampling。**
 
+**Phase 9A 已完成（仍是 0.8.0，未 tag）**：operational integrity + safe backup/restore
+（ADR-0031）：`domain/backup.py`（固定 archive layout、canonical manifest、成员名/大小/压缩比
+bounds）、`domain/integrity.py`（severity / section / report）、port
+`RuntimeBackup` / `BackupArchive` / `IntegrityRepository` / `ContentObjectReader`、
+`store/backup.py`（只用 `sqlite3.Connection.backup()` 取一致快照，backup DB 内引用对象逐个复核 hash；
+restore finalization 单事务失效 challenge/approval/pairing/session）、`store/integrity.py`（只读跨域审计：
+pragma、capability fingerprint、mail link、fact provenance、playbook provenance、observation lineage、
+applied migrations）、`adapters/backup/archive.py`（zip 写入/校验/逐成员解压，拒绝 traversal / symlink /
+duplicate / unlisted / oversized）、`application/backup_service.py`（create / verify / inspect /
+staging-only restore）、`application/integrity_service.py`、`cli_ops.py`
+（`pw integrity check`、`pw backup create|verify|inspect|restore --to`）、`Database.read_only()` 只读连接、
+`pw doctor` 新增本地 operational 行（runtime 可写、mail raw root、web snapshot root、migration state）
+并提示运行 `pw integrity check`，`tests/acceptance/` 新增 lifecycle / restart / lease / UNKNOWN /
+supervisor / privacy-log 验收。**没有 migration 0016、没有新外部能力、没有新 CLI 副作用、
+版本仍为 0.8.0。**
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
@@ -668,6 +710,8 @@ approval token 之外的动作审批扩展 / Windows Task Scheduler 配置 /
 workflow 自动晋升 / 用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（另行评审）/
 把 web/manual analysis 的候选自动转成 Task/Case/Action / QQ 协议/客户端自动接入 /
 需要登录、需要 JavaScript 渲染或使用非默认端口的站点（Phase 8A 只观察公开 HTTPS 页面）。
+（operational hardening 只做**显式**的本地备份/恢复：没有自动备份、没有后台备份 daemon、
+没有云端备份或同步，也没有"就地恢复/强制覆盖"路径。）
 
 （site watcher 与 QQ 转发文本的**入口**已在 Phase 8A 实现：`[watchers]` + `pw watch`、
 `pw ingest text --source qq-forward`；上一条列的是它们的自动化与扩展部分。）

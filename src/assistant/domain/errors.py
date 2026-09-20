@@ -1422,6 +1422,45 @@ class McpInvalidArgument(DomainError):
         super().__init__(f"{argument}: {reason}")
 
 
+class InvalidBackupArchive(DomainError):
+    """A backup archive is malformed, unsafe, or claims something it does not contain."""
+
+
+class BackupSourceMissing(DomainError):
+    """The runtime database references a content object that is not on disk.
+
+    A backup that silently skipped it would be a restore point with a hole in it, so the whole
+    operation fails instead.
+    """
+
+    def __init__(self, storage_key: str) -> None:
+        self.storage_key = storage_key
+        super().__init__(f"runtime data references {storage_key!r}, which is missing")
+
+
+class BackupSourceCorrupt(DomainError):
+    """A content object does not match the hash the database recorded for it."""
+
+    def __init__(self, storage_key: str) -> None:
+        self.storage_key = storage_key
+        super().__init__(
+            f"the content object {storage_key!r} does not match its recorded hash"
+        )
+
+
+class RestoreDestinationRejected(DomainError):
+    """A restore destination is not a usable, empty, non-active directory."""
+
+    def __init__(self, path: object, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"restore destination {path} is refused: {reason}")
+
+
+class IntegrityCheckFailed(DomainError):
+    """A read-only integrity check found a problem. Nothing is repaired automatically."""
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1434,6 +1473,8 @@ __all__ = [
     "ApprovalChallengeExpired",
     "ApprovalChallengeNotFound",
     "ApprovalUnavailable",
+    "BackupSourceCorrupt",
+    "BackupSourceMissing",
     "CalendarEventNotActive",
     "CalendarEventNotFound",
     "CapabilityUnavailable",
@@ -1466,6 +1507,7 @@ __all__ = [
     "GroundedAnswerInputTooLong",
     "GroundedAnswerInvalidCitation",
     "GroundedAnswerSemanticError",
+    "IntegrityCheckFailed",
     "InterpreterInputTooLong",
     "InterpreterInvalidReference",
     "InterpreterSemanticError",
@@ -1474,6 +1516,7 @@ __all__ = [
     "InvalidApproval",
     "InvalidApprovalToken",
     "InvalidAssistantConfig",
+    "InvalidBackupArchive",
     "InvalidCalendarEvent",
     "InvalidCase",
     "InvalidCaseTransition",
@@ -1582,6 +1625,7 @@ __all__ = [
     "PlaybookSourceIntegrityError",
     "PlaybookSourceNotEligible",
     "PlaybookSourceUnsupported",
+    "RestoreDestinationRejected",
     "ScheduledJobNotFound",
     "StaleCaseUpdate",
     "StaleEventClaim",

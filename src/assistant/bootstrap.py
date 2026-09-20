@@ -15,6 +15,7 @@ from uuid import UUID
 
 import httpx
 
+from assistant.adapters.backup.archive import ZipBackupArchive
 from assistant.adapters.config.toml_config import TomlConfigLoader
 from assistant.adapters.content.registry import SuffixExtractorRegistry
 from assistant.adapters.ehall.executor import EHallCertificateExecutor
@@ -37,6 +38,7 @@ from assistant.adapters.mail.raw_store import RawMailStore
 from assistant.adapters.mail.sent_lookup import ImapSentMailLookup
 from assistant.adapters.mail.smtp import SmtpMailExecutor, rfc2822_date
 from assistant.adapters.model.deepseek import DeepSeekAdapter
+from assistant.adapters.ops.content_objects import RuntimeContentObjects
 from assistant.adapters.security.tokens import (
     secure_approval_token_factory,
     secure_mobile_token_factory,
@@ -49,6 +51,7 @@ from assistant.adapters.web_watch.snapshot_store import WebSnapshotStore
 from assistant.application.action_execution import ActionExecutionService
 from assistant.application.action_service import ActionService
 from assistant.application.approval_service import ApprovalService
+from assistant.application.backup_service import MIGRATION_DIRECTORY, BackupService
 from assistant.application.calendar_service import CalendarService
 from assistant.application.case_service import CaseService
 from assistant.application.ehall_certificate import EHallCertificateService
@@ -58,6 +61,7 @@ from assistant.application.greedy_planner import GreedyPlanner
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.grounded_context import GroundedContextBuilder
 from assistant.application.index_sync import IndexSyncService
+from assistant.application.integrity_service import IntegrityService
 from assistant.application.interpreter import InterpreterService
 from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
@@ -125,11 +129,13 @@ from assistant.ports.mail_source import MailSource
 from assistant.ports.model import ModelPort
 from assistant.ports.web_source import WebSource
 from assistant.store.actions import SqliteActionRepository
+from assistant.store.backup import SqliteRuntimeBackup
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
+from assistant.store.integrity import SqliteIntegrityRepository
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.learning import SqliteLearningRepository
 from assistant.store.mail import SqliteMailRepository
@@ -697,6 +703,36 @@ def assistant_version() -> str:
     return __version__
 
 
+def runtime_backup(clock: Clock) -> SqliteRuntimeBackup:
+    """The SQLite-backed snapshotter for the host runtime database."""
+    return SqliteRuntimeBackup(AppPaths.resolve().database_file)
+
+
+def backup_service(clock: Clock) -> BackupService:
+    """Operational backup, verification and staging restore over the runtime directory."""
+    return BackupService(
+        AppPaths.resolve().runtime,
+        runtime_backup(clock),
+        clock,
+        ZipBackupArchive(),
+        application_version=assistant_version(),
+    )
+
+
+def runtime_content_objects() -> RuntimeContentObjects:
+    """Reads referenced content objects (raw mail, web snapshots) out of the runtime directory."""
+    return RuntimeContentObjects(AppPaths.resolve().runtime)
+
+
+def integrity_service(clock: Clock, database: Database) -> IntegrityService:
+    """The offline, read-only integrity check over the runtime database and its objects."""
+    return IntegrityService(
+        SqliteIntegrityRepository(database),
+        runtime_content_objects(),
+        migrations_directory=MIGRATION_DIRECTORY,
+    )
+
+
 def mcp_facade(
     config: AssistantConfig,
     *,
@@ -1137,6 +1173,7 @@ __all__ = [
     "action_service",
     "approval_service",
     "assistant_version",
+    "backup_service",
     "calendar_service",
     "case_repository",
     "case_service",
@@ -1151,6 +1188,7 @@ __all__ = [
     "event_inbox",
     "grounded_answer_service",
     "grounded_context_builder",
+    "integrity_service",
     "interpreter_service",
     "knowledge_indexer",
     "learning_repository",
@@ -1191,6 +1229,8 @@ __all__ = [
     "registered_action_executors",
     "require_model_config",
     "rolling_replan_requester",
+    "runtime_backup",
+    "runtime_content_objects",
     "runtime_database",
     "scheduler_repository",
     "scheduler_service",

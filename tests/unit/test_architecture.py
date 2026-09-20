@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 from pathlib import Path
 
 from assistant.domain.config import AssistantConfig
@@ -2466,3 +2467,227 @@ def test_the_status_command_advertises_the_mcp_surface_honestly() -> None:
     # The row says what it is not, and it is not dressed up as a working agent.
     assert "no agent runtime, no execution, no approval" in text
     assert "developer integration" in text
+
+
+OPS_APPLICATION_MODULES = (
+    "application/backup_service.py",
+    "application/integrity_service.py",
+)
+
+OPS_ADAPTER_MODULES = ("adapters/backup/archive.py", "adapters/ops/content_objects.py")
+
+OPS_FORBIDDEN_IMPORTS = (
+    # Reading a referenced raw object is local filesystem work; the *network* mail modules are the
+    # boundary, so those are named individually rather than banning the whole package.
+    "assistant.adapters.mail.smtp",
+    "assistant.adapters.mail.imap",
+    "assistant.adapters.mail.credentials",
+    "assistant.adapters.mail.sent_lookup",
+    "assistant.adapters.ehall",
+    "assistant.adapters.model",
+    "assistant.application.action_execution",
+    "assistant.application.approval_service",
+    "assistant.application.learning_service",
+    "assistant.application.playbook_service",
+    "assistant.application.ehall_certificate",
+    "assistant.application.mail_send_actions",
+    "assistant.ports.action_executor",
+    "assistant.ports.model",
+    "assistant.ports.web_source",
+    "smtplib",
+    "imaplib",
+    "playwright",
+    "httpx",
+    "socket",
+    "subprocess",
+)
+"""Everything an operational check must not be able to reach, because it never needs it."""
+
+
+def test_the_operational_checks_cannot_reach_an_external_effect() -> None:
+    """§64: backup and integrity are local, offline and read-only by construction."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in (*OPS_APPLICATION_MODULES, *OPS_ADAPTER_MODULES)
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(OPS_FORBIDDEN_IMPORTS)
+        or imported in set(OPS_FORBIDDEN_IMPORTS)
+    ]
+
+    assert not offenders, offenders
+    banned_names = {
+        "ActionExecutionService",
+        "ActionExecutor",
+        "ApprovalService",
+        "LearningService",
+        "PlaybookService",
+        "ModelPort",
+        "StructuredModel",
+        "SmtpMailExecutor",
+        "EHallCertificateExecutor",
+        "WebSource",
+        "connect",
+        "execute",
+        "approve",
+        "promote",
+    }
+    named = [
+        f"{relative} names {name}"
+        for relative in OPS_APPLICATION_MODULES
+        for name in _identifiers(SOURCE_ROOT / relative) & banned_names
+    ]
+    assert not named, named
+
+
+def test_the_restore_path_cannot_write_outside_its_staging_directory() -> None:
+    """§18/§39/§64: staging only, atomically renamed, and every member name checked first."""
+    service = (SOURCE_ROOT / "application" / "backup_service.py").read_text(encoding="utf-8")
+
+    assert "extractall" not in service
+    assert "os.replace(staging, target)" in service
+    assert "_require_usable_destination" in service
+    # No force, no in-place and no destructive shortcut exists on the restore path.
+    for forbidden in ("--force", "in_place", "in-place", "rmtree(target"):
+        assert forbidden not in service
+    archive = (SOURCE_ROOT / "adapters" / "backup" / "archive.py").read_text(encoding="utf-8")
+    assert "extractall" not in archive
+    assert "is_allowed_member" in archive
+
+
+def test_the_archive_format_excludes_derived_and_secret_state() -> None:
+    """§12: the format has four kinds, and an index, a profile or a config is not one of them."""
+    from assistant.domain.backup import ALLOWED_TOP_LEVEL, is_allowed_member
+
+    assert ALLOWED_TOP_LEVEL == ("manifest.json", "runtime.sqlite3", "mail", "web")
+    for refused in (
+        "cache/knowledge/index.sqlite3",
+        "ehall/nju-profile/Cookies",
+        "config.toml",
+        ".env",
+        "secrets/api_key.txt",
+        "indexes/university.sqlite3",
+    ):
+        assert not is_allowed_member(refused), refused
+
+
+def test_the_integrity_check_is_read_only() -> None:
+    """§26/§64: findings are reported, never repaired, and no migration is applied."""
+    repository = (SOURCE_ROOT / "store" / "integrity.py").read_text(encoding="utf-8")
+    for forbidden in (
+        "UPDATE ",
+        "INSERT INTO",
+        "DELETE FROM",
+        "apply_migrations",
+        "commit(",
+    ):
+        assert forbidden not in repository, forbidden
+    cli = (SOURCE_ROOT / "cli_ops.py").read_text(encoding="utf-8")
+    assert "Database.read_only" in cli
+    assert "runtime_database" not in cli
+
+
+def test_the_security_boundaries_still_hold_in_one_sweep() -> None:
+    """§53: one consolidated check of every boundary, on top of the individual tests.
+
+    This is deliberately redundant with the focused checks above: a refactor that quietly removed
+    one of them would still fail here, and a reader can see the whole set in one place.
+    """
+    execution = {"ActionExecutionService", "ActionExecutor"}
+    human_boundary = {"LearningService", "PlaybookService"}
+    boundaries: tuple[tuple[str, tuple[str, ...], frozenset[str]], ...] = (
+        (
+            "model paths cannot create an approval",
+            ("application/interpreter.py", "application/grounded_answer.py",
+             "application/mail_analysis.py"),
+            frozenset(execution | human_boundary | {"ApprovalService", "smtplib"}),
+        ),
+        (
+            "background paths cannot execute an action",
+            ("application/event_worker.py", "application/mail_sync.py",
+             "application/scheduler_service.py", "daemon/app.py"),
+            frozenset(execution | human_boundary | {"smtplib"}),
+        ),
+        # Mobile is a *human* surface: it may present and approve an ActionRequest, so only the
+        # execution side is forbidden here.
+        ("mobile cannot execute", ("adapters/web/app.py",), frozenset(execution | {"smtplib"})),
+        (
+            "mcp cannot approve or execute",
+            ("adapters/mcp/tools.py", "application/mcp_facade.py"),
+            frozenset(execution | human_boundary | {"ApprovalService", "smtplib"}),
+        ),
+        (
+            "playbook replay cannot execute",
+            ("application/playbook_replay/mail_send.py",
+             "application/playbook_replay/ehall_certificate.py"),
+            frozenset(execution | {"smtplib"}),
+        ),
+        (
+            "ops cannot approve or execute",
+            OPS_APPLICATION_MODULES,
+            frozenset(execution | human_boundary | {"ApprovalService", "smtplib"}),
+        ),
+    )
+    for label, modules, banned in boundaries:
+        for relative in modules:
+            path = SOURCE_ROOT / relative
+            assert not _identifiers(path) & banned, f"{label}: {relative}"
+            for imported in _imported_modules(path):
+                assert not imported.startswith(
+                    ("assistant.adapters.ehall", "assistant.adapters.mail.smtp",
+                     "assistant.adapters.mail.imap", "playwright")
+                ), f"{label}: {relative} imports {imported}"
+
+
+_CREDENTIAL_PATTERNS = (
+    # A DeepSeek-shaped key, a PEM block, or a credential-shaped value with no human-readable
+    # separators: placeholders in this repository are all written as readable hyphenated phrases,
+    # while a pasted real key is one unbroken token.
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(
+        r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)\s*=\s*["']([A-Za-z0-9+/=]{16,})["']"""
+    ),
+    re.compile(r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)\s*=\s*["']([^"']{24,})["']"""),
+)
+"""§54: shapes that only a real credential produces. Deliberately narrow: this scan guards against
+a pasted secret, not against every use of the word "secret" in prose. Attribute-style keyword
+arguments (`api_key="..."`) are not assignments and are not scanned, which is what keeps the
+existing fake-adapter fixtures meaningful."""
+
+
+def _credential_shape_findings(text: str) -> list[str]:
+    """Return the credential-shaped substrings a source file must not contain."""
+    findings: list[str] = []
+    for pattern in _CREDENTIAL_PATTERNS:
+        for match in pattern.finditer(text):
+            captured = match.group(0)
+            if "-----BEGIN" in captured:
+                findings.append(captured)
+            elif not re.search(r"[A-Za-z0-9]", captured):
+                continue
+            else:
+                value = match.group(1) if match.groups() else captured
+                # A readable placeholder always contains a separator or a repeated filler run.
+                if re.search(r"[-_. ]", value) or len(set(value)) < 8:
+                    continue
+                findings.append(captured[:60])
+    return findings
+
+
+def test_no_credential_shaped_literal_is_committed() -> None:
+    """§54: no pasted key, private key block or credential-shaped assignment in source or tests."""
+    offenders: list[str] = []
+    for path in sorted(
+        list(SOURCE_ROOT.rglob("*.py"))
+        + list((SOURCE_ROOT.parents[1] / "tests").rglob("*.py"))
+    ):
+        for captured in _credential_shape_findings(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.name}: {captured}")
+
+    assert not offenders, offenders
+    # The scan is only meaningful if it actually catches something, so it is checked against a
+    # synthetic credential that is assembled here instead of being committed as a literal.
+    opaque = "".join("0123456789abcdef"[index % 16] for index in range(32))
+    synthetic = "api_" + "key" + ' = "' + opaque + '"'
+    assert synthetic in _credential_shape_findings(synthetic)
+    assert _credential_shape_findings("-----BEGIN RSA " + "PRIVATE KEY-----")

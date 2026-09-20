@@ -196,14 +196,95 @@ runtime metadata（ADR-0011）。
 
 U 盘等移动存储属于 archive storage，不是 Agent runtime。
 
-## 9. 错误处理与可观测性（设计意图）
+## 9. Operational Recovery：运行态权威、备份边界与恢复（Phase 9A，ADR-0031）
+
+### 9.1 运行态权威分层
+
+恢复的正确性首先来自"什么是权威"这件事说清楚。四类内容有四种地位，备份与恢复的行为各不相同：
+
+| 内容 | 地位 | 备份 | 恢复 |
+| --- | --- | --- | --- |
+| runtime SQLite（`assistant.db`） | **durable runtime authority** | 用 SQLite backup API 取一致快照（绝不复制文件） | 恢复后必须通过 `integrity_check` / `foreign_key_check` / 迁移兼容检查 |
+| mail raw RFC822、web snapshot 对象 | DB 引用的 **durable referenced source object** | 按 DB 记录的 SHA-256 复核后一并归档 | 逐成员校验 size + hash 后才算可用 |
+| per-root knowledge FTS 索引 | **derived（可重建）** | 排除 | 从原始 root 重建 |
+| vault / local 原始知识文件 | **external authority**（属于用户） | 排除，绝不复制进归档 | 不恢复，用户自带 |
+
+此外：eHall browser profile 是 session/凭据类材料（排除，恢复后重新登录）；环境凭据、`config.toml`、
+`.env`、logs、临时文件都不是 runtime 状态（排除，恢复后由用户重新提供）。
+
+### 9.2 Backup Boundary
+
+归档是**一个文件、一种形状**：`manifest.json`、`runtime.sqlite3`、`mail/raw/…`、`web/snapshots/…`，
+顶层不允许出现其它名字，因此"顺手带上一个索引/一份 profile/一个 config"在格式上无处可放。
+
+- 对象成员是 content-addressed 的（`<sha 前两位>/<sha256>.<ext>`），名字必须与内容一致；
+- manifest 是 canonical JSON，只带**身份**（format version、application version、created_at、
+database member/hash、migration 文件名、每个对象的 storage key/sha256/size、聚合计数），
+绝不带 mail 正文、网页正文、Action payload、凭据、token 或原始文档的物理路径；
+- 引用集合来自**备份出来的那份数据库**，不来自 live 数据库；引用对象缺失或 hash 不符则整次备份失败
+  （`BackupSourceMissing` / `BackupSourceCorrupt`），不产生"成功但缺文件"的归档；
+- 写入是原子的：同目录临时文件 → fsync → 自校验 → `os.replace`；已存在的目标文件直接拒绝（V1 无 overwrite）；
+- 成员数量、manifest 大小、数据库大小、单对象大小、总解压大小与压缩比都有具名上界，超界即拒绝。
+
+### 9.3 Restore Authorization Invalidation
+
+恢复是**重新武装**：备份里可能带着当时仍然有效的授权能力，而那是过去某次会话（可能在另一台机器上）
+授予的。因此恢复分两段：
+
+```text
+verify 每个成员（名字 / size / hash）
+   ↓
+在 restored DB 上跑 integrity_check + foreign_key_check + 迁移兼容
+   ↓
+finalization 单事务（只写时间戳，不删行）
+   ↓
+原子 rename 进 caller 指定的空 staging directory
+```
+
+finalization 的语义冻结：
+
+- 未消费的 `ApprovalChallenge` → `consumed_at = restore_time`（capability token 被花费，
+  **不代表**任何人批准过）；
+- 未消费的 `Approval` → `superseded_at = restore_time`（绝不写 `consumed_at`，那等于声称它被执行使用过）；
+- pairing token → `consumed_at = restore_time`；所有未 revoke 的 session → `revoked_at = restore_time`
+  （恢复后必须重新 `pw mobile pair`）；
+- `ActionRequest` / `Approval` / `ExecutionRun` 历史行**永不删除**；
+- `RUNNING` / `UNKNOWN` 的 `ExecutionRun` 原样保留为未决审计状态，恢复后仍然挡住 `pw action execute`
+  （恢复不是 reconciliation，也不声称外部副作用被回滚）。
+
+恢复目标必须是**不存在或为空**的目录，且不得是 active runtime data dir 自身/父/子；没有 `--in-place`、
+`--force`，也不会生成 `.env`。
+
+### 9.4 Acceptance Lifecycle
+
+```text
+Observe → Understand → Commit → Plan → Execute → Review → Learn
+```
+
+`tests/acceptance/` 用这条主线验收整个系统：真实 SQLite store、migration runner、EventWorker、
+Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHall page / HTTP watcher），
+并且**全程开着 outbound socket guard**、使用临时 XDG root。覆盖内容包括：
+
+- 手工/转发文本 → InboundEvent → bounded analysis → 人工建 Task → reminder → plan proposal → apply →
+  WorkSession → complete（Observe…Review 真实串通，analysis 绝不自动建 Task）；
+- 邮件 → thread/analysis → 草稿 → Case → `mail.send` prepare → challenge → 人工 Approval →
+  fake SMTP 恰好一次 DATA → SUCCEEDED → 显式 PlaybookCandidate → dry-run → 人工 promote；
+- 知识 grounding → citation → Correction → FactCandidate → 人工 confirm；
+- eHall contract 变化导致 click 前 FAILED（submit=0）、匹配页面成功（submit=1）；
+- mobile / MCP 边界（手机可审批但不能执行；MCP 不能审批、执行、确认 fact、晋升 playbook）；
+- watcher baseline/change 语义、EventWorker crash/reclaim 后 provider 调用次数仍为 1；
+- 跨 bootstrap 实例的 restart（Task / InboundEvent retry / ScheduledJob / mail bridge / web+manual bridge）、
+  lease 过期 reclaim 与 fencing、`UNKNOWN` 恢复后零重试、supervisor 隔离与 stop event、
+  以及一次 seed 了 sentinel 的日志隐私扫描。
+
+## 10. 错误处理与可观测性（设计意图）
 
 - 每个长期服务在自己的异常边界内运行，失败后被监督重启，并向用户可见地报告降级状态。
 - 所有会改变外部世界的动作都有 `ExecutionRun` 记录与审计日志。
 - 模型调用记录（prompt 版本、模型标识、token 用量、结果哈希）进入审计，便于复现与控成本。
 - 不确定状态（`SENDING_UNKNOWN`）永远显式呈现给用户，不猜测、不静默重试导致重复副作用。
 
-## 10. 测试策略
+## 11. 测试策略
 
 | 目录 | 职责 |
 | --- | --- |
@@ -212,10 +293,11 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | `tests/contract/` | ports 契约：每个 adapter 必须满足的接口行为 |
 | `tests/regression/` | 由真实纠正转化而来的固定用例（"成长"的证据） |
 | `tests/e2e/` | 端到端流程：从 InboundEvent 到归档，使用假外部系统 |
+| `tests/acceptance/` | 跨系统验收：真实 store / worker / scheduler / 审批链 + fake 外部边界，临时 XDG root，socket guard 全程开启（§9.4） |
 
 原则：不为了覆盖率写无意义测试；每个安全约束至少有一条测试证明它不可被绕过。
 
-## 11. 演进路线
+## 12. 演进路线
 
 | Phase | 内容 | 状态 |
 | --- | --- | --- |
@@ -233,8 +315,9 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 | 11 | 复核过的 Playbook：成功执行 → PlaybookCandidate → 人工复核 → 无副作用 dry-run → Playbook | 进行中：7B 已完成（migration 0014（`playbook_candidates` / `playbook_replay_tests` / `playbooks`）、`PlaybookCandidate` / `PlaybookReplayTest` / `Playbook`（ACTIVE→RETIRED）、候选只能来自明确 SUCCEEDED 的 run（创建时重读 action/run + 重新 hash payload + `EXECUTED` + `SUCCEEDED` + `finished_at`）、`UNIQUE(source_action_id)`、candidate 元数据不可编辑、`PlaybookReplayValidator` port（非 `ActionExecutor`）+ `PlaybookReplayRegistry`（仅 `mail.send` / `ehall.submit-certificate`，无动态 import）、两个纯 parser dry-run validator、bounded issue codes、`replay_input_fingerprint`（含 validator type + contract version）、promote 单 transaction 要求当前 version + 精确 fingerprint 的 PASSED test、`pw playbook candidates\|candidate add\|show\|test\|promote\|reject` 与 `pw playbooks\|playbook show\|retire`，ADR-0028）；**dry-run 不联网、不开浏览器、不发信、不调用 executor、不创建 Approval/ActionRequest/ExecutionRun，PASS 仅表示当前代码仍理解该 payload**；Playbook 实例化与参数化、workflow 自动晋升属后续 Phase |
 | 12 | 外部观察：配置好的公开网页 watcher + 手工/转发文本输入 → durable 版本化观察 → InboundEvent → bounded analysis | 进行中：8A 已完成（migration 0015（`web_watch_state` / `web_observations` / `web_observation_event_links` / `manual_inputs` / `manual_input_event_links` / `observation_analyses`）、`[watchers]` + `[[watchers.web]]`（id grammar + HTTPS-only URL：无 userinfo / 无 IP-literal / 无显式端口）、`WebSource` port + `HttpWebSource`（无 cookie/认证/JS/浏览器、不跟随 redirect、resolved address 必须 public、流式 byte cap、ETag/Last-Modified 仅为优化 + `full_fetch_every` 强制 unconditional）、stdlib HTML 抽取 + deterministic normalization + `sha256` 内容身份、content-addressed snapshot（`web/snapshots/`）、baseline 不发事件、change observation + 幂等 `web.page.changed` bridge（两个 crash window 均 bounded repair）、`ManualInput` + `pw ingest text\|list\|show`（先持久化再 ingest `manual.input.received`）、bounded change diff/manual context、closed analysis schema（category / summary / action_candidates；deadline ≠ event-start）、`ObservationInboundEventHandler`（fingerprint 幂等复用、permanent vs retryable model 错误）、daemon `web-watch` service + worker 启动条件改为「有可用 model」，ADR-0029）；**无 generic HTTP/browser 能力、无模型生成 URL、分析不创建 Task/Case/Fact/Playbook/Action/Approval/Notification**；需要登录或渲染 JS 的站点、非默认端口、QQ 自动接入、候选自动转 Task/Case 属后续 Phase |
 | 13 | 开发者集成：受控本地 MCP（stdio）→ VS Code | 进行中：8B 已完成（official MCP Python SDK v2（`mcp>=2,<3`，`MCPServer`）、`[mcp]`（`enabled` 默认 false / `write_scope=none\|tasks` / `expose_knowledge` 默认 false，无 transport/port/host/trusted-client 键）、独立 stdio console script `growing-assistant-mcp`（不托管在 daemon、日志只走 stderr、disabled 时 stdout 为空并非零退出、未识别参数报错）、`adapters/mcp/`（唯一 import SDK 处）、`application/mcp_facade.py`（不 import SDK，只包装既有服务为 bounded DTO）、4 个固定 resource（status / tasks/open / cases/open / plan/current，只读且不含 mail/draft/fact/playbook/action）、2 个 read tool + 可选 `assistant_search_knowledge`（本地 deterministic 全文检索，单条 ≤1200 / 总 ≤6000，仅 logical URI + span + excerpt）+ 可选 `assistant_create_task` / `assistant_complete_task`（仅 `TaskService`，保留 reminder/replan/revision 语义）、typed tool error、`pw mcp status\|vscode-config`（只打印 snippet），ADR-0030）；**无 Approval/Execution/SMTP/eHall/Fact/Playbook 能力、无 filesystem/shell/HTTP/browser/sampling、无 migration**；Streamable HTTP/SSE transport、public 部署、MCP prompts/apps 属后续 Phase（当前无计划） |
+| 14 | 运行态加固：只读完整性检查、一致备份、staging-only 恢复、恢复时的授权失效 | 进行中：9A 已完成（`domain/backup.py`（固定 archive layout / canonical manifest / 成员名·size·压缩比 bounds）、`domain/integrity.py`、port `RuntimeBackup` / `BackupArchive` / `IntegrityRepository` / `ContentObjectReader`、`store/backup.py`（`sqlite3.Connection.backup()` 一致快照 + 引用对象 hash 复核 + finalization 单事务失效 challenge/approval/pairing/session）、`store/integrity.py`（只读跨域审计：pragma / capability fingerprint / mail link / fact & playbook provenance / observation lineage / 迁移状态）、`adapters/backup/archive.py`（zip 写入·校验·逐成员解压，拒绝 traversal / symlink / duplicate / unlisted / oversize / zip bomb）、`application/backup_service.py` + `application/integrity_service.py`、`Database.read_only()`、CLI `pw integrity check` 与 `pw backup create\|verify\|inspect\|restore --to`、`pw doctor` 本地 operational 行）、`tests/acceptance/`（lifecycle / restart / lease recovery / UNKNOWN 零重试 / supervisor / 日志隐私），ADR-0031）；**无 migration（仍 0001–0015）、无新外部能力、版本仍 0.8.0**；自动/后台/云端备份、就地恢复与 `--force`、外部副作用回滚声明均不在范围内 |
 
-## 12. 后续阶段的未决决策（明确不属于早期 Phase）
+## 13. 后续阶段的未决决策（明确不属于早期 Phase）
 
 以下问题在对应 Phase 开始前必须单独决策并落 ADR，早期 Phase 不做任何实现或假设：
 
@@ -245,7 +328,7 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - Vault 文本抽取的格式支持范围与 OCR 是否纳入。
 - eHall pipeline 的具体注册机制与 capability 粒度。
 
-## 13. 相关 ADR
+## 14. 相关 ADR
 
 - ADR-0001 Modular Monolith
 - ADR-0002 Event Inbox
@@ -277,3 +360,4 @@ U 盘等移动存储属于 archive storage，不是 Agent runtime。
 - ADR-0028 Successful runs become reviewed non-executing playbooks
 - ADR-0029 Durable web and manual observation
 - ADR-0030 A controlled local MCP interface
+- ADR-0031 Operational integrity, safe backup, and recovery

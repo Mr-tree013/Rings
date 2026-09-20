@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import os
 import platform
 import sys
 from pathlib import Path
@@ -41,6 +42,7 @@ from assistant import (
     cli_mcp,
     cli_mobile,
     cli_model,
+    cli_ops,
     cli_playbooks,
     cli_scheduler,
     cli_watch,
@@ -110,6 +112,7 @@ cli_playbooks.register(app)
 cli_watch.register(app)
 cli_ingest.register(app)
 cli_mcp.register(app)
+cli_ops.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -247,19 +250,25 @@ def status() -> None:
     table.add_row("interpreter", "natural-language command preview (never executes)")
     table.add_row(
         "execution",
-        "human-approved actions only (approval bound to one exact fingerprint; "
-        "no executor capability registered yet)",
+        "human-approved actions only (mail.send + ehall.submit-certificate; approval bound "
+        "to one exact fingerprint; the daemon never executes)",
     )
     table.add_row(
         "external inputs",
-        "IMAP inbound mail (receive-only: sync, deterministic threading, structured "
-        "classification, explicit local reply drafts)",
+        "IMAP inbound mail (receive-only) + configured HTTPS page watchers + hand-pasted/"
+        "forwarded text; analysis produces candidates only",
     )
     table.add_row("agent execution", "[yellow]not implemented[/yellow]")
     table.add_row(
         "daemon services",
         "index-sync (periodic reconciliation), scheduler (jobs), "
-        "mail-sync + event-worker (when mail and a model are configured)",
+        "mail-sync, event-worker (when a model is configured), "
+        "web-watch (when a target is enabled), mobile-web (when enabled)",
+    )
+    table.add_row(
+        "operational",
+        "read-only integrity check, consistent local backups, staging-only restore "
+        "(no in-place restore, no background or cloud backup)",
     )
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
@@ -318,6 +327,9 @@ def doctor() -> None:
     )
     table.add_row("FTS5 trigram", "ok" if capabilities.trigram else "[red]missing[/red]")
     table.add_row("pypdf", _pypdf_version())
+    ops_rows = _operational_diagnostics(paths)
+    for label, value in ops_rows:
+        table.add_row(label, value)
     if config_error is None:
         table.add_row("config", f"{loader.path} ({configured_roots} roots)")
         table.add_row(
@@ -382,7 +394,74 @@ def doctor() -> None:
                 + ", ".join(ehall_broken)
             )
 
+    absent = [label for label, value in ops_rows if "absent" in value]
     console.print("[green]environment looks usable[/green]")
+    if absent:
+        console.print(
+            "Some runtime directories do not exist yet; they are created on first use: "
+            + ", ".join(absent)
+        )
+    console.print(
+        "This check is local and shallow. Run `pw integrity check` for a full read-only audit "
+        "of the runtime database, its content objects and the configured roots."
+    )
+
+
+def _operational_diagnostics(paths: bootstrap.AppPaths) -> list[tuple[str, str]]:
+    """Shallow, local checks: what exists, what is writable, and whether the state is readable.
+
+    Deliberately not the full integrity audit: `pw doctor` is run casually and must stay cheap, so
+    it reports the runtime's shape and points at `pw integrity check` for the real thing.
+    """
+    rows: list[tuple[str, str]] = []
+    rows.append(
+        ("runtime writable", "yes" if _is_writable(paths.runtime) else "[red]no[/red]")
+    )
+    for label, relative in (
+        ("mail raw root", "mail"),
+        ("web snapshot root", "web/snapshots"),
+    ):
+        target = paths.runtime / relative
+        rows.append(
+            (label, "present" if target.exists() else "absent (created on first use)")
+        )
+    database_file = paths.database_file
+    if database_file.is_file():
+        rows.append(("migration state", _migration_state(database_file)))
+    else:
+        rows.append(("migration state", "no runtime database yet"))
+    return rows
+
+
+def _is_writable(path: Path) -> bool:
+    """Whether this directory (or its nearest existing parent) can be written to."""
+    candidate = path
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate.is_dir() and os.access(candidate, os.W_OK)
+
+
+def _migration_state(database_file: Path) -> str:
+    """Whether the applied migrations match the reviewed files. Read-only, never migrating."""
+    from assistant.application.backup_service import MIGRATION_DIRECTORY
+    from assistant.store.db import Database
+
+    reviewed = sorted(path.name for path in MIGRATION_DIRECTORY.glob("*.sql"))
+    try:
+        with Database.read_only(database_file).connect() as connection:
+            applied = [
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM schema_migrations ORDER BY version"
+                ).fetchall()
+            ]
+    except Exception:  # pragma: no cover - a doctor check must never raise
+        return "[yellow]unreadable[/yellow]"
+    if applied == reviewed:
+        return f"up to date ({len(applied)})"
+    if applied == reviewed[: len(applied)]:
+        return f"[yellow]PENDING ({len(reviewed) - len(applied)} to apply)[/yellow]"
+    return "[red]mismatched[/red]"
 
 
 @roots_app.command("list")

@@ -5,6 +5,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Phase 9A: operational hardening before v1.0. No new business capability, no new external
+integration, no schema change — the runtime can now be inspected without touching it, backed up
+consistently, and recovered into a fresh directory that comes back *without* the authorization it
+held when the backup was taken.
+
+### Added
+
+- Operational integrity checker (ADR-0031): `pw integrity check` audits the runtime in a read-only,
+  offline SQLite connection — it cannot create, migrate or repair anything. It reports
+  `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, migration state (a pending migration is a
+  finding, not an instruction) and cross-domain consistency: capability fingerprints re-hashed from
+  the stored `ActionRequest` payload, challenge/approval/execution relationships, mail thread
+  membership and event/draft/send links, fact-candidate provenance and the single-live-fact-per-key
+  rule, playbook promotion provenance, web observation lineage and web/manual event links, plus a
+  per-object hash re-check of every referenced raw mail and web snapshot. A configured knowledge
+  root that is offline (an unplugged USB vault) is reported as offline rather than as corruption.
+- Consistent backup archives (`.gab`): `pw backup create|verify|inspect` write and read one versioned
+  format — a canonical `manifest.json`, a `runtime.sqlite3` produced by SQLite's own
+  consistent-backup API (never a file copy of a live WAL database), and the content-addressed
+  `mail/raw/…` and `web/snapshots/…` objects the snapshot references, each verified against the hash
+  the database recorded. A missing object (`BackupSourceMissing`) or a mismatched one
+  (`BackupSourceCorrupt`) fails the whole backup instead of producing an archive with a hole; the
+  output is written to a temporary file, verified, and atomically renamed, and an existing file is
+  never overwritten.
+- Safe staging restore: `pw backup restore FILE --to DIR` requires a destination that does not exist
+  or is empty, and refuses the active runtime directory or a parent/child of it. There is no
+  `--in-place` and no `--force`. Members are checked before anything is written (no absolute paths,
+  no `..`, no backslashes, no drive letters, no symlinks, no duplicates, no unlisted or missing
+  members, with named bounds on member count, manifest size, database size, object size, total
+  uncompressed size and compression ratio), extracted one by one with their size and SHA-256
+  verified, finalized, re-checked, and only then renamed into place.
+- Restore authorization invalidation: finalization spends unconsumed `ApprovalChallenge`s
+  (`consumed_at`), supersedes still-valid `Approval`s (`superseded_at` — never `consumed_at`, which
+  would claim they were used), consumes unredeemed mobile pairing tokens and revokes every mobile
+  session, while deleting no history at all. `RUNNING` and `UNKNOWN` `ExecutionRun`s stay exactly as
+  unresolved as they were, so `pw action execute` still refuses to blind-retry after recovery. A
+  restore never restores credentials: SMTP/IMAP passwords, the model key and the eHall browser
+  profile are not in the archive, and no `.env` is generated.
+- Cross-system acceptance suite (`tests/acceptance/`): the full lifecycle over real SQLite stores,
+  migration runner, `EventInbox`/`EventWorker`, scheduler and approval chain, with fakes only at the
+  external edges (model, IMAP, SMTP, eHall page, HTTP watcher), temporary XDG roots, the outbound
+  socket guard enabled throughout, and no mocked application service. It covers
+  Observe → Understand → Commit → Plan → Review (manual input → analysis → explicit task → reminder
+  → proposal → apply → work session → completion), the mail path through exactly one SMTP `DATA` to
+  a reviewed playbook, knowledge grounding with a citation into a confirmed fact, eHall
+  contract-change safety (zero submits, then exactly one), mobile/MCP boundaries, watcher
+  baseline/change semantics, provider calls staying at exactly one across an analysis retry, restart
+  across two bootstrap instances, lease expiry reclaim and fencing, `UNKNOWN` no-retry after restart,
+  supervisor crash isolation and shutdown, and a seeded sentinel sweep across captured logs.
+- `pw doctor` gained local operational rows (runtime writable, mail raw root, web snapshot root,
+  migration state) and points at `pw integrity check` when a deeper audit is warranted. It still
+  performs no network access.
+- Exit codes for the operator commands: `0` valid, `1` a bad archive/runtime or a refused request
+  (non-empty destination, the live runtime directory), `2` a usage problem such as a `FILE` argument
+  that is not a file.
+
 ## [0.8.0] - 2026-09-20
 
 Phase 8: the assistant can watch, listen and be looked at. It observes configured public pages and

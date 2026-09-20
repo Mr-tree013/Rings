@@ -47,10 +47,12 @@ class Database:
         *,
         create_parent: bool = True,
         journal_mode: str = DEFAULT_JOURNAL_MODE,
+        read_only: bool = False,
     ) -> None:
         self._path = path
         self._create_parent = create_parent
         self._journal_mode = journal_mode
+        self._read_only = read_only
 
     @classmethod
     def at(
@@ -66,6 +68,22 @@ class Database:
         SQL — which is what makes a `Database` safe to hand to a worker thread.
         """
         return cls(str(path), create_parent=create_parent, journal_mode=journal_mode)
+
+    @classmethod
+    def read_only(cls, path: str | Path) -> Database:
+        """Describe a database that may only be read (ADR-0031).
+
+        Used by the integrity check and by backup verification, where opening the file must not
+        create it, migrate it or change its journal mode. A read-only connection also cannot write
+        by accident, which is the point: a diagnostic that repaired something would destroy the
+        evidence it was run to find.
+        """
+        return cls(str(path), create_parent=False, read_only=True)
+
+    @property
+    def is_read_only(self) -> bool:
+        """Whether this database is opened for reading only."""
+        return self._read_only
 
     @property
     def path(self) -> str:
@@ -94,7 +112,12 @@ class Database:
             resolved = Path(target).expanduser()
             resolved.parent.mkdir(parents=True, exist_ok=True)
             target = str(resolved)
-        connection = sqlite3.connect(target, isolation_level=None)
+        if self._read_only:
+            connection = sqlite3.connect(
+                f"file:{target}?mode=ro", uri=True, isolation_level=None
+            )
+        else:
+            connection = sqlite3.connect(target, isolation_level=None)
         try:
             connection.row_factory = sqlite3.Row
             _configure(
@@ -102,6 +125,7 @@ class Database:
                 path=target,
                 is_file_database=self.is_file_database,
                 journal_mode=self._journal_mode,
+                read_only=self._read_only,
             )
             yield connection
         finally:
@@ -153,12 +177,17 @@ def _configure(
     path: str,
     is_file_database: bool,
     journal_mode: str,
+    read_only: bool = False,
 ) -> None:
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    if read_only:
+        # A read-only connection must not switch journal modes; the mode it finds is the mode the
+        # host is running, and changing it here would be a write.
+        return
     achieved_mode = str(
         connection.execute(f"PRAGMA journal_mode = {journal_mode}").fetchone()[0]
     )
-    connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     if is_file_database and achieved_mode.lower() != journal_mode.lower():
         raise DatabaseConfigurationError(
             f"{path} reports journal_mode={achieved_mode!r}, expected {journal_mode!r}"
