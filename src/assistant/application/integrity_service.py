@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from assistant.domain.backup import sha256_hex
+from assistant.domain.backup import DATABASE_FILENAME, MAIL_ROOT_DIRECTORY, sha256_hex
 from assistant.domain.errors import DomainError
 from assistant.domain.integrity import (
     IntegrityReport,
@@ -34,6 +34,7 @@ from assistant.domain.integrity import (
     IntegritySeverity,
 )
 from assistant.ports.content_objects import ContentObjectReader
+from assistant.ports.file_modes import FileModeInspector
 from assistant.ports.integrity_repository import DatabaseAudit, IntegrityRepository
 
 LOGGER = logging.getLogger("assistant.integrity")
@@ -51,11 +52,15 @@ class IntegrityService:
         objects: ContentObjectReader,
         *,
         migrations_directory: Path | None = None,
+        runtime_root: Path | None = None,
+        file_modes: FileModeInspector | None = None,
         indexes: object | None = None,
     ) -> None:
         self._repository = repository
         self._objects = objects
         self._migrations = migrations_directory
+        self._runtime_root = runtime_root
+        self._file_modes = file_modes
         self._indexes = indexes
 
     async def check(self) -> IntegrityReport:
@@ -67,11 +72,69 @@ class IntegrityService:
         ]
         sections.append(await self._content_section(audit))
         sections.append(self._knowledge_section(audit))
+        sections.append(self._permissions_section())
         report = IntegrityReport(sections=tuple(sections))
         LOGGER.info("integrity check completed worst=%s", report.worst.value)
         return report
 
     # ---------------------------------------------------------------- sections
+
+    def _permissions_section(self) -> IntegritySection:
+        """Report the modes of the private objects, and never repair them (ADR-0032).
+
+        A world-writable database or content root is a `FAIL`: anyone on the machine could rewrite
+        the authority this check just verified. Group/other readable bits are a `WARN`, because a
+        private parent directory may already be the real boundary. Nothing here changes a mode — a
+        diagnostic that silently rewrote permissions would destroy the evidence it was run to find,
+        and it would also rewrite modes on files the user configured deliberately.
+        """
+        if self._runtime_root is None or self._file_modes is None:
+            return IntegritySection(
+                "permissions",
+                IntegritySeverity.OK,
+                "not checked (no runtime directory was provided)",
+            )
+        root = Path(self._runtime_root)
+        targets = (
+            ("runtime directory", root),
+            ("runtime database", root / DATABASE_FILENAME),
+            ("mail raw root", root / MAIL_ROOT_DIRECTORY),
+            ("web snapshot root", root / "web" / "snapshots"),
+        )
+        findings: list[str] = []
+        inspected = 0
+        failing = False
+        warning = False
+        for label, path in targets:
+            if not path.exists():
+                continue
+            inspected += 1
+            observed = self._file_modes.inspect(path)
+            mode = observed.mode
+            if mode is None:
+                continue
+            if observed.world_writable:
+                failing = True
+                findings.append(f"{label}: {mode:04o} is writable by anyone on this machine")
+            elif not observed.owner_only:
+                warning = True
+                findings.append(
+                    f"{label}: {mode:04o} is readable by group/other "
+                    "(private parents are what actually contain it)"
+                )
+        severity = (
+            IntegritySeverity.FAIL
+            if failing
+            else IntegritySeverity.WARN
+            if warning
+            else IntegritySeverity.OK
+        )
+        return IntegritySection(
+            "permissions",
+            severity,
+            f"{inspected} private object(s) inspected; nothing was changed",
+            tuple(findings),
+        )
 
     async def _content_section(self, audit: DatabaseAudit) -> IntegritySection:
         """Every referenced object must exist and match the hash the database recorded."""
@@ -144,6 +207,18 @@ def _migrations_section(
             "migrations",
             IntegritySeverity.OK,
             f"{len(applied)} migration(s) applied, up to date",
+        )
+    unknown = tuple(
+        name for name in applied if name not in reviewed
+    )
+    if unknown:
+        # A version this build does not ship means the database was written by a newer binary (or
+        # its history was rewritten). Reported, never "fixed": nothing here applies or reverts SQL.
+        return IntegritySection(
+            "migrations",
+            IntegritySeverity.FAIL,
+            f"INCOMPATIBLE: {len(unknown)} applied migration(s) are unknown to this build",
+            unknown,
         )
     if applied == reviewed[: len(applied)]:
         pending = len(reviewed) - len(applied)

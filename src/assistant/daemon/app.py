@@ -11,10 +11,16 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from assistant import bootstrap
+from assistant.adapters.runtime.instance_lock import (
+    InstanceLock,
+    InstanceLockHeld,
+    daemon_lock_path,
+)
 from assistant.daemon.supervisor import AsyncService, supervise
 from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import InvalidAssistantConfig
@@ -105,10 +111,46 @@ async def serve(
 
 
 async def async_main(config_path: Path | None = None) -> None:
-    """Async entry point: load config, prepare storage, supervise services."""
+    """Async entry point: take the instance lock, then serve until asked to stop."""
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
     clock = bootstrap.system_clock()
+    lock = _acquire_instance_lock()
+    try:
+        await _serve_runtime(config_path, clock, stop_event)
+    finally:
+        # Released last, after every supervised service has stopped: a successor started in the
+        # same second must not find a half-serving predecessor still writing to the runtime.
+        lock.release()
+        LOGGER.info("assistantd shut down")
+
+
+def _acquire_instance_lock() -> InstanceLock:
+    """Take the per-runtime daemon lock, or raise `InstanceLockHeld` (ADR-0032).
+
+    The lock is held for the whole process lifetime; the kernel releases it when the process ends.
+    A lock file without a held lock is merely an old file, so a machine that lost power does not
+    need anybody to delete anything before the daemon can start again.
+    """
+    runtime = bootstrap.AppPaths.resolve().runtime
+    lock = InstanceLock(
+        daemon_lock_path(runtime),
+        metadata={
+            "pid": os.getpid(),
+            "started_at": bootstrap.system_clock().now().isoformat(),
+            "version": bootstrap.assistant_version(),
+            "runtime_root": str(runtime),
+        },
+    )
+    lock.acquire()
+    LOGGER.info("instance lock acquired (%s)", lock.path.name)
+    return lock
+
+
+async def _serve_runtime(
+    config_path: Path | None, clock: Clock, stop_event: asyncio.Event
+) -> None:
+    """Load the host configuration, prepare the runtime and supervise its services."""
     config = await load_config(config_path)
     LOGGER.info(
         "configuration loaded: %d roots (%d enabled), interval %ds, run_on_startup=%s",
@@ -127,16 +169,29 @@ async def async_main(config_path: Path | None = None) -> None:
     try:
         await serve(stop_event, services)
     finally:
-        LOGGER.info("assistantd shutting down")
+        LOGGER.info("assistantd stopping services")
 
 
 def main() -> None:
     """Console-script entry point (`assistantd`)."""
+    arguments = sys.argv[1:]
+    if arguments == ["--version"]:
+        sys.stdout.write(f"assistantd {bootstrap.assistant_version()}\n")
+        raise SystemExit(0)
+    if arguments:
+        sys.stderr.write(
+            f"assistantd: unknown argument(s): {' '.join(arguments)}; "
+            "the daemon takes no options except --version\n"
+        )
+        raise SystemExit(2)
     configure_logging()
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:  # pragma: no cover - fallback when signal handlers are unavailable
         LOGGER.info("assistantd interrupted")
+    except InstanceLockHeld as exc:
+        LOGGER.error("%s", exc)
+        raise SystemExit(3) from exc
     except InvalidAssistantConfig as exc:
         LOGGER.error("invalid configuration: %s", exc)
         raise SystemExit(2) from exc

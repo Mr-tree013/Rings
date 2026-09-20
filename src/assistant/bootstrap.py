@@ -39,6 +39,7 @@ from assistant.adapters.mail.sent_lookup import ImapSentMailLookup
 from assistant.adapters.mail.smtp import SmtpMailExecutor, rfc2822_date
 from assistant.adapters.model.deepseek import DeepSeekAdapter
 from assistant.adapters.ops.content_objects import RuntimeContentObjects
+from assistant.adapters.runtime.permissions import LocalFileModes
 from assistant.adapters.security.tokens import (
     secure_approval_token_factory,
     secure_mobile_token_factory,
@@ -143,7 +144,7 @@ from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.mail_send import SqliteMailSendRepository
 from assistant.store.manual_inputs import SqliteManualInputRepository
-from assistant.store.migrations import apply_migrations
+from assistant.store.migrations import apply_migrations, require_compatible_history
 from assistant.store.mobile_sessions import SqliteMobileSessionRepository
 from assistant.store.observation_analyses import SqliteObservationAnalysisRepository
 from assistant.store.planning import SqlitePlanningRepository
@@ -159,8 +160,14 @@ def config_loader(path: Path | None = None) -> TomlConfigLoader:
 
 
 def runtime_database(clock: Clock) -> Database:
-    """Open the host runtime database and apply pending migrations synchronously."""
+    """Open the host runtime database, refuse a newer schema, apply pending migrations.
+
+    The compatibility check comes first: a runtime written by a newer binary must fail closed here,
+    before any command mutates it (ADR-0032). Forward migrations for a database this build *does*
+    understand are applied synchronously, exactly as before.
+    """
     database = Database.at(AppPaths.resolve().database_file)
+    require_compatible_history(database)
     apply_migrations(database, clock=clock)
     return database
 
@@ -730,6 +737,8 @@ def integrity_service(clock: Clock, database: Database) -> IntegrityService:
         SqliteIntegrityRepository(database),
         runtime_content_objects(),
         migrations_directory=MIGRATION_DIRECTORY,
+        runtime_root=AppPaths.resolve().runtime,
+        file_modes=LocalFileModes(),
     )
 
 

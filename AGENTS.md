@@ -453,6 +453,35 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Cross-system acceptance tests must use fake external adapters with the socket guard enabled.**
   `tests/acceptance/` 只能用临时 XDG root + fake model/IMAP/SMTP/eHall/WebSource，真实 SQLite store、
   migration runner、EventWorker、Scheduler 与审批链必须是真件；禁止用 mock application service 代替。
+- **assistantd is single-instance per runtime data root.**
+  单实例的权威是 `flock(LOCK_EX|LOCK_NB)` 持有的 **OS advisory lock**
+  （`~/.local/share/growing-assistant/assistantd.lock`，0600），不是"文件是否存在"、也不是 pid；
+  第二个实例在启动任何 supervisor 之前非零退出。没有 OS lock 的旧 lock 文件**必须**允许启动。
+  lock 在 `serve` 返回之后（`finally`）才释放；daemon 永远不执行 `ActionRequest`。
+- **Release hardening must not widen capability surfaces.**
+  9B 只允许 runtime hardening / packaging / 单实例 / 升级兼容 / 权限 / release acceptance / docs /
+  release metadata。不得新增 ActionExecutor、外部集成、watcher 类型、MCP tool/resource、mobile mutation、
+  model 能力、fact consumer、playbook 执行或自动 commitment/外部动作；`tests/release/test_capability_surface_freeze.py`
+  与 architecture checks 把 mobile route / MCP surface / executor set / event types 都钉住。
+- **Historical migrations are immutable.** 已发布的 `migrations/*.sql` 永不修改、改名或删除；
+  迁移只向前。改历史迁移会被 `require_compatible_history()` 判定为 incompatible（name 不符）。
+- **A database from a newer migration history must fail closed.**
+  `DatabaseMigrationIncompatible`：bootstrap / `assistantd` / 任何会写的 `pw` 命令都必须拒绝；
+  `pw integrity check`（只读）报告 `INCOMPATIBLE` + FAIL，且**不得**修改数据库。没有 downgrade migration。
+- **Project-created personal-state files use restrictive permissions where supported.**
+  本项目创建的目录 `0700`（runtime root / mail raw / web snapshot / restore staging / eHall profile /
+  knowledge cache），文件 `0600`（runtime DB、raw mail、web snapshot、backup 及其临时文件、lock、恢复内容）。
+  只处理"这次调用新建的"对象；既有文件与用户文件只报告不重写（`pw integrity check` 的 permissions 段）。
+- **No release artifact may contain credentials or runtime personal data.**
+  wheel/sdist 必须带 `assistant/migrations/0001–0015` 与 web 静态资源，但绝不含 `.env`、`assistant.db`、
+  `mail/raw`、`web/snapshots`、eHall profile、backup 或任何 fixture secret；
+  `tests/release/test_package_smoke.py` 在真正 build 出来的 artifact 上检查。
+- **All v1 release tests are network-free.** `tests/release/` 与 `tests/acceptance/` 只允许 fake/in-process
+  adapter；package smoke 安装 wheel 时用 `--no-deps --target`，不访问 provider 或包索引。
+- **Playbooks remain non-executing.** Playbook 只是"当前代码仍理解这份 payload"的复核记录；
+  没有执行入口，也不与 ActionRequest/Approval 打通。
+- **ConfirmedFacts remain non-autofilling unless a future ADR explicitly changes that boundary.**
+  没有 fact → eHall 字段 / mail 草稿 / model context 的注入路径；`pw integrity check` 只审计 provenance。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -695,6 +724,18 @@ staging-only restore）、`application/integrity_service.py`、`cli_ops.py`
 并提示运行 `pw integrity check`，`tests/acceptance/` 新增 lifecycle / restart / lease / UNKNOWN /
 supervisor / privacy-log 验收。**没有 migration 0016、没有新外部能力、没有新 CLI 副作用、
 版本仍为 0.8.0。**
+
+**Phase 9B 已完成（v1.0.0，Phase 9 结束）**：v1 release hardening（ADR-0032）：
+daemon 单实例 OS lock（`adapters/runtime/instance_lock.py` + `pw daemon status`）、
+私有权限（`adapters/runtime/permissions.py`，目录 0700 / 文件 0600，恢复与备份同样 0600）、
+`.gab` 严格 EOF（尾部字节与 ZIP comment 一律拒绝）、`DatabaseMigrationIncompatible` +
+`require_compatible_history()`（未来 schema fail closed；`pw integrity check` 报 INCOMPATIBLE）、
+`tests/release/`（升级矩阵与每个 prefix、future DB、example config safe-by-default、daemon
+子进程生命周期、权限、归档边界、wheel/sdist 内容与 installed smoke、CLI/version surface、
+能力冻结、压力不变量、重启不执行 approved/UNKNOWN、fresh & historical acceptance、隐私扫描）、
+wheel 内置 `assistant/migrations/` 与 web 静态资源、`pw --version` / `assistantd --version`、
+README 快速开始 / 产品边界 / 已知限制 / WSL 启动示例、`docs/upgrade-to-v1.md`、
+`docs/releases/1.0.0.md`。**无 migration 0016、无新 production dependency、无新能力。**
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 

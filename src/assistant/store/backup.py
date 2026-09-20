@@ -19,9 +19,14 @@ Nothing in this module deletes a row, and nothing in it contacts anything.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+from assistant.adapters.runtime.permissions import (
+    ensure_private_directory,
+    ensure_private_file,
+)
 from assistant.domain.backup import BackupCounts, RestoreFinalization
 from assistant.domain.errors import InvalidBackupArchive
 from assistant.ports.runtime_backup import ReferencedObject, SnapshotInspection
@@ -66,17 +71,22 @@ class SqliteRuntimeBackup:
             raise InvalidBackupArchive(
                 f"there is no runtime database at {self._path.name} to back up"
             )
-        target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(target.parent)
         if target.exists():
             raise StoreError("the snapshot destination already exists")
         try:
+            # `closing`, not `with`: sqlite3's own context manager is a *transaction*, so a bare
+            # `with sqlite3.connect(...)` would leave the descriptors open until the garbage
+            # collector noticed.
             with (
-                sqlite3.connect(str(self._path)) as source,
-                sqlite3.connect(str(target)) as copied,
+                closing(sqlite3.connect(str(self._path))) as source,
+                closing(sqlite3.connect(str(target))) as copied,
             ):
                 source.backup(copied)
         except sqlite3.Error as exc:
             raise StoreError(f"could not snapshot the runtime database: {exc}") from exc
+        # The snapshot carries the same personal state as the live database, so it is private too.
+        ensure_private_file(target)
 
     def inspect(self, snapshot: Path) -> SnapshotInspection:
         """Read one snapshot: pragmas, migrations, referenced objects and counts."""

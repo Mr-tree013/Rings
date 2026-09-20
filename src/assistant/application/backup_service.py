@@ -59,8 +59,13 @@ from assistant.ports.runtime_backup import ReferencedObject, RuntimeBackup
 
 LOGGER = logging.getLogger("assistant.backup")
 
-MIGRATION_DIRECTORY = Path(__file__).resolve().parents[3] / "migrations"
-"""Where the reviewed migration files live, relative to this module."""
+_PACKAGED_MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
+_CHECKOUT_MIGRATIONS = Path(__file__).resolve().parents[3] / "migrations"
+MIGRATION_DIRECTORY = (
+    _PACKAGED_MIGRATIONS if _PACKAGED_MIGRATIONS.is_dir() else _CHECKOUT_MIGRATIONS
+)
+"""Where this build's reviewed migration files live: inside the installed package, or the
+repository's `migrations/` directory when running from a checkout (ADR-0032)."""
 
 
 def member_path(runtime_root: Path, storage_key: str) -> Path:

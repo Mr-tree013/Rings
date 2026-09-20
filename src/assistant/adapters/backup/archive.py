@@ -7,6 +7,11 @@ backup leaves no half-file behind and an existing backup is never overwritten.
 Reading is where the care is. `open_archive` walks the archive's central directory and refuses, in
 this order:
 
+- **the archive ends exactly where it says it ends.** A ZIP may legally carry a comment and a reader
+  may legally ignore bytes after the end-of-central-directory record; a backup may not. The final
+  EOCD record must sit at the very end of the file with a zero comment length, and the central
+  directory it points at must end exactly where that record begins. `valid.gab + b"junk"`,
+  `valid.gab + another-archive` and an archive with a comment are all invalid (ADR-0032);
 - a member count beyond the limit, or a manifest beyond its size limit;
 - a name that is absolute, traverses with `..`, uses backslashes, carries a drive letter, has an
   empty segment or contains a NUL byte;
@@ -29,7 +34,12 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
+from assistant.adapters.runtime.permissions import (
+    ensure_private_directory,
+    ensure_private_file,
+)
 from assistant.domain.backup import (
     DATABASE_MEMBER,
     MANIFEST_MEMBER,
@@ -46,6 +56,15 @@ from assistant.domain.errors import InvalidBackupArchive
 
 CHUNK_BYTES = 1024 * 1024
 """How much of a member is read at once, so nothing is ever fully in memory."""
+
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
+_ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_EOCD_LENGTH = 22
+_ZIP64_EOCD_MINIMUM_LENGTH = 56
+_ZIP64_LOCATOR_LENGTH = 20
+_MAX_COMMENT_BYTES = 0xFFFF
+_TAIL_BYTES = _MAX_COMMENT_BYTES + _EOCD_LENGTH
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +159,11 @@ def make_archive(
         seen.add(name)
         if not path.is_file():
             raise InvalidBackupArchive(f"the source for {name!r} is missing")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(target.parent)
     handle, temporary = tempfile.mkstemp(dir=str(target.parent), suffix=".part")
     os.close(handle)
     temporary_path = Path(temporary)
+    ensure_private_file(temporary_path)
     try:
         with zipfile.ZipFile(temporary_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             info = zipfile.ZipInfo(MANIFEST_MEMBER)
@@ -157,6 +177,7 @@ def make_archive(
         temporary_path.unlink(missing_ok=True)
         raise
     os.replace(temporary_path, target)
+    ensure_private_file(target)
     _fsync_directory(target.parent)
     return target
 
@@ -171,6 +192,7 @@ def open_archive(path: Path) -> ArchiveContents:
     source = Path(path)
     if not source.is_file():
         raise InvalidBackupArchive(f"{source} is not a file")
+    _require_strict_end_of_archive(source)
     try:
         archive = zipfile.ZipFile(source, "r")
     except zipfile.BadZipFile as exc:
@@ -212,7 +234,7 @@ def extract_member(contents: ArchiveContents, name: str, destination: Path) -> t
     else:  # pragma: no cover - the branch above already refused this
         raise InvalidBackupArchive(f"{name!r} is not listed in the manifest")
     target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(target.parent)
     digest = hashlib.sha256()
     written = 0
     with zipfile.ZipFile(contents.path, "r") as archive:
@@ -227,6 +249,7 @@ def extract_member(contents: ArchiveContents, name: str, destination: Path) -> t
                 output.write(chunk)
             output.flush()
             os.fsync(output.fileno())
+    ensure_private_file(target)
     if digest.hexdigest() != expected:
         target.unlink(missing_ok=True)
         raise InvalidBackupArchive(f"{name!r} does not match the hash recorded in the manifest")
@@ -334,6 +357,93 @@ def _require_manifest_matches_members(
 def _fsync_file(path: Path) -> None:
     with path.open("rb") as stream:  # pragma: no cover - depends on the filesystem
         os.fsync(stream.fileno())
+
+
+def _require_strict_end_of_archive(source: Path) -> None:
+    """Refuse anything that is not exactly one ZIP archive ending at its own last byte.
+
+    `zipfile` (like every ZIP reader) searches backwards for the end-of-central-directory record, so
+    it will happily read an archive that carries a comment or has another file glued behind it. A
+    `.gab` file is not a container for "the backup and whatever else": the format promises that the
+    bytes on disk *are* the state that was backed up. The check therefore reads only the tail of the
+    file — enough to see the final EOCD record, its comment length and, for Zip64 archives, the
+    locator and the Zip64 record it points at — and never parses the members itself.
+
+    Raises:
+        InvalidBackupArchive: the tail is missing, carries a comment, or is followed by more bytes.
+    """
+    size = source.stat().st_size
+    if size < _EOCD_LENGTH:
+        raise InvalidBackupArchive("the backup is not a readable zip archive")
+    tail_length = min(size, _TAIL_BYTES)
+    tail_start = size - tail_length
+    with source.open("rb") as stream:
+        stream.seek(tail_start)
+        tail = stream.read(tail_length)
+        position = tail.rfind(_EOCD_SIGNATURE)
+        if position < 0:
+            raise InvalidBackupArchive("the backup has no end-of-central-directory record")
+        eocd_offset = tail_start + position
+        record = tail[position : position + _EOCD_LENGTH]
+        if len(record) < _EOCD_LENGTH:
+            raise InvalidBackupArchive("the backup's end record is truncated")
+        if int.from_bytes(record[20:22], "little") != 0:
+            raise InvalidBackupArchive(
+                "the backup archive carries a zip comment, which this format does not allow"
+            )
+        if eocd_offset + _EOCD_LENGTH != size:
+            raise InvalidBackupArchive(
+                "the backup archive has data after its end-of-central-directory record"
+            )
+        directory_size = int.from_bytes(record[12:16], "little")
+        directory_offset = int.from_bytes(record[16:20], "little")
+        if directory_offset == 0xFFFFFFFF or directory_size == 0xFFFFFFFF:
+            _require_zip64_boundary(
+                stream,
+                tail=tail,
+                tail_start=tail_start,
+                eocd_offset=eocd_offset,
+            )
+            return
+        if directory_offset + directory_size != eocd_offset:
+            raise InvalidBackupArchive(
+                "the backup archive's central directory does not end at its end record"
+            )
+
+
+def _require_zip64_boundary(
+    stream: BinaryIO,
+    *,
+    tail: bytes,
+    tail_start: int,
+    eocd_offset: int,
+) -> None:
+    """The Zip64 form of the same boundary: locator, Zip64 record, central directory, end to end."""
+    locator_offset = eocd_offset - _ZIP64_LOCATOR_LENGTH
+    if locator_offset < tail_start:
+        raise InvalidBackupArchive("the backup's Zip64 locator is not in the archive's tail")
+    start = locator_offset - tail_start
+    locator = tail[start : start + _ZIP64_LOCATOR_LENGTH]
+    if not locator.startswith(_ZIP64_LOCATOR_SIGNATURE):
+        raise InvalidBackupArchive("the backup's Zip64 end locator is missing")
+    zip64_offset = int.from_bytes(locator[8:16], "little")
+    stream.seek(zip64_offset)
+    header = stream.read(_ZIP64_EOCD_MINIMUM_LENGTH)
+    if len(header) < _ZIP64_EOCD_MINIMUM_LENGTH or not header.startswith(
+        _ZIP64_EOCD_SIGNATURE
+    ):
+        raise InvalidBackupArchive("the backup's Zip64 end record is missing")
+    record_size = int.from_bytes(header[4:12], "little")
+    directory_size = int.from_bytes(header[40:48], "little")
+    directory_offset = int.from_bytes(header[48:56], "little")
+    if zip64_offset + 12 + record_size != locator_offset:
+        raise InvalidBackupArchive(
+            "the backup archive has data between its Zip64 end record and its end locator"
+        )
+    if directory_offset + directory_size != zip64_offset:
+        raise InvalidBackupArchive(
+            "the backup archive's central directory does not end at its Zip64 end record"
+        )
 
 
 def _fsync_directory(path: Path) -> None:  # pragma: no cover - depends on the filesystem

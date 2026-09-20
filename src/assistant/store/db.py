@@ -27,6 +27,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from assistant.adapters.runtime.permissions import (
+    ensure_private_directory,
+    ensure_private_file,
+)
 from assistant.store.errors import DatabaseConfigurationError
 
 MEMORY_PATH = ":memory:"
@@ -105,13 +109,18 @@ class Database:
         """Open a configured connection in the calling thread, then close it.
 
         When `create_parent` is set, the parent directory is created first so a first-run
-        daemon can write its runtime database.
+        daemon can write its runtime database. A directory *this call creates* is private (`0700`),
+        and a database file *this call creates* is `0600`; directories and files that already exist
+        are left exactly as they are, because their modes are the user's decision and the integrity
+        check reports them instead of rewriting them (ADR-0032).
         """
         target = self._path
+        creates_file = False
         if self.is_file_database and self._create_parent:
             resolved = Path(target).expanduser()
-            resolved.parent.mkdir(parents=True, exist_ok=True)
+            ensure_private_directory(resolved.parent)
             target = str(resolved)
+            creates_file = not resolved.exists()
         if self._read_only:
             connection = sqlite3.connect(
                 f"file:{target}?mode=ro", uri=True, isolation_level=None
@@ -120,6 +129,11 @@ class Database:
             connection = sqlite3.connect(target, isolation_level=None)
         try:
             connection.row_factory = sqlite3.Row
+            if creates_file:
+                # SQLite creates the file with the process umask; the runtime database holds
+                # personal state, so the file is tightened right after creation — and only when
+                # this call created it, never afterwards.
+                ensure_private_file(Path(target))
             _configure(
                 connection,
                 path=target,

@@ -90,19 +90,23 @@ def test_a_hostile_member_name_is_refused(tmp_path: Path, name: str) -> None:
 
 
 def test_a_duplicate_member_is_refused(tmp_path: Path) -> None:
-    archive = _write_archive(
-        tmp_path / "duplicate.gab",
-        [(MAIL_KEY, b"a"), (MAIL_KEY, b"b")],
-    )
+    # `zipfile` warns when a writer deliberately repeats a name; that warning is the test's own
+    # fixture speaking, not a product problem, so it is asserted rather than left to noise.
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        archive = _write_archive(
+            tmp_path / "duplicate.gab",
+            [(MAIL_KEY, b"a"), (MAIL_KEY, b"b")],
+        )
 
     with pytest.raises(InvalidBackupArchive):
         open_archive(archive)
 
 
 def test_a_duplicate_manifest_is_refused(tmp_path: Path) -> None:
-    archive = _write_archive(
-        tmp_path / "two-manifests.gab", [], duplicate_manifest=True
-    )
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        archive = _write_archive(
+            tmp_path / "two-manifests.gab", [], duplicate_manifest=True
+        )
 
     with pytest.raises(InvalidBackupArchive):
         open_archive(archive)
@@ -242,7 +246,10 @@ def test_an_unsupported_format_version_is_refused(tmp_path: Path) -> None:
         [(DATABASE_MEMBER, b"payload")],
         manifest=_manifest(),
     )
-    with zipfile.ZipFile(archive, "a") as handle:
+    with (
+        pytest.warns(UserWarning, match="Duplicate name"),
+        zipfile.ZipFile(archive, "a") as handle,
+    ):
         handle.writestr(MANIFEST_MEMBER, canonical_json(document))
 
     with pytest.raises(InvalidBackupArchive):

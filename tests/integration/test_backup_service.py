@@ -361,8 +361,8 @@ async def test_a_restore_invalidates_live_capabilities_but_keeps_history(
     assert result.approvals_superseded == 1  # superseded, never consumed
     assert result.pairing_tokens_invalidated == 1
     assert result.sessions_revoked == 1
-    with runtime.database.connect() as connection:
-        connection = _open(destination)
+    connection = _open(destination)
+    try:
         challenge = connection.execute(
             "SELECT consumed_at FROM approval_challenges WHERE action_id = ?",
             (str(second.id),),
@@ -378,6 +378,7 @@ async def test_a_restore_invalidates_live_capabilities_but_keeps_history(
             "SELECT revoked_at FROM mobile_sessions WHERE id = ?", (session_id,)
         ).fetchone()
         total = connection.execute("SELECT count(*) AS t FROM approvals").fetchone()["t"]
+    finally:
         connection.close()
     # Capability is gone; the rows are not.
     assert challenge["consumed_at"] is not None

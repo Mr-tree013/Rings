@@ -2645,9 +2645,13 @@ _CREDENTIAL_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9]{20,}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(
-        r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)\s*=\s*["']([A-Za-z0-9+/=]{16,})["']"""
+        r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)"""
+        r"""\s*=\s*["']([A-Za-z0-9+/=]{16,})["']"""
     ),
-    re.compile(r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)\s*=\s*["']([^"']{24,})["']"""),
+    re.compile(
+        r"""(?i)\b(?:api_key|apikey|password|passwd|secret|token)"""
+        r"""\s*=\s*["']([^"']{24,})["']"""
+    ),
 )
 """§54: shapes that only a real credential produces. Deliberately narrow: this scan guards against
 a pasted secret, not against every use of the word "secret" in prose. Attribute-style keyword
@@ -2691,3 +2695,166 @@ def test_no_credential_shaped_literal_is_committed() -> None:
     synthetic = "api_" + "key" + ' = "' + opaque + '"'
     assert synthetic in _credential_shape_findings(synthetic)
     assert _credential_shape_findings("-----BEGIN RSA " + "PRIVATE KEY-----")
+
+
+# ------------------------------------------- version 1 runtime and release contract (ADR-0032)
+
+RUNTIME_ADAPTER_MODULES = (
+    "adapters/runtime/__init__.py",
+    "adapters/runtime/instance_lock.py",
+    "adapters/runtime/permissions.py",
+)
+"""The only place the operating-system facts of ADR-0032 live."""
+
+PRODUCTION_DEPENDENCIES = (
+    "typer>=0.15",
+    "rich>=13.9",
+    "pypdf>=6.19.0",
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
+    "playwright>=1.63.0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.53.0",
+    "mcp>=2,<3",
+)
+"""Every runtime dependency v1 declares. Adding one is a phase, not a release chore."""
+
+DEVELOPMENT_DEPENDENCIES = (
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "types-jsonschema>=4.26.0.20260518",
+)
+"""The tools that run the v1 gates, frozen for the same reason."""
+
+
+def test_only_the_runtime_adapter_touches_the_operating_system() -> None:
+    """The lock and the file modes are kernel facts, so they are adapters — and they are the only
+    place that reaches for `fcntl` or `os.chmod`."""
+    for relative in RUNTIME_ADAPTER_MODULES:
+        assert (SOURCE_ROOT / relative).is_file(), relative
+
+    fcntl_users = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if "fcntl" in _imported_modules(path)
+    ]
+    chmod_users = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if "os.chmod(" in path.read_text(encoding="utf-8")
+    ]
+
+    assert fcntl_users == ["adapters/runtime/instance_lock.py"]
+    assert chmod_users == ["adapters/runtime/permissions.py"]
+
+
+def test_the_store_may_import_exactly_one_adapter_module() -> None:
+    """ADR-0032 freezes the one exception: applying an owner-only mode is not a persistence concern,
+    and a private copy of `chmod` logic in the store is how two modules drift apart."""
+    allowed = {"assistant.adapters.runtime.permissions"}
+    violations: list[str] = []
+    for path in sorted((SOURCE_ROOT / "store").glob("*.py")):
+        for imported in _imported_modules(path):
+            if not imported.startswith("assistant.adapters"):
+                continue
+            if imported not in allowed:
+                violations.append(f"{path.name} imports {imported}")
+
+    assert not violations, violations
+
+
+def test_the_daemon_is_single_instance_and_version_aware() -> None:
+    """§3/§5/§6/§26: the daemon takes an OS lock, releases it last, and answers `--version`."""
+    module = SOURCE_ROOT / "daemon" / "app.py"
+    names = _identifiers(module)
+    text = module.read_text(encoding="utf-8")
+
+    assert {"InstanceLock", "InstanceLockHeld", "daemon_lock_path"} <= names
+    assert "lock.acquire()" in text
+    # Released in the `finally` of the run, after `serve` returns: a successor must never meet a
+    # predecessor that is still half-serving.
+    assert "lock.release()" in text
+    assert "--version" in text
+    assert "os._exit" not in text
+
+
+def test_the_daemon_cannot_execute_an_external_action() -> None:
+    """§11/§21/§24: release hardening must not have moved execution into the daemon."""
+    daemon_layers = ("daemon/app.py", "daemon/supervisor.py")
+    banned_names = {
+        "ActionExecutionService",
+        "ActionExecutor",
+        "SmtpMailExecutor",
+        "EHallCertificateExecutor",
+        "execute",
+    }
+    banned_imports = (
+        "assistant.application.action_execution",
+        "assistant.ports.action_executor",
+        "assistant.adapters.mail.smtp",
+        "assistant.adapters.ehall",
+        "smtplib",
+    )
+    for relative in daemon_layers:
+        path = SOURCE_ROOT / relative
+        assert not _identifiers(path) & banned_names, relative
+        for imported in _imported_modules(path):
+            assert not imported.startswith(banned_imports), f"{relative} imports {imported}"
+
+
+def test_no_release_added_a_production_dependency() -> None:
+    """§4/§53: the dependency set is frozen with the capability set."""
+    import tomllib
+
+    pyproject = tomllib.loads(
+        (SOURCE_ROOT.parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert tuple(pyproject["project"]["dependencies"]) == PRODUCTION_DEPENDENCIES
+    # The development tools are pinned too: a release does not silently swap its own gates either.
+    assert tuple(pyproject["dependency-groups"]["dev"]) == DEVELOPMENT_DEPENDENCIES
+
+
+def test_the_release_keeps_the_migration_set_closed() -> None:
+    """§4/§12: no migration 0016, a migration is not touched once it has shipped."""
+    migrations = sorted(
+        (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql")
+    )
+    names = [path.name for path in migrations]
+
+    assert names[0] == "0001_initial.sql"
+    assert names[-1] == "0015_inbound_observations.sql"
+    assert len(names) == 15
+    assert "0016" not in "".join(names)
+
+
+def test_status_names_the_v1_capabilities_and_no_imaginary_ones() -> None:
+    """§65: the status table is a claim about shipped behaviour, so it is pinned like one."""
+    text = (SOURCE_ROOT / "cli.py").read_text(encoding="utf-8")
+    reported = (
+        "durable event pipeline",
+        "per-root full-text index",
+        "deterministic weekly proposals",
+        "human-approved actions only",
+        "IMAP inbound mail (receive-only)",
+        "page watchers",
+        "human-confirmed facts",
+        "non-executing playbooks",
+        "same-LAN control plane",
+        "read-only integrity check",
+        "MCP / VS Code",
+        "not implemented",
+    )
+    for phrase in reported:
+        assert phrase in text, phrase
+    for overclaim in (
+        "fully autonomous",
+        "self-improving",
+        "automatic action execution",
+        "cloud sync",
+        "automatic form filling",
+    ):
+        assert overclaim not in text.lower(), overclaim

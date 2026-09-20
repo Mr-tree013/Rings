@@ -76,6 +76,41 @@ adapters      DeepSeek、IMAP/SMTP、Playwright、Web 等具体实现
 
 ## 5. 核心数据主线
 
+### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）
+
+v1.0 的实际结构就是下面这张图；任何一格之外的能力都不存在（不是"没开"，是代码里没有）。
+
+```text
+Interaction
+  CLI (pw)            LAN mobile control plane            MCP / VS Code (local stdio)
+
+Observe
+  IMAP (receive-only)   configured public HTTPS watcher   manual / QQ-forward text
+        │                        │                                  │
+        └──────────────► InboundEvent ◄───────────────────────────┘
+
+Understand
+  deterministic parsing & threading
+  ModelPort structured analysis (candidates only)
+  grounded local knowledge answers (FTS5 + citations)
+
+Commit / Plan
+  Task · Deadline · CalendarEvent · PlanBlock · WorkSession · durable scheduler
+
+Execute
+  Case → ActionRequest (immutable, fingerprinted) → human Approval (single-use, exact)
+       → ExecutionRun → mail.send | ehall.submit-certificate   （仅此两个 production 能力）
+
+Learn
+  Correction → FactCandidate → ConfirmedFact（人工确认，无自动消费者）
+  successful run → PlaybookCandidate → dry-run replay → Playbook（非执行）
+
+Operate (Phase 9A/9B)
+  single-instance assistantd · read-only integrity check · .gab backup · staging-only restore
+```
+
+### 5.2 长期主线
+
 ```text
 smail
   ↓
@@ -315,7 +350,7 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 | 11 | 复核过的 Playbook：成功执行 → PlaybookCandidate → 人工复核 → 无副作用 dry-run → Playbook | 进行中：7B 已完成（migration 0014（`playbook_candidates` / `playbook_replay_tests` / `playbooks`）、`PlaybookCandidate` / `PlaybookReplayTest` / `Playbook`（ACTIVE→RETIRED）、候选只能来自明确 SUCCEEDED 的 run（创建时重读 action/run + 重新 hash payload + `EXECUTED` + `SUCCEEDED` + `finished_at`）、`UNIQUE(source_action_id)`、candidate 元数据不可编辑、`PlaybookReplayValidator` port（非 `ActionExecutor`）+ `PlaybookReplayRegistry`（仅 `mail.send` / `ehall.submit-certificate`，无动态 import）、两个纯 parser dry-run validator、bounded issue codes、`replay_input_fingerprint`（含 validator type + contract version）、promote 单 transaction 要求当前 version + 精确 fingerprint 的 PASSED test、`pw playbook candidates\|candidate add\|show\|test\|promote\|reject` 与 `pw playbooks\|playbook show\|retire`，ADR-0028）；**dry-run 不联网、不开浏览器、不发信、不调用 executor、不创建 Approval/ActionRequest/ExecutionRun，PASS 仅表示当前代码仍理解该 payload**；Playbook 实例化与参数化、workflow 自动晋升属后续 Phase |
 | 12 | 外部观察：配置好的公开网页 watcher + 手工/转发文本输入 → durable 版本化观察 → InboundEvent → bounded analysis | 进行中：8A 已完成（migration 0015（`web_watch_state` / `web_observations` / `web_observation_event_links` / `manual_inputs` / `manual_input_event_links` / `observation_analyses`）、`[watchers]` + `[[watchers.web]]`（id grammar + HTTPS-only URL：无 userinfo / 无 IP-literal / 无显式端口）、`WebSource` port + `HttpWebSource`（无 cookie/认证/JS/浏览器、不跟随 redirect、resolved address 必须 public、流式 byte cap、ETag/Last-Modified 仅为优化 + `full_fetch_every` 强制 unconditional）、stdlib HTML 抽取 + deterministic normalization + `sha256` 内容身份、content-addressed snapshot（`web/snapshots/`）、baseline 不发事件、change observation + 幂等 `web.page.changed` bridge（两个 crash window 均 bounded repair）、`ManualInput` + `pw ingest text\|list\|show`（先持久化再 ingest `manual.input.received`）、bounded change diff/manual context、closed analysis schema（category / summary / action_candidates；deadline ≠ event-start）、`ObservationInboundEventHandler`（fingerprint 幂等复用、permanent vs retryable model 错误）、daemon `web-watch` service + worker 启动条件改为「有可用 model」，ADR-0029）；**无 generic HTTP/browser 能力、无模型生成 URL、分析不创建 Task/Case/Fact/Playbook/Action/Approval/Notification**；需要登录或渲染 JS 的站点、非默认端口、QQ 自动接入、候选自动转 Task/Case 属后续 Phase |
 | 13 | 开发者集成：受控本地 MCP（stdio）→ VS Code | 进行中：8B 已完成（official MCP Python SDK v2（`mcp>=2,<3`，`MCPServer`）、`[mcp]`（`enabled` 默认 false / `write_scope=none\|tasks` / `expose_knowledge` 默认 false，无 transport/port/host/trusted-client 键）、独立 stdio console script `growing-assistant-mcp`（不托管在 daemon、日志只走 stderr、disabled 时 stdout 为空并非零退出、未识别参数报错）、`adapters/mcp/`（唯一 import SDK 处）、`application/mcp_facade.py`（不 import SDK，只包装既有服务为 bounded DTO）、4 个固定 resource（status / tasks/open / cases/open / plan/current，只读且不含 mail/draft/fact/playbook/action）、2 个 read tool + 可选 `assistant_search_knowledge`（本地 deterministic 全文检索，单条 ≤1200 / 总 ≤6000，仅 logical URI + span + excerpt）+ 可选 `assistant_create_task` / `assistant_complete_task`（仅 `TaskService`，保留 reminder/replan/revision 语义）、typed tool error、`pw mcp status\|vscode-config`（只打印 snippet），ADR-0030）；**无 Approval/Execution/SMTP/eHall/Fact/Playbook 能力、无 filesystem/shell/HTTP/browser/sampling、无 migration**；Streamable HTTP/SSE transport、public 部署、MCP prompts/apps 属后续 Phase（当前无计划） |
-| 14 | 运行态加固：只读完整性检查、一致备份、staging-only 恢复、恢复时的授权失效 | 进行中：9A 已完成（`domain/backup.py`（固定 archive layout / canonical manifest / 成员名·size·压缩比 bounds）、`domain/integrity.py`、port `RuntimeBackup` / `BackupArchive` / `IntegrityRepository` / `ContentObjectReader`、`store/backup.py`（`sqlite3.Connection.backup()` 一致快照 + 引用对象 hash 复核 + finalization 单事务失效 challenge/approval/pairing/session）、`store/integrity.py`（只读跨域审计：pragma / capability fingerprint / mail link / fact & playbook provenance / observation lineage / 迁移状态）、`adapters/backup/archive.py`（zip 写入·校验·逐成员解压，拒绝 traversal / symlink / duplicate / unlisted / oversize / zip bomb）、`application/backup_service.py` + `application/integrity_service.py`、`Database.read_only()`、CLI `pw integrity check` 与 `pw backup create\|verify\|inspect\|restore --to`、`pw doctor` 本地 operational 行）、`tests/acceptance/`（lifecycle / restart / lease recovery / UNKNOWN 零重试 / supervisor / 日志隐私），ADR-0031）；**无 migration（仍 0001–0015）、无新外部能力、版本仍 0.8.0**；自动/后台/云端备份、就地恢复与 `--force`、外部副作用回滚声明均不在范围内 |
+| 14 | 运行态加固：只读完整性检查、一致备份、staging-only 恢复、恢复时的授权失效 | **已完成（v1.0.0）**：9A 已完成（`domain/backup.py`（固定 archive layout / canonical manifest / 成员名·size·压缩比 bounds）、`domain/integrity.py`、port `RuntimeBackup` / `BackupArchive` / `IntegrityRepository` / `ContentObjectReader`、`store/backup.py`（`sqlite3.Connection.backup()` 一致快照 + 引用对象 hash 复核 + finalization 单事务失效 challenge/approval/pairing/session）、`store/integrity.py`（只读跨域审计）、`adapters/backup/archive.py`、`application/backup_service.py` + `application/integrity_service.py`、`Database.read_only()`、CLI `pw integrity check` 与 `pw backup create\|verify\|inspect\|restore --to`、`tests/acceptance/`，ADR-0031）；9B 已完成（ADR-0032：`adapters/runtime/instance_lock.py`（`flock` 单实例 + `pw daemon status`）、`adapters/runtime/permissions.py`（项目创建对象 `0700`/`0600`，只报告不重写既有权限）、`.gab` 严格 EOF（拒绝尾部附加字节 / ZIP comment / 追加归档）、`DatabaseMigrationIncompatible` + `require_compatible_history()`（未来 schema fail closed）、每个 migration prefix 的升级矩阵与 future-DB 测试、`docs/examples/config.toml` safe-by-default、wheel 内含 `assistant/migrations/` 与 web 静态资源、`pw --version` / `assistantd --version`、`tests/release/`（package smoke / 权限 / 压力 / 重启安全 / 能力冻结 / fresh & historical acceptance / 隐私扫描））；**无 migration（仍 0001–0015）、无新 production dependency、无新外部能力**；自动/后台/云端备份、就地恢复与 `--force`、外部副作用回滚声明、downgrade migration 均不在范围内 |
 
 ## 13. 后续阶段的未决决策（明确不属于早期 Phase）
 
@@ -361,3 +396,4 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0029 Durable web and manual observation
 - ADR-0030 A controlled local MCP interface
 - ADR-0031 Operational integrity, safe backup, and recovery
+- ADR-0032 Version 1 runtime, upgrade, and release contract

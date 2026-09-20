@@ -39,6 +39,25 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/assistant"]
 
+[tool.hatch.build.targets.wheel.force-include]
+# The migration files are not Python, so they are not picked up by `packages` — and a wheel without
+# them cannot migrate a runtime at all (ADR-0032 §16). The repository's `migrations/` directory stays
+# the single source of truth; the build copies it into the package.
+"migrations" = "assistant/migrations"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/assistant",
+    "/migrations",
+    "/docs",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/AGENTS.md",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
@@ -59,6 +78,13 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-q"
+filterwarnings = [
+    # A warning nobody chose is a defect, so warnings are errors. The one exception is an upstream
+    # deprecation inside Starlette's test client, raised while that module is imported and belonging
+    # to a dependency rather than to this project. It is named narrowly instead of ignored wholesale.
+    "error",
+    "ignore::DeprecationWarning:starlette.testclient",
+]
 
 [tool.coverage.run]
 source = ["assistant"]

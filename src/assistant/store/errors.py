@@ -21,6 +21,14 @@ class MigrationError(StoreError):
     """A migration file is invalid, out of order, or failed to apply."""
 
 
+class DatabaseMigrationIncompatible(MigrationError):
+    """The database's migration history is newer or unknown to this binary (ADR-0032).
+
+    Running today's queries against tomorrow's schema is how a mismatch becomes corrupt data, so
+    this is a refusal rather than a warning: the host has to use the binary that wrote it.
+    """
+
+
 class CatalogStoreError(StoreError):
     """The metadata catalog could not be read or written."""
 
@@ -33,6 +41,7 @@ __all__ = [
     "CatalogStoreError",
     "CommitmentStoreError",
     "DatabaseConfigurationError",
+    "DatabaseMigrationIncompatible",
     "MigrationError",
     "StoreError",
 ]

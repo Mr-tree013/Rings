@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from assistant.adapters.runtime.permissions import ensure_private_directory
 from assistant.domain.catalog import CatalogRoot
 from assistant.domain.errors import (
     DomainError,
@@ -455,7 +456,7 @@ def _prepare_index_location(root: CatalogRoot, path: Path) -> None:
                 f"{root.root.root_id!r} has no initialised .pa directory at {path.parent}"
             )
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
 
 
 def _ensure_binding(connection: sqlite3.Connection, root: CatalogRoot) -> None:

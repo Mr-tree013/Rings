@@ -7,6 +7,7 @@ source spans and whole-document replacement are exactly the behaviours a mock wo
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -151,7 +152,7 @@ async def test_first_open_creates_schema_and_binding(
 
     assert index is not None
     path = tmp_path / "cache" / "university" / "index.sqlite3"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         meta = dict(connection.execute("SELECT key, value FROM knowledge_index_meta"))
         tables = {
             row[0]
@@ -201,7 +202,7 @@ async def test_unsupported_schema_version_asks_for_a_rebuild(
 ) -> None:
     await factory.open(_root(), create=True)
     path = tmp_path / "cache" / "university" / "index.sqlite3"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "UPDATE knowledge_index_meta SET value = '99' WHERE key = 'schema_version'"
         )
@@ -215,7 +216,7 @@ async def test_a_foreign_sqlite_file_is_reported_as_corrupt(
 ) -> None:
     path = tmp_path / "cache" / "university" / "index.sqlite3"
     path.parent.mkdir(parents=True)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE something_else (x)")
 
     with pytest.raises(KnowledgeIndexCorrupt):
@@ -452,7 +453,7 @@ async def test_database_constraints_protect_chunk_integrity(
         line_start: object,
         line_end: object,
     ) -> None:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(
                 "INSERT INTO knowledge_chunks (id, entry_id, ordinal, page_number, "

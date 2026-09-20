@@ -34,6 +34,7 @@ from assistant import (
     cli_ask,
     cli_cases,
     cli_commitments,
+    cli_daemon,
     cli_ehall,
     cli_facts,
     cli_ingest,
@@ -113,6 +114,24 @@ cli_watch.register(app)
 cli_ingest.register(app)
 cli_mcp.register(app)
 cli_ops.register(app)
+cli_daemon.register(app)
+
+
+@app.callback(invoke_without_command=True)
+def _root(
+    context: typer.Context,
+    version: Annotated[
+        bool,
+        typer.Option("--version", help="Show the version and exit.", is_eager=True),
+    ] = False,
+) -> None:
+    """growing-assistant command line: the version, or a command."""
+    if version:
+        console.print(f"pw {__version__}")
+        raise typer.Exit(code=0)
+    if context.invoked_subcommand is None:
+        console.print(context.get_help())
+        raise typer.Exit(code=2)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -270,6 +289,16 @@ def status() -> None:
         "read-only integrity check, consistent local backups, staging-only restore "
         "(no in-place restore, no background or cloud backup)",
     )
+    table.add_row(
+        "learning",
+        "human-confirmed facts (no automatic consumer) and reviewed non-executing playbooks "
+        "(dry-run validation only)",
+    )
+    table.add_row(
+        "mobile",
+        "same-LAN control plane: review, edit a draft, create/complete a task, approve one exact "
+        "action (never executes; disabled unless [mobile] enabled = true)",
+    )
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
         "ehall",
@@ -395,6 +424,15 @@ def doctor() -> None:
             )
 
     absent = [label for label, value in ops_rows if "absent" in value]
+    incompatible = [
+        value for label, value in ops_rows if label == "migration state" and "INCOMPATIBLE" in value
+    ]
+    if incompatible:
+        _fail(
+            "this runtime database was written by a newer migration history than this build "
+            "knows. Upgrade the software (or use the binary that wrote it); a database cannot be "
+            "downgraded."
+        )
     console.print("[green]environment looks usable[/green]")
     if absent:
         console.print(
@@ -459,6 +497,14 @@ def _migration_state(database_file: Path) -> str:
         return "[yellow]unreadable[/yellow]"
     if applied == reviewed:
         return f"up to date ({len(applied)})"
+    unknown = [name for name in applied if name not in reviewed]
+    if unknown:
+        # The database was written by a newer binary (or its history was rewritten). This build
+        # refuses to run against it, so doctor says so instead of reporting a harmless mismatch.
+        return (
+            f"[red]INCOMPATIBLE ({len(unknown)} applied migration(s) unknown to this "
+            f"build: {', '.join(unknown[:3])})[/red]"
+        )
     if applied == reviewed[: len(applied)]:
         return f"[yellow]PENDING ({len(reviewed) - len(applied)} to apply)[/yellow]"
     return "[red]mismatched[/red]"

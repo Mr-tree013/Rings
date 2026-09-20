@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -151,7 +152,7 @@ async def _snapshot_index(wiring: Wiring) -> dict[str, list[tuple[object, ...]]]
     path = wiring.locator.location_for(root)
     if not path.is_file():
         return captured
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         for table in ("knowledge_documents", "knowledge_chunks"):
             rows = connection.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()

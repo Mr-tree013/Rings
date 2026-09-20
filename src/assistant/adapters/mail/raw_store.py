@@ -20,6 +20,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from assistant.adapters.runtime.permissions import (
+    ensure_private_directory,
+    ensure_private_file,
+)
 from assistant.domain.errors import MailRawStorageError
 
 RAW_DIRECTORY = "mail"
@@ -72,14 +76,16 @@ class RawMailStore:
             self._verify_existing(target, raw, digest)
             return RawMailObject(sha256=digest, storage_key=key, size_bytes=len(raw))
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            ensure_private_directory(target.parent)
             handle, temporary = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
             try:
                 with os.fdopen(handle, "wb") as stream:
                     stream.write(raw)
                     stream.flush()
                     os.fsync(stream.fileno())
+                ensure_private_file(Path(temporary))
                 os.replace(temporary, target)
+                ensure_private_file(target)
             except BaseException:
                 Path(temporary).unlink(missing_ok=True)
                 raise

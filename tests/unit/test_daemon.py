@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -134,7 +135,7 @@ def _indexed_documents(catalog: Path, index: Path) -> int:
     if not catalog.is_file() or not index.is_file():
         return 0
     try:
-        with sqlite3.connect(index) as connection:
+        with closing(sqlite3.connect(index)) as connection:
             row = connection.execute("SELECT count(*) FROM knowledge_documents").fetchone()
     except sqlite3.Error:
         return 0
@@ -152,5 +153,5 @@ async def _wait_for(predicate: object, *, timeout: float) -> None:
 
 
 async def _query(path: Path, statement: str) -> list[tuple[object, ...]]:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return [tuple(row) for row in connection.execute(statement)]

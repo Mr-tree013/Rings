@@ -1,9 +1,59 @@
-# growing-assistant
+# Growing Personal Assistant v1.0
 
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
-流程与你的纠正沉淀成可读、可改、可测试的规则。
+流程与你的纠正沉淀成可读、可改、可测试的规则。**local-first**：状态只在本机（SQLite + 被引用的
+文件），凭据只走环境变量，改变外部世界的动作只有在你批准了**某一个精确的** ActionRequest 之后才
+会发生。
 
-## 当前状态：v0.8.0（邮件 + eHall + 手机控制面 + 人工确认的事实与 Playbook + 观察 + 受控 MCP）
+## 快速开始（本地最短路径）
+
+```bash
+uv sync --frozen                                        # 安装锁定的依赖
+cp docs/examples/config.toml ~/.config/growing-assistant/config.toml
+uv run pw doctor                                        # 只读环境检查
+uv run pw integrity check                               # 只读运行态体检
+uv run assistantd                                       # 启动唯一的 daemon
+```
+
+样例配置**默认安全**：没有邮箱账号、没有 watcher 目标、`ehall` / `mobile` / `mcp` 全部关闭，
+也不含任何凭据。凭据一律来自环境变量（例如 `GROWING_ASSISTANT_MAIL_<ID>_PASSWORD`、
+`DEEPSEEK_API_KEY`），配置解析器会**拒绝** `password` / `secret` / `api_key` 这类键。
+
+升级与恢复：见 [`docs/upgrade-to-v1.md`](docs/upgrade-to-v1.md)、
+[`docs/releases/1.0.0.md`](docs/releases/1.0.0.md) 与下面「完整性检查、备份与恢复」。
+
+## 这个系统会做什么 / 不会做什么
+
+会做：
+
+```text
+观察：按配置收信（IMAP，只读）、观察公开 HTTPS 页面、接收手工/转发文本
+理解：确定性解析与线程、受约束的模型分析（只产出候选）、带精确引用的本地知识问答
+承诺与计划：Task / Deadline / CalendarEvent / PlanBlock / WorkSession、可审阅的每周计划、提醒
+执行：Case → ActionRequest → 人工 Approval → ExecutionRun（只有 mail.send 与 eHall 证书两件事）
+回顾：所有 action/approval/execution 永久留痕，UNKNOWN 结果保持未决而不是重试
+学习：Correction → FactCandidate → 人工确认的 ConfirmedFact；成功执行 → PlaybookCandidate →
+       dry-run 复核 → 人工晋升的非执行 Playbook
+```
+
+不会做：自行批准任何动作；自行发信或提交表单；执行 Playbook；自动确认个人事实；浏览任意网站；
+执行 shell 命令；控制任意文件；成为通用自主 agent。
+
+## 已知限制（诚实清单）
+
+- **手机端 v1 是可信局域网的 HTTP 服务**，不是公网服务（没有 cloud relay / VPN / 第三方登录）。
+- **SMTP 无法保证 exactly-once**：确定成功会记录为成功，中断的会话变成 `UNKNOWN`，由对账或人工判断。
+- **eHall 页面会变**：执行前会复核页面契约，不一致就 fail closed（这是刻意的方向）。
+- **eHall `UNKNOWN` 需要人工检查**：系统不猜提交是否发生，也不自动重试。
+- **watcher 只观察公开、无需登录的 HTTPS 页面**：无 JS 渲染、无重定向、无非默认端口、无认证站点。
+- **知识检索是本地 FTS5，不是向量库**：它按词检索并给出出处，不理解语义。
+- **ConfirmedFact 不会被自动填表**，也不会自动进入 model/mail context。
+- **Playbook 不执行**：晋升只表示「当前代码仍然理解这份 payload」。
+- **MCP 是本地 stdio、能力受限**：4 个 resource + 2 个只读 tool，可选知识摘录与可选 task 写入。
+- **备份不含凭据与 eHall 登录态**：恢复后需要重新提供凭据、重新登录、重新配对手机。
+- **filesystem watcher 快速路径未实现**：新鲜度来自周期 reconciliation（有界延迟）。
+
+## 当前状态：v1.0.0（邮件 + eHall + 手机控制面 + 人工确认的事实与 Playbook + 观察 + 受控 MCP + 运行态加固）
 
 已完成：
 
@@ -16,6 +66,11 @@
 - 运行态加固（仍是 0.8.0，Phase 9A）：`pw integrity check` 只读跨域体检、`pw backup create|verify|
   inspect` 一致备份归档（`.gab`）、`pw backup restore … --to DIR` 只做 staging 恢复并失效恢复前的
   授权能力。详见「完整性检查、备份与恢复」。
+- 发布加固（v1.0.0，Phase 9B，ADR-0032）：daemon 单实例 OS lock（`pw daemon status`）、
+  运行态文件私有权限（目录 `0700` / 文件 `0600`，含备份与恢复结果）、`.gab` 归档严格 EOF
+  （拒绝尾部附加字节与 ZIP comment）、**未来 schema fail closed**（`DatabaseMigrationIncompatible`）、
+  每个历史 migration prefix 的升级矩阵、`pw --version` / `assistantd --version`、
+  wheel 内含 migrations 与 web 静态资源（`uv build` 后可脱离源码树运行）。
 
 外部输入侧只实现了收信：没有公网服务、没有 cloud relay、没有手机推送。`assistantd` 现在托管
 `index-sync`（启动时执行一次存储 reconciliation 并按配置周期重复）、`scheduler`（durable
@@ -742,8 +797,27 @@ uv run pw doctor
 ## Running the daemon
 
 ```bash
-uv run assistantd      # 启动后等待信号；Ctrl+C 优雅退出
+uv run assistantd              # 启动后等待信号；Ctrl+C / SIGTERM 优雅退出
+uv run pw daemon status        # 本机只读查询：现在有没有 daemon 在跑（尝试同一把 OS lock）
 ```
+
+**一个 runtime data directory 只能有一个 `assistantd`。** 它持有
+`~/.local/share/growing-assistant/assistantd.lock` 上的 `flock`；第二个实例会在启动任何 service
+之前退出并说明原因，而 lock 由内核在进程结束时释放 —— 因此机器断电留下的旧 lock 文件**不会**阻止
+下次启动，也不需要手工删除任何东西。lock 文件里的 pid/启动时间只是诊断信息，不是判断依据
+（`pw daemon status` 会明确这样标注）。
+
+### Windows / WSL：开机自动启动（示例，不自动安装）
+
+daemon 的参考运行环境是 Linux / WSL2。Windows 侧可以用任务计划程序在登录时进入 WSL 启动它，
+例如（把发行版名与项目路径换成你自己的）：
+
+```text
+wsl.exe -d <DISTRO> --cd <PROJECT_PATH> -- /bin/bash -lc 'exec uv run assistantd'
+```
+
+本项目**不**安装系统服务、不修改任务计划程序、也不生成 PowerShell 脚本；如果任务被触发两次，
+单实例 lock 会让第二个进程立刻退出，而不是两份 daemon 同时写同一个 runtime。
 
 ## Development commands
 
@@ -752,6 +826,19 @@ uv run ruff check .
 uv run mypy src
 uv run pytest
 ```
+
+Release gates additionally build the artifact and check the lock file (see
+[`docs/releases/1.0.0.md`](docs/releases/1.0.0.md) for what a v1 release has to satisfy):
+
+```bash
+uv lock --check          # the lock file is current
+rm -rf dist && uv build  # wheel + sdist, carrying migrations and web assets
+git diff --check         # no whitespace damage
+```
+
+`tests/release/` is the part of the suite that covers this: upgrade matrix, package contents and
+installed-wheel smoke, permissions, archive boundary, daemon lifecycle, capability freeze and the
+release acceptance scenarios. All of it runs offline.
 
 ## 数据目录边界
 

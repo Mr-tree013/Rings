@@ -1,31 +1,42 @@
-# Example growing-assistant host configuration (ADR-0013).
+# Example growing-assistant host configuration (ADR-0013, ADR-0032).
 #
-# Copy to $XDG_CONFIG_HOME/growing-assistant/config.toml (~/.config/growing-assistant/config.toml)
-# and edit the paths. All paths below are fictional.
+# Copy it to $XDG_CONFIG_HOME/growing-assistant/config.toml
+# (~/.config/growing-assistant/config.toml) and edit the paths.
+#
+# Safe by default: every capability that reaches *outside this machine* is switched off, and the
+# ones that read personal data stay off until you turn them on deliberately. Nothing here is a
+# secret: credentials are environment variables only, and the parser rejects a `password`, `secret`
+# or `api_key` key on purpose. All example paths and addresses are fictional.
 
 format_version = 1
+
+# ---------------------------------------------------------------------------- local knowledge
 
 [indexing]
 # 10 <= interval_seconds <= 86400
 interval_seconds = 300
 run_on_startup = true
 
-# A local folder: the label is yours to choose.
+# A local folder to index. `root_id` is the stable identity (`local://documents/...`); the path is
+# just this machine's location and may change. Comment it out to start with no roots at all.
 [[storage.roots]]
 kind = "local"
-id = "university"
-label = "University documents"
-path = "/home/user/Documents/University"
+id = "documents"
+label = "Documents"
+path = "/home/user/Documents"
 enabled = true
 
 # An archive vault: the label comes from <path>/.pa/vault.toml, so it is not configured here.
-[[storage.roots]]
-kind = "vault"
-id = "archive-main"
-path = "/mnt/e/archive-vault"
-enabled = true
+# Nice to keep on removable storage: an offline vault is reported as offline, never as corruption.
+# [[storage.roots]]
+# kind = "vault"
+# id = "archive-main"
+# path = "/mnt/e/archive-vault"
+# enabled = true
 
-# Planning preferences (Phase 3B). Required before `pw plan week` can run.
+# ------------------------------------------------------------------- commitments and scheduling
+
+# Required before `pw plan week` can run.
 [planning]
 timezone = "Asia/Shanghai"
 min_block_minutes = 30
@@ -37,17 +48,18 @@ days = ["mon", "tue", "wed", "thu", "fri"]
 start = "09:00"
 end = "22:00"
 
-# Deadline reminders (Phase 3C): one reminder 24h before and one 2h before.
+# One reminder 24h before a deadline and one 2h before.
 [reminders]
 deadline_offsets_minutes = [1440, 120]
 
-# The daemon scheduler (Phase 3C).
 [scheduler]
 poll_interval_seconds = 15
 replan_debounce_seconds = 60
 
-# The model boundary (Phase 4A). Set DEEPSEEK_API_KEY in the process environment.
-# Never put API keys in this file: the config parser rejects an `api_key` key on purpose.
+# ------------------------------------------------------------------------------- model provider
+
+# Set DEEPSEEK_API_KEY in the process environment to use it. With no key the daemon still runs: it
+# just keeps received events in `RECEIVED` instead of analyzing them.
 [model]
 provider = "deepseek"
 model = "deepseek-flash"
@@ -55,8 +67,10 @@ reasoning_effort = "low"
 max_output_tokens = 4096
 timeout_seconds = 120
 
-# Inbound mail (Phase 5A). Accounts are explicit; there is no discovery.
-# Fictional values only: never put a real address, host or app password here.
+# --------------------------------------------------------------------------------------- mail
+
+# Receiving mail needs an account; sending needs SMTP credentials in the environment. Both are off
+# until you add an account below, so a fresh install never contacts a mail server.
 [mail]
 poll_interval_seconds = 60
 max_messages_per_poll = 100
@@ -65,14 +79,58 @@ reconciliation_window = 500
 max_message_bytes = 26214400
 timeout_seconds = 30
 
-[[mail.accounts]]
-id = "smail"
-host = "imap.example.edu"
-port = 993
-username = "student@example.edu"
-mailbox = "INBOX"
-enabled = true
-
+# [[mail.accounts]]
+# id = "smail"
+# host = "imap.example.edu"
+# port = 993
+# username = "student@example.edu"
+# mailbox = "INBOX"
+# enabled = true
+#
 # The credential comes from the environment, never from this file:
 #   export GROWING_ASSISTANT_MAIL_SMAIL_PASSWORD='...'
-# A `password` or `secret` key here is rejected by the config parser.
+# to send, add SMTP settings and export GROWING_ASSISTANT_MAIL_SMAIL_SMTP_PASSWORD:
+# smtp_host = "smtp.example.edu"
+# smtp_port = 465
+# smtp_security = "ssl"
+# smtp_from = "student@example.edu"
+
+# ------------------------------------------------------------------------------------- eHall
+
+# Off by default. Turning it on only enables the whitelisted certificate pipeline; the login is
+# manual (`pw ehall login`), the browser runs headed, and every submission still needs one exact,
+# human-approved ActionRequest. There is no URL, selector or credential to configure.
+[ehall]
+enabled = false
+
+# -------------------------------------------------------------------- mobile control plane
+
+# Off by default: the phone UI is trusted-LAN HTTP, not an Internet service.
+[mobile]
+enabled = false
+bind = "loopback"
+port = 8765
+
+# ------------------------------------------------------------------------ MCP / VS Code
+
+# Off by default, read-only when switched on. `write_scope = "tasks"` adds the two task tools, and
+# `expose_knowledge = true` lets the connected editor read bounded excerpts of the local index.
+[mcp]
+enabled = false
+write_scope = "none"
+expose_knowledge = false
+
+# --------------------------------------------------------------------- public page watchers
+
+# Off by default (no targets). A target is a fixed, public, unauthenticated HTTPS page: no
+# credentials, no JavaScript, no redirects, and the model never chooses a URL.
+[watchers]
+poll_interval_seconds = 300
+timeout_seconds = 20
+max_response_bytes = 2097152
+full_fetch_every = 24
+
+# [[watchers.web]]
+# id = "course-notices"
+# url = "https://example.edu/notices"
+# enabled = true

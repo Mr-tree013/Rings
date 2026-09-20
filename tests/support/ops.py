@@ -17,6 +17,7 @@ from uuid import uuid4
 from assistant.adapters.backup.archive import ZipBackupArchive
 from assistant.adapters.mail.raw_store import RawMailStore
 from assistant.adapters.ops.content_objects import RuntimeContentObjects
+from assistant.adapters.runtime.permissions import ensure_private_directory
 from assistant.adapters.web_watch.snapshot_store import WebSnapshotStore
 from assistant.application.backup_service import MIGRATION_DIRECTORY, BackupService
 from assistant.application.case_service import CaseService
@@ -56,7 +57,7 @@ class RuntimeFixture:
     cases_repository: SqliteCaseRepository = field(init=False)
 
     def __post_init__(self) -> None:
-        self.runtime.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.runtime)
         self.database = Database.at(self.runtime / "assistant.db")
         apply_migrations(self.database, clock=self.clock)
         self.mail = SqliteMailRepository(self.database)
