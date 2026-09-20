@@ -1058,6 +1058,91 @@ class NotificationNotFound(DomainError):
         super().__init__(f"notification {notification_id} does not exist")
 
 
+class InvalidCorrection(DomainError):
+    """A user correction is blank or longer than the store accepts."""
+
+
+class CorrectionNotFound(DomainError):
+    """No correction exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"correction {reference} does not exist")
+
+
+class InvalidFactKey(DomainError):
+    """A fact key is not a well-formed namespaced identifier."""
+
+
+class ForbiddenFactKey(DomainError):
+    """A fact key names something a personal fact store must never hold.
+
+    Passwords, tokens, credentials and private keys are not facts about a person; they are
+    secrets, and this store is not a credential store. The refusal is on the *key*, so the
+    project never has to guess whether a value "looks like" a password.
+    """
+
+    def __init__(self, key: str, segment: str) -> None:
+        self.key = key
+        self.segment = segment
+        super().__init__(
+            f"fact key {key!r} is refused: {segment!r} is a credential-like key segment, and "
+            "the fact store is not a credential store"
+        )
+
+
+class InvalidFactCandidate(DomainError):
+    """A candidate fact breaks its invariants (blank value, bad validity window)."""
+
+
+class FactCandidateNotFound(DomainError):
+    """No candidate exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"fact candidate {reference} does not exist")
+
+
+class InvalidFactCandidateTransition(DomainError):
+    """A candidate was confirmed or rejected from a state that forbids it."""
+
+    def __init__(self, candidate_id: object, current: object, target: object) -> None:
+        self.candidate_id = candidate_id
+        self.current = current
+        self.target = target
+        super().__init__(
+            f"fact candidate {candidate_id} is {current} and cannot become {target}"
+        )
+
+
+class ExpiredFactCandidate(DomainError):
+    """The candidate's proposed validity window has already closed.
+
+    Confirming it would create a fact whose `valid_until` is not after its `valid_from`, which the
+    domain refuses: propose a candidate with a window that is still open.
+    """
+
+    def __init__(self, candidate_id: object, proposed_valid_until: object) -> None:
+        self.candidate_id = candidate_id
+        self.proposed_valid_until = proposed_valid_until
+        super().__init__(
+            f"fact candidate {candidate_id} proposed validity until {proposed_valid_until}, "
+            "which has already passed; propose a new candidate instead"
+        )
+
+
+class InvalidConfirmedFact(DomainError):
+    """A confirmed fact breaks its invariants (blank value, bad validity ordering)."""
+
+
+class ConfirmedFactNotFound(DomainError):
+    """No confirmed fact exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"confirmed fact {reference} does not exist")
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1076,8 +1161,10 @@ __all__ = [
     "CaseNotFound",
     "CaseNotOpen",
     "ConfiguredRootNotFound",
+    "ConfirmedFactNotFound",
     "ContentExtractionError",
     "ContentTooLarge",
+    "CorrectionNotFound",
     "DeadlineNotFound",
     "DomainError",
     "DuplicateCommitment",
@@ -1092,7 +1179,10 @@ __all__ = [
     "EHallUnsupportedRequiredField",
     "EventNotFound",
     "ExecutionRunNotFound",
+    "ExpiredFactCandidate",
+    "FactCandidateNotFound",
     "FileChangedDuringExtraction",
+    "ForbiddenFactKey",
     "Fts5Unavailable",
     "GroundedAnswerInputTooLong",
     "GroundedAnswerInvalidCitation",
@@ -1111,11 +1201,16 @@ __all__ = [
     "InvalidCatalogEntry",
     "InvalidCommandDraft",
     "InvalidCommitment",
+    "InvalidConfirmedFact",
+    "InvalidCorrection",
     "InvalidDeadline",
     "InvalidEHallForm",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidExecutionRun",
+    "InvalidFactCandidate",
+    "InvalidFactCandidateTransition",
+    "InvalidFactKey",
     "InvalidGroundedAnswer",
     "InvalidInboundEvent",
     "InvalidInterpretationResult",

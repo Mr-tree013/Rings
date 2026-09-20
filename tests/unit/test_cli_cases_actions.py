@@ -245,3 +245,22 @@ def test_there_is_no_command_that_creates_or_forces_an_action(isolated: Path) ->
     help_text = runner.invoke(app, ["action", "--help"]).output
     assert "create" not in help_text
     assert "force" not in help_text
+
+
+def test_a_token_that_begins_with_a_dash_is_still_an_argument(isolated: Path) -> None:
+    """A token the tool printed must always be pasteable back into it.
+
+    `secrets.token_urlsafe` includes `-`, so roughly one approval token in sixty begins with one.
+    Click would read that as an option and fail with a usage error, which is why `approve` is
+    declared to treat unknown options as arguments: the failure has to be "not the right token"
+    (exit 1), never "no such option" (exit 2).
+    """
+    prefix = _add_case()
+    action_id = _prepare_action(prefix)
+    challenged = runner.invoke(app, ["action", "challenge", action_id[:8]])
+    assert challenged.exit_code == 0, challenged.output
+
+    result = runner.invoke(app, ["action", "approve", action_id[:8], "-not-the-real-token"])
+
+    assert result.exit_code == 1, result.output
+    assert "does not match the challenge" in result.output

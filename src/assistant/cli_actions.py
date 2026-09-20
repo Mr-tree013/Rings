@@ -257,7 +257,10 @@ def _print_approval_prompt(overview: ActionOverview) -> None:
     _print_payload(action)
 
 
-@action_app.command("approve")
+# The token is minted with `secrets.token_urlsafe`, so it can legitimately begin with `-` — and a
+# token the tool itself printed must always be pasteable back into it. Without this, one token in
+# roughly sixty would be read as an option instead of as the argument it is.
+@action_app.command("approve", context_settings={"ignore_unknown_options": True})
 def action_approve(
     reference: Annotated[str, typer.Argument(help="Action id or unique prefix.")],
     token: Annotated[str, typer.Argument(help="The token printed by `pw action challenge`.")],

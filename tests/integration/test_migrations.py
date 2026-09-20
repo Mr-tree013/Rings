@@ -100,7 +100,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
 
     assert [migration.version for migration in applied] == [
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012",
+        "0010", "0011", "0012", "0013",
     ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
@@ -115,6 +115,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
         "0010_case_action_approval.sql",
         "0011_approved_mail_send.sql",
         "0012_mobile_web.sql",
+        "0013_learning_facts.sql",
     ]
 
 
@@ -140,8 +141,179 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
+
+
+def test_upgrade_adds_the_learning_tables(tmp_path: Path, clock: FakeClock) -> None:
+    """0013 adds corrections, candidates and confirmed facts without touching an existing row."""
+    database = Database.at(tmp_path / "assistant.db")
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    shipped = default_migrations_dir()
+    for name in (
+        "0001_initial.sql",
+        "0002_event_processing_leases.sql",
+        "0003_storage_catalog.sql",
+        "0004_commitment_core.sql",
+        "0005_planning_proposals.sql",
+        "0006_scheduler_notifications.sql",
+        "0007_inbound_mail.sql",
+        "0008_mail_intelligence.sql",
+        "0009_mail_reply_drafts.sql",
+        "0010_case_action_approval.sql",
+        "0011_approved_mail_send.sql",
+        "0012_mobile_web.sql",
+    ):
+        (legacy_directory / name).write_text(
+            (shipped / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    apply_migrations(database, clock=clock, directory=legacy_directory)
+
+    message_id = str(uuid4())
+    draft_id = str(uuid4())
+    session_id = str(uuid4())
+    with database.connect() as connection:
+        connection.execute(
+            "INSERT INTO mail_messages (id, account_id, message_id_header, references_json, "
+            "to_addresses_json, cc_addresses_json, reply_to_addresses_json, body_status, "
+            "content_fingerprint, size_bytes, parse_warnings, first_seen_at, last_seen_at) "
+            "VALUES (?, 'smail', '<a@example.edu>', '[]', '[]', '[]', '[]', 'available', ?, "
+            "10, 0, ?, ?)",
+            (message_id, "a" * 64, NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO mail_drafts (id, account_id, reply_to_message_id, to_addresses_json, "
+            "subject, body_text, needs_user_input_json, origin, version, "
+            "generation_input_fingerprint, prompt_version, created_at, updated_at) "
+            "VALUES (?, 'smail', ?, '[\"ada@example.edu\"]', 'Re: x', 'body', '[]', "
+            "'model_generated', 1, ?, 1, ?, ?)",
+            (draft_id, message_id, "b" * 64, NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO mobile_sessions (id, session_hash, csrf_hash, created_at, expires_at, "
+            "last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (
+                session_id,
+                "f" * 64,
+                "0" * 64,
+                NOW,
+                "2026-10-19T12:00:00.000000+00:00",
+                NOW,
+            ),
+        )
+
+    applied = apply_migrations(database, clock=clock)
+
+    assert [migration.version for migration in applied] == ["0013"]
+    assert {"corrections", "fact_candidates", "confirmed_facts"} <= _table_names(database)
+    assert "confirmed_facts_current_idx" in _index_names(database)
+    with database.connect() as connection:
+        drafts = connection.execute("SELECT count(*) AS total FROM mail_drafts").fetchone()
+        sessions = connection.execute(
+            "SELECT count(*) AS total FROM mobile_sessions"
+        ).fetchone()
+    assert drafts["total"] == 1 and sessions["total"] == 1  # older data survived
+
+    _assert_learning_constraints(database)
+
+    assert apply_migrations(database, clock=clock) == ()
+    assert applied_versions(database) == (
+        "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
+        "0011", "0012", "0013",
+    )
+
+
+def _assert_learning_constraints(database: Database) -> None:
+    """§32: the schema itself refuses a bad key, a bad status and an incoherent resolution."""
+    correction_id = str(uuid4())
+    candidate_id = str(uuid4())
+    fact_id = str(uuid4())
+    insert_correction = (
+        "INSERT INTO corrections (id, text, created_at) VALUES (?, ?, ?)"
+    )
+    insert_candidate = (
+        "INSERT INTO fact_candidates (id, fact_key, value, correction_id, status, "
+        "proposed_valid_until, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    insert_fact = (
+        "INSERT INTO confirmed_facts (id, candidate_id, fact_key, value, valid_from, "
+        "valid_until, created_at, superseded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    later = "2026-09-20T13:00:00.000000+00:00"
+    with database.connect() as connection:
+        connection.execute(insert_correction, (correction_id, "my office is 302", NOW))
+        # A blank correction is refused before anything can depend on it.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(insert_correction, (str(uuid4()), "   ", NOW))
+        # Provenance is a real foreign key, not a convention.
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                insert_candidate,
+                (str(uuid4()), "profile.office", "Room 302", str(uuid4()), "pending",
+                 None, NOW, None),
+            )
+        # A key that is not a lowercase namespaced identifier never reaches the table.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_candidate,
+                (str(uuid4()), "Profile.Password", "x", correction_id, "pending",
+                 None, NOW, None),
+            )
+        # The status vocabulary is closed.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_candidate,
+                (str(uuid4()), "profile.office", "Room 302", correction_id, "maybe",
+                 None, NOW, None),
+            )
+        # A resolved candidate has a timestamp; a pending one does not.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_candidate,
+                (candidate_id, "profile.office", "Room 302", correction_id, "pending",
+                 None, NOW, later),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_candidate,
+                (str(uuid4()), "profile.office", "Room 302", correction_id, "confirmed",
+                 None, NOW, None),
+            )
+        # The proposed window has to follow creation.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_candidate,
+                (str(uuid4()), "profile.office", "Room 320", correction_id, "pending",
+                 "2026-09-19T11:00:00.000000+00:00", NOW, None),
+            )
+        connection.execute(
+            insert_candidate,
+            (candidate_id, "profile.office", "Room 302", correction_id, "confirmed", None,
+             NOW, later),
+        )
+        # A confirmed fact points at a real candidate, and only once.
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                insert_fact,
+                (str(uuid4()), str(uuid4()), "profile.office", "Room 302", NOW, None, NOW,
+                 None),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+                insert_fact,
+                (fact_id, candidate_id, "profile.office", "Room 302", later,
+                 "2026-09-20T12:30:00.000000+00:00", later, None),
+            )
+        connection.execute(
+            insert_fact, (fact_id, candidate_id, "profile.office", "Room 302", NOW, None, NOW, None)
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            connection.execute(
+                insert_fact,
+                (str(uuid4()), candidate_id, "profile.office", "Room 302", NOW, None, NOW,
+                 later),
+            )
 
 
 def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> None:
@@ -193,7 +365,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0012"]
+    assert [migration.version for migration in applied] == ["0012", "0013"]
     assert {"mobile_pairing_tokens", "mobile_sessions"} <= _table_names(database)
     assert {
         "mobile_pairing_tokens_hash_idx",
@@ -210,7 +382,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012",
+        "0010", "0011", "0012", "0013",
     )
 
 
@@ -304,7 +476,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0007", "0008", "0009", "0010", "0011", "0012"
+        "0007", "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         names = {
@@ -329,7 +501,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -423,7 +595,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0008", "0009", "0010", "0011", "0012"
+        "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         names = {
@@ -444,7 +616,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -561,7 +733,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0009", "0010", "0011", "0012"
+        "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         names = {
@@ -587,7 +759,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -719,7 +891,7 @@ def test_upgrade_adds_the_case_action_approval_tables(
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0010", "0011", "0012"]
+    assert [migration.version for migration in applied] == ["0010", "0011", "0012", "0013"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -743,7 +915,7 @@ def test_upgrade_adds_the_case_action_approval_tables(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -980,7 +1152,7 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
 
     applied = apply_migrations(database, clock=clock)
 
-    assert [migration.version for migration in applied] == ["0011", "0012"]
+    assert [migration.version for migration in applied] == ["0011", "0012", "0013"]
     with database.connect() as connection:
         names = {
             str(row["name"])
@@ -1003,7 +1175,7 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -1132,7 +1304,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0006", "0007", "0008", "0009", "0010", "0011", "0012"
+        "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         tables = {
@@ -1159,7 +1331,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -1400,7 +1572,7 @@ def test_upgrade_from_0001_preserves_existing_events(
 
     assert [migration.version for migration in applied] == [
         "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
-        "0010", "0011", "0012",
+        "0010", "0011", "0012", "0013",
     ]
     with database.connect() as connection:
         migrated = connection.execute(
@@ -1466,7 +1638,7 @@ def test_upgrade_from_0001_preserves_existing_events(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -1537,7 +1709,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"
+        "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         event_row = connection.execute(
@@ -1621,7 +1793,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -1678,7 +1850,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"
+        "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         stored_event = connection.execute(
@@ -1732,7 +1904,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )
 
 
@@ -1771,7 +1943,7 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"
+        "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013"
     ]
     with database.connect() as connection:
         block = connection.execute(
@@ -1831,5 +2003,5 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012",
+        "0011", "0012", "0013",
     )

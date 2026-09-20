@@ -313,6 +313,33 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   `domain/mobile.py`、`application/mobile_auth.py`、`store/mobile_sessions.py` 与 `adapters/web/`
   不得 import store/adapters/model/executor/FastAPI 之外的框架；fastapi / starlette / uvicorn
   只允许出现在 `adapters/web/`。
+- **Personal learning is candidate-first and human-confirmed.**
+  学习永远从 durable candidate 开始，绝不从「模型的记忆」或行为推断开始；Phase 7A 里
+  candidate 的唯一来源是用户显式写下的 `Correction`（`pw fact candidate add KEY VALUE --note ...`）。
+- **FactCandidate is never equivalent to ConfirmedFact.**
+  candidate 只是提案：不能被 autofill、不能进任何 model context、不能被任何消费者读取；
+  只有 `ConfirmedFact` 才可能在未来被消费，而且必须满足 `Active` 定义。
+- **Only active, unexpired ConfirmedFacts may be considered by future autofill logic.**
+  `active = superseded_at IS NULL AND (valid_until IS NULL OR valid_until > now)`；
+  expiry 是**读取期派生状态**，不排 job、不做后台 mutation。
+- **No model or background worker may promote a FactCandidate.**
+  `confirm_fact` / `confirm_candidate` 只能来自 `pw fact candidate confirm`（CLI → LearningService）；
+  Interpreter / GroundedAnswer / MailAnalysis / MailEventHandler / MailDraftService /
+  MailSyncService / EventWorker / Scheduler / mobile web adapter / ModelPort 路径都不得
+  import 或调用 learning repository/service，也不得创建 candidate。
+- **Every fact must retain durable provenance.**
+  candidate 必须引用产生它的 `Correction`（FK，无 `ON DELETE`、无 delete 路径）；
+  correction 文本按用户原话保存，只做 trim，不改写不摘要。
+- **Superseding a fact preserves history.**
+  确认同一 key 的新值在**同一个 transaction** 里 supersede 旧 current row（含已过期但未
+  superseded 的行）再插入新值：`UNIQUE(fact_key) WHERE superseded_at IS NULL` 保证任一提交状态
+  下最多一个 current fact；历史行永不覆盖、永不删除。confirm 只允许 `PENDING` 单次转换，
+  失败必须整体 rollback（旧 fact 仍 current、candidate 仍 pending）。
+- **The fact store must never be used for passwords, tokens, credentials or private keys.**
+  key 中 credential-like 的完整 segment 一律 `ForbiddenFactKey`（`password` / `passwd` /
+  `secret` / `token` / `credential(s)` / `api_key` / `apikey` / `private_key`，
+  按 `.` 与 `_`/`-` 分词匹配，故 `mail.smtp_token` 也被拒绝）。**Fact store is not a
+  credential store**：绝不扫描 value 猜测它「像不像密码」。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -477,6 +504,19 @@ sessionless approval-link（fragment token，只 preview + approve）、daemon `
 supervised service（crash 不影响 sibling，stop event 干净退出）。
 **手机端没有任何执行入口**：无 SMTP、无 eHall、无 ActionExecutionService、无 ModelPort。
 
+**Phase 7A 已完成（仍是 0.6.0）**：durable corrections + human-confirmed personal facts
+（ADR-0027）：migration 0013（`corrections` / `fact_candidates` / `confirmed_facts`）、
+`Correction` 与 `FactCandidate` / `ConfirmedFact` / `FactCandidateStatus` / `FactState`、
+开放但受约束的 fact key 命名空间（`^[a-z][a-z0-9_.-]{0,127}$`，credential-like segment 一律
+`ForbiddenFactKey`）、candidate + correction 同 transaction 写入（provenance 必须存在）、
+`LearningRepository` + `SqliteLearningRepository`（candidate 写入、confirm/reject 单次状态转换）、
+`LearningService`（`add_correction` / `propose_fact` / `confirm_fact` / `reject_fact` /
+`list_candidates` / `list_facts` / `get_active_fact`）、confirm 在同一个 `BEGIN IMMEDIATE` 内
+supersede 旧 current fact + 插入新 fact + 记录转换（partial unique index 保证最多一个 current key）、
+expiry 为读取期派生（无 job）、历史永不删除、`pw corrections|correction add|show` 与
+`pw fact candidates|candidate add|show|confirm|reject`、`pw facts|fact show`。
+**本阶段不做 autofill、不把 fact 送进 model/mail/eHall、不自动产生 candidate、不做 Playbook。**
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
@@ -486,7 +526,9 @@ site watcher / QQ 渠道 / 个人估时学习 / agent tool loop / 多工具只�
 command execution boundary（`pw interpret --apply` 之类）/ 重复任务与重复事件 /
 embedding 与向量检索 / OCR / Office 文档与压缩包展开 / filesystem watcher 快速路径 /
 移动端执行动作（手机永不执行，执行只在 host 上 `pw action execute`）/
-approval token 之外的动作审批扩展 / Windows Task Scheduler 配置。
+approval token 之外的动作审批扩展 / Windows Task Scheduler 配置 /
+**Playbook / PlaybookCandidate / workflow replay / 自动晋升（Phase 7B）** /
+用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（Phase 7B 之后另行评审）。
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
 Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）

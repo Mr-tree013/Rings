@@ -511,6 +511,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0010_case_action_approval.sql",
         "0011_approved_mail_send.sql",
         "0012_mobile_web.sql",
+        "0013_learning_facts.sql",
     ]
 
 
@@ -1583,3 +1584,178 @@ def test_no_generic_browser_or_http_capability_exists() -> None:
         for name in _identifiers(path) & banned_identifiers
     ]
     assert not named, named
+
+
+LEARNING_MODULES = (
+    "domain/correction.py",
+    "domain/fact.py",
+    "ports/learning_repository.py",
+    "application/learning_service.py",
+    "store/learning.py",
+    "cli_facts.py",
+)
+
+LEARNING_ALLOWED_MODULES = frozenset(
+    {
+        *LEARNING_MODULES,
+        # The composition root wires the service; nothing there promotes or proposes anything.
+        "bootstrap.py",
+    }
+)
+
+FACT_IDENTIFIERS = frozenset(
+    {
+        "ConfirmedFact",
+        "FactCandidate",
+        "FactCandidateStatus",
+        "LearningRepository",
+        "LearningService",
+        "SqliteLearningRepository",
+        "add_correction",
+        "confirm_candidate",
+        "confirm_fact",
+        "create_candidate_with_correction",
+        "reject_candidate",
+        "reject_fact",
+    }
+)
+"""Names a module has to use to reach personal facts or to promote one."""
+
+FACT_STORAGE_IMPORTS = (
+    "assistant.application.learning_service",
+    "assistant.domain.correction",
+    "assistant.domain.fact",
+    "assistant.ports.learning_repository",
+    "assistant.store.learning",
+)
+"""Imports that would let a module read or write the fact tables."""
+
+
+def _source_modules(relative_glob: str = "*.py") -> list[Path]:
+    """Every module under `src/assistant`, as paths, for whole-tree sweeps."""
+    modules = sorted(SOURCE_ROOT.rglob(relative_glob))
+    assert modules, "no source modules found"
+    return modules
+
+
+def _relative(path: Path) -> str:
+    return str(path.relative_to(SOURCE_ROOT))
+
+
+def test_only_the_learning_path_can_reach_a_fact_or_a_confirmation() -> None:
+    """§16/§17: promoting, proposing and even reading a fact are one module's business.
+
+    The allow-list is two entries long — the learning modules themselves and the composition root
+    that wires them — because that is the entire Phase 7A surface: no model, no worker, no daemon
+    service, no web route and no action path may name `ConfirmedFact`, `FactCandidate` or a
+    confirmation call.
+    """
+    named = [
+        f"{_relative(path)} names {name}"
+        for path in _source_modules()
+        if _relative(path) not in LEARNING_ALLOWED_MODULES
+        for name in _identifiers(path) & FACT_IDENTIFIERS
+    ]
+    imported = [
+        f"{_relative(path)} imports {module}"
+        for path in _source_modules()
+        if _relative(path) not in LEARNING_ALLOWED_MODULES
+        for module in _imported_modules(path)
+        if module.startswith(FACT_STORAGE_IMPORTS)
+    ]
+
+    assert not named, named
+    assert not imported, imported
+
+
+def test_the_learning_application_path_reaches_no_store_no_model_and_nothing_executable() -> None:
+    """The service speaks to its repository port and nothing else.
+
+    It composes no store, opens no file, calls no model and knows no executor: a fact cannot become
+    a task, a message or a side effect by accident here.
+    """
+    forbidden = (
+        "assistant.store",
+        "assistant.adapters",
+        "assistant.ports.model",
+        "assistant.application.structured_model",
+        "assistant.application.action_execution",
+        "assistant.application.interpreter",
+        "assistant.application.grounded_answer",
+        "assistant.application.mail",
+        "assistant.application.ehall",
+        "sqlite3",
+        "httpx",
+        "jsonschema",
+    )
+    offenders = [
+        f"application/learning_service.py imports {imported}"
+        for imported in _imported_modules(SOURCE_ROOT / "application" / "learning_service.py")
+        if imported.startswith(forbidden) or imported in {"httpx", "sqlite3", "jsonschema"}
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_learning_domain_stays_pure() -> None:
+    """Corrections and facts are values: no clock reads, no storage, no framework."""
+    for relative in ("domain/correction.py", "domain/fact.py"):
+        path = SOURCE_ROOT / relative
+        text = path.read_text(encoding="utf-8")
+        assert "datetime.now(" not in text, relative
+        for imported in _imported_modules(path):
+            assert not imported.startswith(
+                ("assistant.store", "assistant.adapters", "assistant.application", "sqlite3")
+            ), f"{relative} imports {imported}"
+
+
+def test_no_background_or_model_path_can_propose_or_confirm_a_fact() -> None:
+    """A candidate is a person's sentence and a confirmation is a person's decision."""
+    watched = [
+        *BACKGROUND_MODULES,
+        "application/mail_analysis.py",
+        "application/grounded_context.py",
+        "application/action_execution.py",
+        "application/mail_send_actions.py",
+        "application/mail_send_reconciliation.py",
+        "application/ehall_certificate.py",
+        "application/interpreter_context.py",
+        "application/structured_model.py",
+        "adapters/model/deepseek.py",
+        "adapters/web/app.py",
+        "adapters/ehall/executor.py",
+        "adapters/mail/smtp.py",
+        "ports/model.py",
+    ]
+    offenders = [
+        f"{relative} reaches {name}"
+        for relative in watched
+        for name in (
+            _identifiers(SOURCE_ROOT / relative)
+            | {
+                imported.split(".")[-1]
+                for imported in _imported_modules(SOURCE_ROOT / relative)
+            }
+        )
+        if name in FACT_IDENTIFIERS or name in {"learning_repository", "learning_service"}
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_web_surface_has_no_fact_route() -> None:
+    """§35: the control plane's route list does not change in this phase."""
+    text = (SOURCE_ROOT / "adapters" / "web" / "app.py").read_text(encoding="utf-8")
+    for forbidden in ("/api/facts", "learning", "Learning", "fact_candidates"):
+        assert forbidden not in text, forbidden
+
+
+def test_no_playbook_machinery_exists_yet() -> None:
+    """§36: Phase 7A stores facts. Playbooks are a later phase's design, not half of this one."""
+    offenders = [
+        _relative(path)
+        for path in _source_modules()
+        if "playbook" in path.read_text(encoding="utf-8").lower()
+    ]
+
+    assert not offenders, offenders

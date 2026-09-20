@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.6.0（可审计的邮件工作流 + 白名单 eHall 事务 + 局域网手机控制面）
+## 当前状态：v0.6.0（可审计的邮件工作流 + 白名单 eHall 事务 + 局域网手机控制面 + 人工确认的个人事实）
 
 已完成：
 
@@ -396,11 +396,59 @@ pw mobile pair        # 打印一次性配对码（只显示一次，只存 hash
 - **daemon 里只是多一个被隔离的 service**：`mobile-web` 与 `index-sync` / `scheduler` 同级，
   crash 会被 supervisor 重启且不影响其它 service，stop event 会干净关闭 Uvicorn。
 
+人工确认的个人事实（Phase 7A）：**已实现** 一个「先提案、后人工确认」的个人事实库 ——
+助手可以记住事实，但没有任何模型或后台进程能替用户决定记住了什么：
+
+```bash
+# 1. 用一句自己的话提案（candidate = 提案，还不是事实）
+pw fact candidate add profile.office "Room 302" \
+  --note "我的办公室在计算机系楼 302"
+# 可选：--valid-until 2026-12-31T00:00:00+08:00（必须是带时区的 ISO 8601）
+
+# 2. 复核提案（会显示你写的那句话作为来源）
+pw fact candidate show 2e5ae8e5
+pw fact candidates            # 默认只看 pending；--all 看全部
+
+# 3. 人工确认（唯一能让事实被信任的一步）或拒绝（保留为审计记录）
+pw fact candidate confirm 2e5ae8e5
+pw fact candidate reject 2e5ae8e5
+
+# 4. 查看已确认事实（默认只看 active 且未过期；--all 含 expired / superseded 历史）
+pw facts
+pw fact show d37ee6eb
+pw corrections                # 你说过的原话（audit）
+```
+
+要点：
+
+- **candidate ≠ fact**：`FactCandidate` 只是提案，不能用于任何自动填写、不进 model context、
+  不被任何消费者读取；`ConfirmedFact` 才可能在**未来**被消费，且必须满足
+  `superseded_at IS NULL AND (valid_until IS NULL OR valid_until > now)`。
+- **只有人能确认**：确认入口只有 `pw fact candidate confirm`（CLI → `LearningService`）。
+  Interpreter / GroundedAnswer / MailAnalysis / EventWorker / Scheduler / MailDraftService /
+  mobile web 都没有创建或确认事实的代码路径；确认**没有** `--force`、`--edit-value`、
+  `--confirm-all`：被批准的值必须是你看到的值。
+- **provenance 必须存在**：每个 candidate 都引用产生它的 `Correction`（你写的原话，只 trim 不改写），
+  candidate + correction 在同一个 transaction 里写入；history 是 append-only，没有
+  `correction delete` / `fact delete`。
+- **带来源的历史，不覆盖**：同一个 key 确认新值时，旧行在同一 transaction 内被 `superseded`
+  （不删除），数据库 partial unique index 保证任一提交状态下最多一个 current fact；
+  确认中途失败会整体 rollback（旧事实仍 current、candidate 仍 pending）。
+- **过期是读取期状态**：`--valid-until` 到点后该事实不再 active，但没有后台 job、没有状态需要同步；
+  已过期但仍 current 的行会在下一次确认时被正确 retire。
+- **这个库不是密码库**：key 中出现 `password` / `secret` / `token` / `credential` /
+  `api_key` / `private_key` 等完整词段（含 `mail.smtp_token` 这类）一律 `ForbiddenFactKey`；
+  项目**不会**去猜 value「像不像密码」。
+- **Confirmed facts are not yet automatically injected into models, mail drafts, or eHall forms.**
+  本阶段事实只被 store / review / query：eHall `--field` 仍然必须显式输入，mail draft 不会自动注入，
+  Interpreter 与 GroundedAnswer 的 context 也没有变化（有 architecture test 锁定）。
+
 **尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
 公网部署 / cloud relay / VPN / 第三方登录、手机推送（APNs / FCM / Web Push）、
 手机端执行动作（执行只在 host 上发生）、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
 分类结果自动转 Task/Case、事件删除同步（server-side deletion）、attachment materialization、
-QQ 与站点 watcher。
+QQ 与站点 watcher、个人估时学习、Playbook / workflow replay / 自动晋升（Phase 7B）、
+用已确认事实自动填表或自动注入 model/mail context。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
 

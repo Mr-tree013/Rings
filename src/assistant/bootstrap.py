@@ -58,6 +58,7 @@ from assistant.application.interpreter import InterpreterService
 from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
+from assistant.application.learning_service import LearningService
 from assistant.application.mail_context import MailContextBuilder
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_event_handler import (
@@ -109,6 +110,7 @@ from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
+from assistant.store.learning import SqliteLearningRepository
 from assistant.store.mail import SqliteMailRepository
 from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
@@ -150,6 +152,20 @@ def action_repository(database: Database) -> SqliteActionRepository:
 def case_service(clock: Clock, database: Database) -> CaseService:
     """Cases and the actions prepared inside them."""
     return CaseService(case_repository(database), action_repository(database), clock)
+
+
+def learning_repository(database: Database) -> SqliteLearningRepository:
+    """Durable corrections, candidate facts and confirmed personal facts."""
+    return SqliteLearningRepository(database)
+
+
+def learning_service(clock: Clock, database: Database) -> LearningService:
+    """Personal facts a human proposed and confirmed.
+
+    Nothing composes this service except the explicit `pw fact` commands: no worker, no daemon
+    service and no web route reaches it, which is what keeps promotion a human act.
+    """
+    return LearningService(learning_repository(database), clock)
 
 
 def action_service(clock: Clock, database: Database) -> ActionService:
@@ -926,6 +942,8 @@ __all__ = [
     "grounded_context_builder",
     "interpreter_service",
     "knowledge_indexer",
+    "learning_repository",
+    "learning_service",
     "mail_analysis_available",
     "mail_context_builder",
     "mail_draft_repository",

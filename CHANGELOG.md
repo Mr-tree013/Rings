@@ -47,6 +47,55 @@ where it has always been, on the host, behind `pw action execute`.
   server, nothing contacts the network, and the server logs no access lines, so a token cannot end
   up in a log file, a URL query string or a page.
 
+Phase 7A (learning): the assistant can remember a personal fact — a student id, an office, a
+signature — but only because a person wrote down what is true and then promoted it by hand. A
+candidate is never a fact, nothing consumes a fact yet, and the sentence that justified it stays
+on the record.
+
+### Added
+
+- Durable corrections, candidates and confirmed facts (ADR-0027), in three new tables
+  (`0013_learning_facts.sql`): `corrections` holds what the user said in their own words,
+  `fact_candidates` holds a proposal with the correction it came from, and `confirmed_facts` holds
+  what a person promoted. Values are strings, keys are lowercase namespaced identifiers, and every
+  candidate carries durable provenance because the foreign key says so.
+- A human-only promotion boundary. `pw fact candidate confirm` is the single path that creates a
+  `ConfirmedFact`; there is no `--force`, no `--edit-value` and no `--confirm-all`, and the service
+  cannot be handed a value that differs from the candidate it is confirming. An architecture test
+  walks every module in `src/` and fails if anything outside the learning path and the composition
+  root even names `FactCandidate`, `ConfirmedFact`, `LearningService` or a confirmation call — so
+  no model, worker, scheduler, mail handler, eHall pipeline or web route can promote anything.
+- One current fact per key, with history kept. Confirming a new value runs in one `BEGIN IMMEDIATE`
+  that re-reads the candidate, retires the key's current row with a compare-and-set, inserts the new
+  fact and records the candidate's single status transition; a partial unique index on
+  `(fact_key) WHERE superseded_at IS NULL` is the database's half of the guarantee, and a failed
+  confirmation rolls the retirement back so the old fact stays current and the candidate stays
+  pending. Superseded and rejected rows are never deleted.
+- Expiry that needs no job: `active` is `superseded_at IS NULL AND (valid_until IS NULL OR
+  valid_until > now)`, computed at read time. An expired-but-current row still owns its key, so the
+  next confirmation retires it properly; a candidate whose proposed window has already closed
+  cannot be confirmed at all.
+- A credential ban expressed on the key, not guessed from the value: keys matching
+  `^[a-z][a-z0-9_.-]{0,127}$` are accepted, and a segment (or one of its `_`/`-`-separated words)
+  naming a password, secret, token, credential or private key is refused with `ForbiddenFactKey` —
+  `mail.smtp_token` is refused, `profile.tokenizer` is an ordinary key. The fact store is not a
+  credential store.
+- `LearningService` and `SqliteLearningRepository` (`add_correction`, `propose_fact`, `confirm_fact`,
+  `reject_fact`, `list_candidates`, `list_facts`, `get_active_fact`, `list_active_facts`), with the
+  clock and the fact id injected at the composition root.
+- `pw corrections|correction add|show`, `pw fact candidates|candidate add|show|confirm|reject`,
+  `pw facts [--all]` and `pw fact show`, with the usual full-UUID-or-unique-prefix resolution and a
+  review view that prints the user's own words as the source.
+
+### Notes
+
+- Confirmed facts are **not** injected into models, mail drafts or eHall forms in this phase, and
+  eHall `--field` still requires explicit input. `get_active_fact` and `list_active_facts` exist as
+  the single implementation of "current and unexpired" for whoever asks later.
+- The mobile route table is unchanged (no `/api/facts`), and adding a fact leaves every other table
+  — tasks, deadlines, plans, mail, actions, approvals, executions, notifications, sessions —
+  byte-for-byte as it was; a test asserts exactly that.
+
 ## [0.6.0] - 2026-09-20
 
 Phase 6C (eHall): the first whitelisted university errand — the certificate application — can be
