@@ -104,6 +104,24 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - **Remaining task effort is estimated effort minus recorded WorkSession effort; PlanBlock
   duration is never treated as actual work.** 估时来自 `Task.estimated_minutes`，实际耗时只来自
   WorkSession；PlanBlock（含旧 planner block）不减少剩余工作量。
+- **ScheduledJob intent must be durable; asyncio timers are never the source of truth.**
+  reminder / rolling replan 意图写在 runtime SQLite（`scheduled_jobs`），daemon 重启后必须从
+  DB 恢复；进程内定时器只能作为唤醒手段（ADR-0016）。
+- **Deadline reminder jobs must be updated atomically with deadline/task mutations.**
+  set/clear deadline、complete/cancel task 与 reminder job 的 materialize/cancel 必须在同一个
+  transaction 内完成；不允许先 commit task 再补 job。
+- **Rolling replanning may create a proposal but must never auto-apply it.**
+  自动重规划只产生新的 `PENDING` `PlanProposal`（并写 `PLAN_READY` notification）；apply 永远
+  由用户显式执行。
+- **Notification creation must be idempotent across scheduler crash/retry.**
+  notification 的 `dedup_key` 由 DB UNIQUE 强制，一个 job 最多产生一条通知；禁止只靠
+  SELECT-then-INSERT。
+- **ScheduledJob execution is at-least-once and fenced by a lease claim token.**
+  complete/retry/dead-letter 必须带 claim token 且只作用于 `processing` 行；过期 lease 可被
+  reclaim，旧 token 立即失效。
+- **Scheduler job payloads are typed JSON data, never executable code.**
+  payload 只允许 canonical JSON object（固定 schema）；禁止 pickle / module path / eval /
+  shell string。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -171,20 +189,25 @@ PlanBlock/WorkSession 五个独立概念、迁移 0004、`CommitmentRepository` 
 纯 `GreedyPlanner`、commitment revision fencing、持久 `PlanProposal`/`ProposedPlanBlock`/
 `PlanningIssue`、原子 apply（只替换 `origin=planner` 的 block，永不改 manual block）、
 `PlannerService` 与 CLI（`pw plan week|proposals|show|apply`、`pw task edit`）。
-版本仍是 0.2.0，未发布 v0.3.0（等 rolling replanning + reminders 完成）。
+
+**Phase 3C 已完成（v0.3.0）**：durable scheduler（ADR-0016）：`ScheduledJob` /
+`Notification` 领域、迁移 0006、lease + claim token fencing、deterministic retry/dead-letter、
+deadline reminder 与 deadline/task mutation 同事务 materialize、durable notification inbox
+（`pw notifications` / `pw notification show|read` / `pw scheduled`）、debounced rolling replan
+（只产生 `PENDING` proposal + `PLAN_READY`）、daemon 新增 supervised `scheduler` service。
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 真实业务 handler（`assistantd` 未接入 EventWorker，无任何自动处理在运行）/ IMAP / SMTP /
-DeepSeek / LLM 问答与 RAG / 自动重规划与 daemon 自动排期 / Reminder Scheduler /
-个人估时学习 / 自然语言时间解析 /
+DeepSeek / LLM 问答与 RAG / 个人估时学习 / 自然语言时间解析 /
 重复任务与重复事件 / Case / embedding 与向量检索 / OCR /
 Office 文档与压缩包展开 / filesystem watcher 快速路径 / Web Server / eHall /
-Playwright / scheduler / approval token / Case、Approval 等其余 domain entity /
+Playwright / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/
+approval token / Case、Approval 等其余 domain entity /
 Windows Task Scheduler 配置。
 
-（Task/Deadline/CalendarEvent/PlanBlock/WorkSession 与 PlanProposal 已实现；Case、Approval
-等其余 domain entity 仍属后续 Phase。）
+（Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
+Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）
 
 新增能力前先确认它属于哪个 Phase，并在 spec 或 ADR 里落了设计再动手。
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection
 from datetime import datetime
 
+from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.domain.errors import TaskNotFound, WorkSessionNotFound
 from assistant.domain.task import TaskId
 from assistant.domain.work_session import WorkSession, WorkSessionId, new_work_session_id
@@ -28,11 +29,13 @@ class WorkService:
         clock: Clock,
         *,
         new_session_id_factory: Callable[[], WorkSessionId] = new_work_session_id,
+        replan: RollingReplanRequester | None = None,
     ) -> None:
         self._work = work
         self._commitments = commitments
         self._clock = clock
         self._new_session_id = new_session_id_factory
+        self._replan = replan
 
     async def record_session(
         self, *, task_id: TaskId, started_at: datetime, ended_at: datetime
@@ -54,7 +57,11 @@ class WorkService:
             ended_at=ended_at,
             created_at=self._clock.now(),
         )
-        return await self._work.add_work_session(session)
+        stored = await self._work.add_work_session(session)
+        if self._replan is not None:
+            # Recorded work changes remaining effort, so the plan is probably out of date.
+            await self._replan.request()
+        return stored
 
     async def list_task_sessions(
         self, task_id: TaskId, *, limit: int | None = None

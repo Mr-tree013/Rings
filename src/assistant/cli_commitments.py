@@ -37,6 +37,7 @@ from assistant.domain.task import Task, TaskPriority
 from assistant.domain.work_session import WorkSession
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
+from assistant.ports.scheduler_repository import SchedulerRepository
 from assistant.store.errors import StoreError
 
 
@@ -50,6 +51,7 @@ class Services:
     work: WorkService
     planner: PlannerService
     commitments: CommitmentRepository
+    scheduler: SchedulerRepository
 
 
 def services_for(
@@ -58,21 +60,23 @@ def services_for(
     """Build the commitment services for one command run."""
     return Services(
         clock=clock,
-        tasks=bootstrap.task_service(database, clock),
-        calendar=bootstrap.calendar_service(database, clock),
-        work=bootstrap.work_service(database, clock),
+        tasks=bootstrap.task_service(database, clock, config),
+        calendar=bootstrap.calendar_service(database, clock, config),
+        work=bootstrap.work_service(database, clock, config),
         planner=bootstrap.planner_service(database, clock, config),
         commitments=bootstrap.commitment_repository(database),
+        scheduler=bootstrap.scheduler_repository(database),
     )
 
 
 def run[T](
-    action: Callable[[Services], Coroutine[Any, Any, T]], *, load_config: bool = False
+    action: Callable[[Services], Coroutine[Any, Any, T]], *, load_config: bool = True
 ) -> T:
     """Build services, run one async action, and turn project errors into CLI failures.
 
-    Host configuration is only read where it is actually needed (the planner commands), so a
-    broken config cannot break `pw tasks`.
+    Host configuration is read by default, because a mutation must materialize the reminder
+    schedule it just changed. Read-only inspection commands pass `load_config=False`, so a
+    broken config never stops the user from looking at what is already stored.
     """
 
     async def runner() -> T:
@@ -126,7 +130,10 @@ def list_tasks_command(
     ] = False,
 ) -> None:
     """List tasks: OPEN by default, ordered by deadline then creation."""
-    rows = run(lambda services: _task_rows(services, include_terminal=include_terminal))
+    rows = run(
+        lambda services: _task_rows(services, include_terminal=include_terminal),
+        load_config=False,
+    )
     if not rows:
         console.print("no tasks")
         return
@@ -208,7 +215,7 @@ def task_add(
 def task_show(reference: Annotated[str, typer.Argument(help="Task id or unique prefix.")]) -> None:
     """Show one task with its deadline, plan blocks and work sessions."""
     task, deadline, blocks, sessions, actual_seconds = run(
-        lambda services: _task_detail(services, reference)
+        lambda services: _task_detail(services, reference), load_config=False
     )
     table = Table(title=f"task {short_id(task.id)}", show_header=False, title_justify="left")
     table.add_row("ID", str(task.id))
@@ -387,7 +394,7 @@ def calendar_default(
     """Show active calendar events and plan blocks for the next `--days` days."""
     if ctx.invoked_subcommand is not None:
         return
-    intervals = run(lambda services: _busy(services, days))
+    intervals = run(lambda services: _busy(services, days), load_config=False)
     if not intervals:
         console.print("nothing scheduled")
         return
@@ -649,7 +656,7 @@ async def _work_add(
 @work_app.command("list")
 def work_list(reference: Annotated[str, typer.Argument(help="Task id or unique prefix.")]) -> None:
     """List a task's work sessions and total actual effort."""
-    sessions, total = run(lambda services: _work_list(services, reference))
+    sessions, total = run(lambda services: _work_list(services, reference), load_config=False)
     _print_work_sessions(sessions)
     console.print(f"total actual work: {_duration(total)} ({total}s)")
 

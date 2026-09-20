@@ -25,7 +25,7 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from assistant import __version__, bootstrap, cli_commitments
+from assistant import __version__, bootstrap, cli_commitments, cli_scheduler
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.application.index_sync import IndexSyncResult, RootSyncResult, RootSyncStatus
 from assistant.cli_support import console, error_console, fail
@@ -70,6 +70,7 @@ roots_app = typer.Typer(help="Configured storage roots.", no_args_is_help=True)
 app.add_typer(vault_app, name="vault")
 app.add_typer(roots_app, name="roots")
 cli_commitments.register(app)
+cli_scheduler.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -98,6 +99,26 @@ def _pypdf_version() -> str:
         return "not installed"
 
 
+def _scheduler_store_available(database_file: Path) -> bool:
+    """Read-only capability probe: are the scheduler tables migrated in?
+
+    `pw doctor` never runs a job, creates a job or writes a notification; it only looks at the
+    schema, and treats a missing or unreadable database as "not ready yet" instead of failing.
+    """
+    if not database_file.exists():
+        return False
+    try:
+        database = bootstrap.runtime_database(bootstrap.system_clock())
+        with database.connect() as connection:
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('scheduled_jobs', 'notifications')"
+            ).fetchall()
+    except (StoreError, OSError):
+        return False
+    return len(row) == 2
+
+
 @app.command()
 def status() -> None:
     """Show static capability status (this command does not contact the daemon)."""
@@ -105,13 +126,20 @@ def status() -> None:
     table.add_row("version", __version__)
     table.add_row("core", "durable event pipeline (ingest, claim, retry, dead letter)")
     table.add_row("knowledge", "configured storage + per-root full-text index")
-    table.add_row("daemon services", "index-sync (periodic reconciliation)")
+    table.add_row("commitments", "durable tasks, deadlines, calendar events, plan blocks, work")
+    table.add_row("planning", "deterministic weekly proposals (review before apply)")
+    table.add_row(
+        "daemon services", "index-sync (periodic reconciliation), scheduler (jobs)"
+    )
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
-        "integrations", "[yellow]not implemented[/yellow] (mail, web, scheduler, eHall)"
+        "integrations", "[yellow]not implemented[/yellow] (mail, web, push, eHall)"
     )
     console.print(table)
-    console.print("No external integration is wired up yet.")
+    console.print(
+        "Reminders are delivered into the durable notification inbox "
+        "(read them with `pw notifications`)."
+    )
 
 
 @app.command()
@@ -151,6 +179,26 @@ def doctor() -> None:
     table.add_row("pypdf", _pypdf_version())
     if config_error is None:
         table.add_row("config", f"{loader.path} ({configured_roots} roots)")
+        table.add_row(
+            "scheduler store",
+            (
+                "due jobs + notification inbox (read-only check)"
+                if _scheduler_store_available(database_file)
+                else "[yellow]migration 0006 not applied yet[/yellow]"
+            ),
+        )
+        table.add_row(
+            "reminder offsets",
+            ", ".join(str(offset) for offset in config.reminders.deadline_offsets_minutes)
+            or "none configured",
+        )
+        table.add_row(
+            "scheduler poll",
+            (
+                f"{config.scheduler.poll_interval_seconds}s "
+                f"(replan debounce {config.scheduler.replan_debounce_seconds}s)"
+            ),
+        )
     else:
         table.add_row("config", f"[red]ERROR[/red] ({config_error})")
     console.print(table)

@@ -8,13 +8,16 @@ silently overwritten.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.domain.deadline import Deadline, DeadlineId, new_deadline_id
 from assistant.domain.errors import AmbiguousId, TaskNotFound
+from assistant.domain.scheduled_job import ScheduledJob
+from assistant.domain.scheduler_payloads import deadline_reminder_jobs
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus, new_task_id
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import (
@@ -54,11 +57,15 @@ class TaskService:
         *,
         new_task_id_factory: Callable[[], TaskId] = new_task_id,
         new_deadline_id_factory: Callable[[], DeadlineId] = new_deadline_id,
+        reminder_offsets_minutes: Sequence[int] = (),
+        replan: RollingReplanRequester | None = None,
     ) -> None:
         self._commitments = commitments
         self._clock = clock
         self._new_task_id = new_task_id_factory
         self._new_deadline_id = new_deadline_id_factory
+        self._reminder_offsets_minutes = tuple(reminder_offsets_minutes)
+        self._replan = replan
 
     async def create_task(self, command: CreateTask) -> Task:
         """Create a task, optionally with its deadline, in one transaction."""
@@ -81,7 +88,13 @@ class TaskService:
                 created_at=now,
                 updated_at=now,
             )
-        return await self._commitments.add_task(task, deadline=deadline)
+        stored = await self._commitments.add_task(
+            task,
+            deadline=deadline,
+            reminder_jobs=self._reminder_jobs(task.id, deadline, now=now),
+        )
+        await self._request_replan()
+        return stored
 
     async def update_task(self, task_id: TaskId, command: EditTask) -> Task:
         """Edit an OPEN task's details."""
@@ -93,23 +106,31 @@ class TaskService:
             estimated_minutes=command.estimated_minutes,
             at=self._clock.now(),
         )
-        return await self._commitments.update_task(updated, expected_updated_at=task.updated_at)
+        stored = await self._commitments.update_task(
+            updated, expected_updated_at=task.updated_at
+        )
+        await self._request_replan()
+        return stored
 
     async def complete_task(self, task_id: TaskId) -> CommitmentTransitionResult:
         """Complete a task and cancel its unfinished plan blocks, atomically."""
         task = await self.require_task(task_id)
         completed = task.complete(self._clock.now())
-        return await self._commitments.complete_task(
+        result = await self._commitments.complete_task(
             completed, expected_updated_at=task.updated_at
         )
+        await self._request_replan()
+        return result
 
     async def cancel_task(self, task_id: TaskId) -> CommitmentTransitionResult:
         """Cancel a task and its unfinished plan blocks, atomically."""
         task = await self.require_task(task_id)
         cancelled = task.cancel(self._clock.now())
-        return await self._commitments.cancel_task(
+        result = await self._commitments.cancel_task(
             cancelled, expected_updated_at=task.updated_at
         )
+        await self._request_replan()
+        return result
 
     async def set_deadline(self, task_id: TaskId, due_at: datetime) -> Deadline:
         """Set or move the task's active deadline (OPEN tasks only)."""
@@ -122,9 +143,14 @@ class TaskService:
             created_at=now,
             updated_at=now,
         )
-        return await self._commitments.set_deadline(
-            deadline, expected_updated_at=task.updated_at, at=now
+        stored = await self._commitments.set_deadline(
+            deadline,
+            expected_updated_at=task.updated_at,
+            at=now,
+            reminder_jobs=self._reminder_jobs(task.id, deadline, now=now),
         )
+        await self._request_replan()
+        return stored
 
     async def clear_deadline(self, task_id: TaskId) -> None:
         """Remove the task's active deadline (OPEN tasks only)."""
@@ -132,10 +158,30 @@ class TaskService:
         await self._commitments.clear_deadline(
             task_id=task.id, expected_updated_at=task.updated_at, at=self._clock.now()
         )
+        await self._request_replan()
+
+    def _reminder_jobs(
+        self, task_id: TaskId, deadline: Deadline | None, *, now: datetime
+    ) -> tuple[ScheduledJob, ...]:
+        """The reminder schedule for one deadline, or nothing when there is no deadline."""
+        if deadline is None or not self._reminder_offsets_minutes:
+            return ()
+        return deadline_reminder_jobs(
+            task_id=task_id,
+            deadline_id=deadline.id,
+            deadline_due_at=deadline.due_at,
+            offsets_minutes=self._reminder_offsets_minutes,
+            now=now,
+        )
 
     async def get_deadline(self, task_id: TaskId) -> Deadline | None:
         """Return the task's active deadline, or `None`."""
         return await self._commitments.get_deadline(task_id)
+
+    async def _request_replan(self) -> None:
+        """Ask for a rolling replan; the requester itself is best-effort and optional."""
+        if self._replan is not None:
+            await self._replan.request()
 
     async def require_task(self, task_id: TaskId) -> Task:
         """Return the task or raise `TaskNotFound`."""

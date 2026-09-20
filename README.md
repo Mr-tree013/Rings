@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：Phase 2 完成（v0.2.0，personal knowledge + continuous storage indexing）
+## 当前状态：Phase 3 完成（v0.3.0，durable planning + reminders + rolling replanning）
 
 已完成：
 
@@ -15,8 +15,9 @@
   `assistantd` 周期性 reconciliation（scan → catalog → index），root 失败隔离与 supervisor。
 
 **尚未实现任何外部集成**：没有收发邮件、没有 eHall/Playwright、没有模型调用、没有 Web UI、
-没有 Task/Planner。`assistantd` 现在会在启动时执行一次存储 reconciliation，然后按配置周期重复；
-它仍然**不会**启动 durable EventWorker——没有真实业务 handler 时，假 handler 只会制造"已经实现"
+没有手机端推送。`assistantd` 现在托管两个 service：启动时执行一次存储 reconciliation 并按配置
+周期重复的 `index-sync`，以及执行 durable reminder / rolling replan 的 `scheduler`；它仍然
+**不会**启动 durable EventWorker——没有真实业务 handler 时，假 handler 只会制造"已经实现"
 的错觉。
 
 **尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
@@ -37,9 +38,17 @@ CalendarEvent / PlanBlock / WorkSession 五个独立概念的持久化与结构�
 确定性周计划（Phase 3B）：**已实现** proposal-based weekly planning —— `pw plan week` 用确定性
 greedy planner 生成持久、可审阅的 `PlanProposal`（不做 LLM 调用），`pw plan show` 原样展示当时
 的 proposal，`pw plan apply` 是唯一写入 plan block 的路径；planner block 与 manual block 来源可
-区分且可追溯，stale proposal 永不应用。**尚未实现**：automatic replanning、reminders、
-个人估时学习（personal effort learning）、LLM 任务解读、自然语言时间解析、重复任务/事件、
-RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、filesystem watcher。
+区分且可追溯，stale proposal 永不应用。**尚未实现**：自动 apply（apply 永远需要用户显式执行）。
+
+计划执行与提醒（Phase 3C）：**已实现** durable scheduling —— `ScheduledJob` 意图写在 runtime
+SQLite（daemon 重启后从 DB 恢复），deadline 的 reminder job 与 deadline/task mutation 在同一
+transaction 内 materialize；提醒只投递到 durable notification inbox（`pw notifications`、
+`pw notification show|read`，`pw scheduled` 可查看 job 状态）。Rolling replanning 是 debounced 的
+后台 job：**只产生新的 `PENDING` proposal 并发 `PLAN_READY` 通知，绝不自动 apply**
+（apply 仍需 `pw plan apply`）。daemon 现在托管 `index-sync` 与 `scheduler` 两个 service。
+**尚未实现**：OS/手机推送、mail、LLM 任务解读、个人估时学习（personal effort learning）、
+自然语言时间解析、重复任务/事件、RAG 问答、embedding/向量检索、OCR、Office 文档与压缩包、
+filesystem watcher、eHall。
 
 ## Architecture summary
 

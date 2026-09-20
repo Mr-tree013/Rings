@@ -17,7 +17,7 @@ commitment state changed.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -25,6 +25,7 @@ from typing import Protocol
 from assistant.domain.calendar_event import CalendarEvent, CalendarEventId
 from assistant.domain.deadline import Deadline
 from assistant.domain.plan_block import PlanBlock, PlanBlockId
+from assistant.domain.scheduled_job import ScheduledJob
 from assistant.domain.task import Task, TaskId, TaskStatus
 
 
@@ -41,8 +42,17 @@ class CommitmentRepository(Protocol):
 
     # ------------------------------------------------------------------------ tasks
 
-    async def add_task(self, task: Task, *, deadline: Deadline | None = None) -> Task:
-        """Store a new task, optionally with its active deadline, in one transaction.
+    async def add_task(
+        self,
+        task: Task,
+        *,
+        deadline: Deadline | None = None,
+        reminder_jobs: Sequence[ScheduledJob] = (),
+    ) -> Task:
+        """Store a new task, optionally with its active deadline and reminder jobs.
+
+        Everything happens in one transaction: a task whose deadline is stored but whose
+        reminders are not would be a task that silently forgets to warn the user.
 
         Raises:
             InvalidCommitment: the deadline does not belong to the task.
@@ -107,13 +117,22 @@ class CommitmentRepository(Protocol):
         ...
 
     async def set_deadline(
-        self, deadline: Deadline, *, expected_updated_at: datetime, at: datetime
+        self,
+        deadline: Deadline,
+        *,
+        expected_updated_at: datetime,
+        at: datetime,
+        reminder_jobs: Sequence[ScheduledJob] = (),
     ) -> Deadline:
         """Create or reschedule the task's active deadline.
 
         Rescheduling keeps the same deadline identity. The task must be OPEN (only OPEN tasks
         may change their commitment), and the task's `updated_at` advances to `at`. The
         deadline's `created_at` is used only when the row is created.
+
+        `reminder_jobs` is the reminder schedule that should hold after the change; obsolete
+        active jobs (including one that is currently being processed) are cancelled in the same
+        transaction.
         """
         ...
 
@@ -121,6 +140,9 @@ class CommitmentRepository(Protocol):
         self, *, task_id: TaskId, expected_updated_at: datetime, at: datetime
     ) -> None:
         """Remove the task's active deadline (the task must be OPEN).
+
+        The deadline's active reminder jobs are cancelled in the same transaction: a reminder
+        for a deadline that no longer exists must never be delivered.
 
         Raises:
             DeadlineNotFound: the task has no active deadline.

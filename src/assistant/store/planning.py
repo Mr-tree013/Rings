@@ -73,6 +73,9 @@ class SqlitePlanningRepository:
     async def load_snapshot(self, window: PlanningWindow) -> PlanningSnapshot:
         return await asyncio.to_thread(self._load_snapshot_sync, window)
 
+    async def get_current_revision(self) -> int:
+        return await asyncio.to_thread(self._current_revision_sync)
+
     async def create_proposal(
         self,
         proposal: PlanProposal,
@@ -133,6 +136,10 @@ class SqlitePlanningRepository:
         return matching[0]
 
     # ------------------------------------------------------------ blocking internals
+
+    def _current_revision_sync(self) -> int:
+        with self._database.connect() as connection:
+            return read_revision(connection)
 
     def _load_snapshot_sync(self, window: PlanningWindow) -> PlanningSnapshot:
         with self._database.connect() as connection, read_transaction(connection):
@@ -227,12 +234,11 @@ class SqlitePlanningRepository:
                     )
                 connection.execute(
                     "UPDATE plan_proposals SET status = ?, superseded_at = ? "
-                    "WHERE status = ? AND window_start = ? AND window_end = ? AND timezone = ?",
+                    "WHERE status = ? AND window_end = ? AND timezone = ?",
                     (
                         str(PlanProposalStatus.SUPERSEDED),
                         to_utc_iso(proposal.created_at),
                         str(PlanProposalStatus.PENDING),
-                        to_utc_iso(proposal.window.starts_at),
                         to_utc_iso(proposal.window.ends_at),
                         proposal.window.timezone,
                     ),

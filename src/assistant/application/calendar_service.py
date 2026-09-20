@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.domain.calendar_event import (
     CalendarEvent,
     CalendarEventId,
@@ -65,11 +66,13 @@ class CalendarService:
         *,
         new_event_id_factory: Callable[[], CalendarEventId] = new_calendar_event_id,
         new_plan_block_id_factory: Callable[[], PlanBlockId] = new_plan_block_id,
+        replan: RollingReplanRequester | None = None,
     ) -> None:
         self._commitments = commitments
         self._clock = clock
         self._new_event_id = new_event_id_factory
         self._new_plan_block_id = new_plan_block_id_factory
+        self._replan = replan
 
     # ------------------------------------------------------------------- events
 
@@ -85,11 +88,17 @@ class CalendarService:
             created_at=now,
             updated_at=now,
         )
-        return await self._commitments.add_calendar_event(event)
+        stored = await self._commitments.add_calendar_event(event)
+        await self._request_replan()
+        return stored
 
     async def cancel_event(self, event_id: CalendarEventId) -> CalendarEvent:
         """Cancel a calendar event."""
-        return await self._commitments.cancel_calendar_event(event_id, at=self._clock.now())
+        cancelled = await self._commitments.cancel_calendar_event(
+            event_id, at=self._clock.now()
+        )
+        await self._request_replan()
+        return cancelled
 
     async def list_events(
         self,
@@ -129,11 +138,22 @@ class CalendarService:
             created_at=now,
             updated_at=now,
         )
-        return await self._commitments.add_plan_block(block)
+        stored = await self._commitments.add_plan_block(block)
+        await self._request_replan()
+        return stored
 
     async def cancel_plan_block(self, plan_block_id: PlanBlockId) -> PlanBlock:
         """Cancel a plan block by hand."""
-        return await self._commitments.cancel_plan_block(plan_block_id, at=self._clock.now())
+        cancelled = await self._commitments.cancel_plan_block(
+            plan_block_id, at=self._clock.now()
+        )
+        await self._request_replan()
+        return cancelled
+
+    async def _request_replan(self) -> None:
+        """Commitment state changed, so the plan is probably out of date (best-effort)."""
+        if self._replan is not None:
+            await self._replan.request()
 
     async def list_plan_blocks_for_task(
         self, task_id: TaskId, *, include_cancelled: bool = False

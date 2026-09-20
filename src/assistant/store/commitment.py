@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from uuid import UUID
 
@@ -34,11 +34,16 @@ from assistant.domain.errors import (
     TaskNotOpen,
 )
 from assistant.domain.plan_block import PlanBlock, PlanBlockId, PlanBlockOrigin
+from assistant.domain.scheduled_job import ScheduledJob, ScheduledJobKind
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.commitment_repository import CommitmentTransitionResult
 from assistant.store.commitment_revision import increment_revision
 from assistant.store.db import Database, transaction
 from assistant.store.errors import CommitmentStoreError
+from assistant.store.scheduled_jobs import (
+    cancel_active_jobs_for_task,
+    upsert_job_for_dedup,
+)
 from assistant.store.serialization import from_utc_iso, to_utc_iso
 
 _TASK_FIELDS = (
@@ -81,8 +86,16 @@ class SqliteCommitmentRepository:
 
     # ------------------------------------------------------------------------ tasks
 
-    async def add_task(self, task: Task, *, deadline: Deadline | None = None) -> Task:
-        return await asyncio.to_thread(self._add_task_sync, task, deadline)
+    async def add_task(
+        self,
+        task: Task,
+        *,
+        deadline: Deadline | None = None,
+        reminder_jobs: Sequence[ScheduledJob] = (),
+    ) -> Task:
+        return await asyncio.to_thread(
+            self._add_task_sync, task, deadline, tuple(reminder_jobs)
+        )
 
     async def get_task(self, task_id: TaskId) -> Task | None:
         return await asyncio.to_thread(self._get_task_sync, task_id)
@@ -123,10 +136,15 @@ class SqliteCommitmentRepository:
         return await asyncio.to_thread(self._list_deadlines_sync, tuple(task_ids))
 
     async def set_deadline(
-        self, deadline: Deadline, *, expected_updated_at: datetime, at: datetime
+        self,
+        deadline: Deadline,
+        *,
+        expected_updated_at: datetime,
+        at: datetime,
+        reminder_jobs: Sequence[ScheduledJob] = (),
     ) -> Deadline:
         return await asyncio.to_thread(
-            self._set_deadline_sync, deadline, expected_updated_at, at
+            self._set_deadline_sync, deadline, expected_updated_at, at, tuple(reminder_jobs)
         )
 
     async def clear_deadline(
@@ -191,7 +209,9 @@ class SqliteCommitmentRepository:
 
     # ------------------------------------------------------------ blocking internals
 
-    def _add_task_sync(self, task: Task, deadline: Deadline | None) -> Task:
+    def _add_task_sync(
+        self, task: Task, deadline: Deadline | None, reminder_jobs: tuple[ScheduledJob, ...]
+    ) -> Task:
         if deadline is not None and deadline.task_id != task.id:
             raise CommitmentStoreError("deadline does not belong to the task being stored")
         with self._database.connect() as connection, transaction(connection):
@@ -204,6 +224,8 @@ class SqliteCommitmentRepository:
                     )
             except sqlite3.IntegrityError as exc:
                 raise _translate_integrity_error(exc) from exc
+            for job in reminder_jobs:
+                upsert_job_for_dedup(connection, job)
             increment_revision(connection)
         return task
 
@@ -286,6 +308,15 @@ class SqliteCommitmentRepository:
                 _CANCEL_FUTURE_PLAN_BLOCKS_SQL,
                 (to_utc_iso(cutoff), to_utc_iso(cutoff), str(task.id), to_utc_iso(cutoff)),
             ).rowcount
+            # A finished task is not reminded about: pending and in-flight reminder jobs for it
+            # are cancelled in the same transaction as the transition itself.
+            cancel_active_jobs_for_task(
+                connection,
+                task_id=task.id,
+                kind=ScheduledJobKind.DEADLINE_REMINDER,
+                keep_dedup_keys=(),
+                at=cutoff,
+            )
             increment_revision(connection)
             row = connection.execute(_SELECT_TASK_SQL, (str(task.id),)).fetchone()
         if row is None:  # pragma: no cover - defensive
@@ -312,7 +343,11 @@ class SqliteCommitmentRepository:
         }
 
     def _set_deadline_sync(
-        self, deadline: Deadline, expected_updated_at: datetime, at: datetime
+        self,
+        deadline: Deadline,
+        expected_updated_at: datetime,
+        at: datetime,
+        reminder_jobs: tuple[ScheduledJob, ...],
     ) -> Deadline:
         with self._database.connect() as connection, transaction(connection):
             self._require_open_at_version(connection, deadline.task_id, expected_updated_at)
@@ -338,6 +373,9 @@ class SqliteCommitmentRepository:
                     (to_utc_iso(stored.due_at), to_utc_iso(stored.updated_at), str(stored.task_id)),
                 )
             self._touch_task(connection, deadline.task_id, at)
+            self._replace_reminder_jobs(
+                connection, task_id=deadline.task_id, jobs=reminder_jobs, at=at
+            )
             increment_revision(connection)
         return stored
 
@@ -352,7 +390,32 @@ class SqliteCommitmentRepository:
             if cursor.rowcount != 1:
                 raise DeadlineNotFound(task_id)
             self._touch_task(connection, task_id, at)
+            self._replace_reminder_jobs(connection, task_id=task_id, jobs=(), at=at)
             increment_revision(connection)
+
+    def _replace_reminder_jobs(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        task_id: TaskId,
+        jobs: tuple[ScheduledJob, ...],
+        at: datetime,
+    ) -> None:
+        """Make the task's active reminder jobs exactly `jobs`, inside the caller's transaction.
+
+        Cancelling first — and cancelling a *processing* job too — is deliberate: a reminder
+        that is already in flight must not deliver the old deadline after the new one is
+        stored.
+        """
+        cancel_active_jobs_for_task(
+            connection,
+            task_id=task_id,
+            kind=ScheduledJobKind.DEADLINE_REMINDER,
+            keep_dedup_keys={job.dedup_key for job in jobs},
+            at=at,
+        )
+        for job in jobs:
+            upsert_job_for_dedup(connection, job)
 
     def _add_calendar_event_sync(self, event: CalendarEvent) -> CalendarEvent:
         insert_sql = (

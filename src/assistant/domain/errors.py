@@ -391,6 +391,62 @@ class PlanningStateUnstable(DomainError):
     """Planning input kept changing across the allowed retries."""
 
 
+class InvalidScheduledJob(DomainError):
+    """A `ScheduledJob` was built with values that break its invariants."""
+
+
+class InvalidScheduledJobClaim(DomainError):
+    """A `ScheduledJobClaim` was built with values that break its invariants."""
+
+
+class ScheduledJobNotFound(DomainError):
+    """No scheduled job exists for the requested identity."""
+
+    def __init__(self, job_id: object) -> None:
+        self.job_id = job_id
+        super().__init__(f"scheduled job {job_id} does not exist")
+
+
+class StaleScheduledJobClaim(DomainError):
+    """A worker tried to finish a job whose claim is no longer the current one.
+
+    The lease expired and another worker reclaimed the job, or the job was cancelled while it
+    was being processed. The caller's result belongs to a superseded attempt and must never
+    overwrite the newer state (ADR-0016).
+    """
+
+    def __init__(self, job_id: object, claim_token: object) -> None:
+        self.job_id = job_id
+        self.claim_token = claim_token
+        super().__init__(
+            f"scheduled job {job_id} is not processing under claim {claim_token}"
+        )
+
+
+class InvalidScheduledJobPayload(DomainError):
+    """A job payload is not the canonical JSON object its kind requires."""
+
+
+class PermanentScheduledJobError(DomainError):
+    """A job failed in a way that retrying cannot fix.
+
+    Raised by handlers to send a job straight to dead letter instead of consuming the
+    remaining retry budget (ADR-0016).
+    """
+
+
+class InvalidNotification(DomainError):
+    """A `Notification` was built with values that break its invariants."""
+
+
+class NotificationNotFound(DomainError):
+    """No notification exists for the requested identity."""
+
+    def __init__(self, notification_id: object) -> None:
+        self.notification_id = notification_id
+        super().__init__(f"notification {notification_id} does not exist")
+
+
 __all__ = [
     "AmbiguousId",
     "CalendarEventNotActive",
@@ -414,7 +470,11 @@ __all__ = [
     "InvalidEventTransition",
     "InvalidInboundEvent",
     "InvalidKnowledgeDocument",
+    "InvalidNotification",
     "InvalidPlanBlock",
+    "InvalidScheduledJob",
+    "InvalidScheduledJobClaim",
+    "InvalidScheduledJobPayload",
     "InvalidSourceSpan",
     "InvalidStorageRoot",
     "InvalidStorageUri",
@@ -426,7 +486,9 @@ __all__ = [
     "KnowledgeIndexCorrupt",
     "KnowledgeIndexMismatch",
     "KnowledgeIndexNeedsRebuild",
+    "NotificationNotFound",
     "PermanentEventError",
+    "PermanentScheduledJobError",
     "PlanBlockNotActive",
     "PlanBlockNotFound",
     "PlanProposalNotFound",
@@ -434,8 +496,10 @@ __all__ = [
     "PlanningNotConfigured",
     "PlanningSnapshotChanged",
     "PlanningStateUnstable",
+    "ScheduledJobNotFound",
     "StaleEventClaim",
     "StalePlanProposal",
+    "StaleScheduledJobClaim",
     "StaleTaskUpdate",
     "StorageRootConflict",
     "StorageRootIdentityMismatch",

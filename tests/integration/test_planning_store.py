@@ -409,6 +409,32 @@ async def test_create_proposal_rejects_a_revision_that_moved(
     assert await planning.get_proposal(stale_proposal.id) is None
 
 
+async def test_a_proposal_for_the_same_week_supersedes_the_earlier_clamped_one(
+    commitments: SqliteCommitmentRepository,
+    planning: SqlitePlanningRepository,
+) -> None:
+    """The planning horizon is the week; `starts_at` only drifts because it is clamped to now.
+
+    Rolling replanning re-plans the rest of the current week while the clock keeps moving, so
+    two proposals for one week must not both stay pending.
+    """
+    await commitments.add_task(_task())
+    earlier = _proposal(revision=1)
+    await planning.create_proposal(earlier, blocks=(), issues=())
+    later_window = PlanningWindow(
+        starts_at=WINDOW.starts_at + timedelta(minutes=30),
+        ends_at=WINDOW.ends_at,
+        timezone=WINDOW.timezone,
+    )
+    later = _proposal(window=later_window, revision=1, created_at=NOW + timedelta(minutes=30))
+
+    await planning.create_proposal(later, blocks=(), issues=())
+
+    stored = await planning.get_proposal(earlier.id)
+    assert stored is not None and stored.status is PlanProposalStatus.SUPERSEDED
+    assert stored.superseded_at == later.created_at
+
+
 async def test_only_a_same_window_pending_proposal_is_superseded(
     database: Database,
     commitments: SqliteCommitmentRepository,

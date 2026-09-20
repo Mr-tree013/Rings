@@ -45,8 +45,16 @@ def _install_signal_handlers(stop_event: asyncio.Event) -> None:
 def build_services(
     config: AssistantConfig, clock: Clock, database: Database
 ) -> list[AsyncService]:
-    """Compose the services the daemon supervises today."""
-    return [bootstrap.sync_service(config, clock, database)]
+    """Compose the services the daemon supervises today.
+
+    `index-sync` keeps derived views current; `scheduler` runs durable reminders and rolling
+    replans. The durable `EventWorker` is deliberately absent: there is still no real inbound
+    handler, and a fake handler would only pretend that mail is being processed.
+    """
+    return [
+        bootstrap.sync_service(config, clock, database),
+        bootstrap.scheduler_service(database, clock, config),
+    ]
 
 
 async def load_config(config_path: Path | None = None) -> AssistantConfig:
@@ -125,4 +133,3 @@ __all__ = [
     "main",
     "serve",
 ]
-

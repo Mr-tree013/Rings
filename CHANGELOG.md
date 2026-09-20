@@ -7,8 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-20
+
+Phase 3: durable commitments, deterministic weekly planning, and time. Tasks, deadlines,
+calendar events, plan blocks and work sessions are separate durable concepts; a deterministic
+planner turns them into reviewable weekly proposals; and a supervised daemon scheduler delivers
+deadline reminders into a durable inbox and asks for a fresh proposal after the plan's input
+changes — without ever applying one.
+
 ### Added
 
+- Durable scheduling (ADR-0016): `ScheduledJob` and `Notification` domains (migration
+  `0006_scheduler_notifications.sql`), a supervisor-managed `scheduler` daemon service, and
+  lease + claim-token fencing for at-least-once execution. Eligible jobs are `PENDING` and due
+  (`next_attempt_at` or `due_at`), or `PROCESSING` with an expired lease; ordering is effective
+  due, creation, id. Failures retry with deterministic exponential backoff (5 attempts, 30s
+  base, 30min cap, no jitter) and then dead-letter; `CancelledError` propagates and leaves the
+  job `PROCESSING` for lease recovery.
+- Deadline reminders (ADR-0016): `[reminders] deadline_offsets_minutes` (defaults to 1440 and
+  120) materializes one `DEADLINE_REMINDER` job per offset **in the same transaction as the
+  deadline or task mutation**. Moving a deadline cancels the previous reminder jobs (including
+  one already in flight) and stores a new generation; clearing a deadline, completing a task or
+  cancelling a task cancels its unsent reminders. An offset whose time has already passed makes
+  the reminder due immediately instead of dropping it.
+- Durable notification inbox (ADR-0016): `notifications` with a `UNIQUE` dedup key per job, so a
+  crash between "notification written" and "job completed" still yields exactly one message.
+  Reminders are written as `DEADLINE_REMINDER` rows whose body carries the due instant and the
+  remaining effort (`estimate − ceil(work seconds / 60)`), and rolling replans as `PLAN_READY`.
+  Delivery means a row in this inbox; no OS, email or push channel exists yet.
+- Rolling replanning (ADR-0016): every commitment change (task, deadline, calendar event, manual
+  plan block, work session) requests one debounced `ROLLING_REPLAN` job
+  (`[scheduler] replan_debounce_seconds`, default 60s) that coalesces repeated changes into a
+  single trailing window. Running it creates a new **pending** `PlanProposal` and one
+  `PLAN_READY` notification — never an apply, never a plan block. Nothing changed since the
+  pending proposal was built (same commitment revision) means nothing is created; missing
+  `[planning]` configuration completes the job with one `SCHEDULER_WARNING` instead of retrying.
+- Scheduler CLI: `pw notifications [--all] [--limit]`, `pw notification show|read` (reading is
+  idempotent) and read-only `pw scheduled [--all]`. `pw doctor` reports the scheduler store,
+  reminder offsets and poll interval without running any job, and `pw status` lists the daemon's
+  `index-sync` and `scheduler` services.
 - Planning preferences (ADR-0015): `[planning]` config with a required IANA `timezone`,
   block-size bounds, a deadline buffer, and weekly `[[planning.availability]]` windows with
   strict `HH:MM` validation, weekday normalisation and no overnight windows.

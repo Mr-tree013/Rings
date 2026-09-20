@@ -7,6 +7,7 @@ Covered rules:
 - the domain layer is pure (no storage, no adapters, no clock reads);
 - the application layer never reaches into the store;
 - the greedy planner stays pure: no ports, no store, no clock, no CLI;
+- scheduler job payloads are data, never code;
 - only the store (and other infrastructure modules) may import `sqlite3`.
 """
 
@@ -234,3 +235,65 @@ def test_greedy_planner_stays_a_pure_scheduling_function() -> None:
     assert not any(name.endswith("Clock") for name in names), names
     for forbidden in ("datetime.now(", "time.time(", "uuid4", "random."):
         assert forbidden not in text, f"the planner must stay deterministic: {forbidden}"
+
+
+SCHEDULER_MODULES = (
+    "domain/scheduled_job.py",
+    "domain/scheduler_payloads.py",
+    "domain/notification.py",
+    "application/scheduler_service.py",
+    "application/rolling_replan.py",
+    "store/scheduled_jobs.py",
+    "store/scheduler.py",
+    "ports/scheduler_repository.py",
+)
+
+
+def test_scheduler_job_payloads_are_data_never_code() -> None:
+    """A job payload is typed JSON. Nothing in the scheduler may execute stored content."""
+    forbidden = (
+        "eval(",
+        "exec(",
+        "import pickle",
+        "pickle.",
+        "subprocess",
+        "os.system",
+        "import importlib",
+        "compile(",
+    )
+    offenders: list[str] = []
+    for relative in SCHEDULER_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        for needle in forbidden:
+            if needle in text:
+                offenders.append(f"{relative} contains {needle}")
+
+    assert not offenders, offenders
+
+
+def test_scheduler_service_reaches_the_database_only_through_ports() -> None:
+    module = SOURCE_ROOT / "application" / "scheduler_service.py"
+    imported = _imported_modules(module)
+
+    assert not [
+        name
+        for name in imported
+        if name.startswith(("assistant.store", "assistant.adapters")) or name == "sqlite3"
+    ]
+    assert "sqlite3" not in module.read_text(encoding="utf-8")
+
+
+def test_daemon_supervises_services_through_the_async_service_protocol() -> None:
+    """Supervision depends on the service protocol, never on what a service is made of."""
+    module = SOURCE_ROOT / "daemon" / "supervisor.py"
+    imported = _imported_modules(module)
+
+    assert not [
+        name
+        for name in imported
+        if name.startswith("assistant.store") or name == "sqlite3"
+    ]
+    text = module.read_text(encoding="utf-8")
+    assert "AsyncService" in text
+    assert "SchedulerService" not in text
+    assert "IndexSyncService" not in text

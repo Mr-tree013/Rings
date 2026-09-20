@@ -7,6 +7,7 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from assistant.adapters.config.toml_config import TomlConfigLoader
@@ -23,10 +24,13 @@ from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
+from assistant.application.retry import RetryPolicy
+from assistant.application.rolling_replan import RollingReplanRequester
+from assistant.application.scheduler_service import SchedulerService
 from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
-from assistant.domain.config import AssistantConfig
+from assistant.domain.config import AssistantConfig, SchedulerConfig
 from assistant.ports.clock import Clock
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
@@ -34,6 +38,7 @@ from assistant.store.db import Database
 from assistant.store.knowledge_index import SqliteKnowledgeIndexFactory
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
+from assistant.store.scheduler import SqliteSchedulerRepository
 from assistant.store.work import SqliteWorkRepository
 
 
@@ -116,19 +121,62 @@ def work_repository(database: Database) -> SqliteWorkRepository:
     return SqliteWorkRepository(database)
 
 
-def task_service(database: Database, clock: Clock) -> TaskService:
-    """Tasks and deadlines."""
-    return TaskService(commitment_repository(database), clock)
+def scheduler_repository(database: Database) -> SqliteSchedulerRepository:
+    """Durable scheduled jobs, their claims, and the notification inbox."""
+    return SqliteSchedulerRepository(database)
 
 
-def calendar_service(database: Database, clock: Clock) -> CalendarService:
+def rolling_replan_requester(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> RollingReplanRequester:
+    """Debounced replan requests, or a no-op requester when planning is not configured."""
+    return RollingReplanRequester(
+        scheduler_repository(database),
+        clock,
+        debounce_seconds=(
+            SchedulerConfig().replan_debounce_seconds
+            if config is None
+            else config.scheduler.replan_debounce_seconds
+        ),
+        timezone=None if config is None or config.planning is None else config.planning.timezone,
+    )
+
+
+def task_service(
+    database: Database, clock: Clock, config: AssistantConfig | None = None
+) -> TaskService:
+    """Tasks and deadlines, materializing deadline reminders inside the same mutations."""
+    return TaskService(
+        commitment_repository(database),
+        clock,
+        reminder_offsets_minutes=(
+            () if config is None else config.reminders.deadline_offsets_minutes
+        ),
+        replan=rolling_replan_requester(database, clock, config),
+    )
+
+
+def calendar_service(
+    database: Database, clock: Clock, config: AssistantConfig | None = None
+) -> CalendarService:
     """Calendar events, plan blocks and busy time."""
-    return CalendarService(commitment_repository(database), clock)
+    return CalendarService(
+        commitment_repository(database),
+        clock,
+        replan=rolling_replan_requester(database, clock, config),
+    )
 
 
-def work_service(database: Database, clock: Clock) -> WorkService:
+def work_service(
+    database: Database, clock: Clock, config: AssistantConfig | None = None
+) -> WorkService:
     """Actual work sessions."""
-    return WorkService(work_repository(database), commitment_repository(database), clock)
+    return WorkService(
+        work_repository(database),
+        commitment_repository(database),
+        clock,
+        replan=rolling_replan_requester(database, clock, config),
+    )
 
 
 def planning_repository(database: Database) -> SqlitePlanningRepository:
@@ -152,6 +200,23 @@ def planner_service(
     )
 
 
+def scheduler_service(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> SchedulerService:
+    """The daemon scheduler: executes due reminders and rolling replans."""
+    scheduler_config = SchedulerConfig() if config is None else config.scheduler
+    return SchedulerService(
+        scheduler_repository(database),
+        commitment_repository(database),
+        work_repository(database),
+        planner_service(database, clock, config),
+        clock,
+        RetryPolicy(),
+        AsyncioIntervalWaiter(),
+        poll_interval=timedelta(seconds=scheduler_config.poll_interval_seconds),
+    )
+
+
 __all__ = [
     "AppPaths",
     "VaultManifestFile",
@@ -163,7 +228,10 @@ __all__ = [
     "knowledge_indexer",
     "planner_service",
     "planning_repository",
+    "rolling_replan_requester",
     "runtime_database",
+    "scheduler_repository",
+    "scheduler_service",
     "search_service",
     "sync_service",
     "system_clock",

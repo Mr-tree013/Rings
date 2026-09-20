@@ -9,11 +9,16 @@ import pytest
 
 from assistant.adapters.config.toml_config import TomlConfigLoader, default_config_path
 from assistant.domain.config import (
+    DEFAULT_DEADLINE_REMINDER_OFFSETS,
     DEFAULT_INDEX_INTERVAL_SECONDS,
+    DEFAULT_REPLAN_DEBOUNCE_SECONDS,
+    DEFAULT_SCHEDULER_POLL_SECONDS,
     AssistantConfig,
     ConfiguredLocalRoot,
     ConfiguredVaultRoot,
     IndexingConfig,
+    ReminderConfig,
+    SchedulerConfig,
 )
 from assistant.domain.errors import InvalidAssistantConfig
 from assistant.domain.storage import StorageKind
@@ -265,3 +270,79 @@ def test_default_config_path_follows_xdg_config_home(
         tmp_path / "xdg-config" / "growing-assistant" / "config.toml"
     )
 
+
+def test_reminder_and_scheduler_sections_have_documented_defaults() -> None:
+    config = AssistantConfig.from_mapping(_mapping())
+
+    assert config.reminders == ReminderConfig(DEFAULT_DEADLINE_REMINDER_OFFSETS)
+    assert config.reminders.deadline_offsets_minutes == (1440, 120)
+    assert config.scheduler == SchedulerConfig(
+        poll_interval_seconds=DEFAULT_SCHEDULER_POLL_SECONDS,
+        replan_debounce_seconds=DEFAULT_REPLAN_DEBOUNCE_SECONDS,
+    )
+
+
+def test_reminder_offsets_are_validated_and_normalised() -> None:
+    config = AssistantConfig.from_mapping(
+        _mapping(reminders={"deadline_offsets_minutes": [120, 1440]})
+    )
+    disabled = AssistantConfig.from_mapping(
+        _mapping(reminders={"deadline_offsets_minutes": []})
+    )
+
+    assert config.reminders.deadline_offsets_minutes == (1440, 120)  # longest first
+    assert disabled.reminders.deadline_offsets_minutes == ()
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    (
+        [-1],
+        [1440, 1440],
+        [30 * 24 * 60 + 1],
+        ["soon"],
+    ),
+)
+def test_invalid_reminder_offsets_are_rejected(offsets: list[object]) -> None:
+    with pytest.raises(InvalidAssistantConfig):
+        AssistantConfig.from_mapping(
+            _mapping(reminders={"deadline_offsets_minutes": offsets})
+        )
+
+
+@pytest.mark.parametrize(
+    ("poll", "debounce"),
+    (
+        (0, 60),
+        (301, 60),
+        (15, 4),
+        (15, 3601),
+        ("15", 60),
+        (15, True),
+    ),
+)
+def test_invalid_scheduler_bounds_are_rejected(poll: object, debounce: object) -> None:
+    with pytest.raises(InvalidAssistantConfig):
+        AssistantConfig.from_mapping(
+            _mapping(
+                scheduler={
+                    "poll_interval_seconds": poll,
+                    "replan_debounce_seconds": debounce,
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        {"scheduler": {"unknown": 1}},
+        {"reminders": {"unknown": 1}},
+        {"scheduler": "every minute"},
+        {"reminders": "before it is too late"},
+        {"scheduler": {"poll_interval_seconds": 15.5}},
+    ),
+)
+def test_unknown_scheduler_shapes_are_rejected(document: dict[str, object]) -> None:
+    with pytest.raises(InvalidAssistantConfig):
+        AssistantConfig.from_mapping(_mapping(**document))

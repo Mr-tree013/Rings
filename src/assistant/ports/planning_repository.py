@@ -61,6 +61,10 @@ class PlanningRepository(Protocol):
         """
         ...
 
+    async def get_current_revision(self) -> int:
+        """Return the current commitment revision, without reading a full snapshot."""
+        ...
+
     async def create_proposal(
         self,
         proposal: PlanProposal,

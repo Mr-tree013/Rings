@@ -174,6 +174,38 @@ class PlannerService:
             raise PlanProposalNotFound(proposal_id)
         return detail
 
+    async def latest_pending_detail(self, window: PlanningWindow) -> PlanProposalDetail | None:
+        """Return the newest pending proposal for this planning horizon, if any.
+
+        The horizon is `(window_end, timezone)`: a week is the unit a user reviews, while
+        `window_start` is clamped to "now" and therefore drifts by minutes between proposals.
+        Rolling replanning uses this to avoid storing a proposal identical to one the user has
+        not reviewed yet, and `create_proposal` supersedes on the same horizon.
+        """
+        for proposal in await self._planning.list_proposals(limit=None):
+            if proposal.status is not PlanProposalStatus.PENDING:
+                continue
+            if (
+                proposal.window.ends_at == window.ends_at
+                and proposal.window.timezone == window.timezone
+            ):
+                return await self._planning.get_proposal_detail(proposal.id)
+        return None
+
+    async def current_revision(self) -> int:
+        """The commitment revision the planning input is currently at.
+
+        Every planner-relevant mutation bumps it inside its own transaction, so equality with
+        a stored proposal's `input_revision` means "nothing that can change the plan changed".
+        """
+        return await self._planning.get_current_revision()
+
+    async def current_fingerprint(self, window: PlanningWindow) -> str:
+        """Fingerprint the planning input as it is right now."""
+        config = self.require_config()
+        snapshot = await self._planning.load_snapshot(window)
+        return planning_fingerprint(window=window, config=config, snapshot=snapshot)
+
     async def resolve_proposal_id(self, reference: str) -> PlanProposalId:
         """Resolve a proposal id or unique prefix."""
         return await self._planning.resolve_proposal_id(reference)

@@ -27,7 +27,22 @@ DEFAULT_INDEX_INTERVAL_SECONDS: Final[int] = 300
 MIN_INDEX_INTERVAL_SECONDS: Final[int] = 10
 MAX_INDEX_INTERVAL_SECONDS: Final[int] = 86400
 
-_KNOWN_TOP_LEVEL_KEYS = frozenset({"format_version", "indexing", "storage", "planning"})
+DEFAULT_SCHEDULER_POLL_SECONDS: Final[int] = 15
+MIN_SCHEDULER_POLL_SECONDS: Final[int] = 1
+MAX_SCHEDULER_POLL_SECONDS: Final[int] = 300
+
+DEFAULT_REPLAN_DEBOUNCE_SECONDS: Final[int] = 60
+MIN_REPLAN_DEBOUNCE_SECONDS: Final[int] = 5
+MAX_REPLAN_DEBOUNCE_SECONDS: Final[int] = 3600
+
+DEFAULT_DEADLINE_REMINDER_OFFSETS: Final[tuple[int, ...]] = (1440, 120)
+"""A day before and two hours before: this project exists to avoid missed deadlines."""
+
+MAX_DEADLINE_REMINDER_OFFSET_MINUTES: Final[int] = 30 * 24 * 60
+
+_KNOWN_TOP_LEVEL_KEYS = frozenset(
+    {"format_version", "indexing", "storage", "planning", "reminders", "scheduler"}
+)
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
 _KNOWN_ROOT_KEYS = frozenset({"kind", "id", "label", "path", "enabled"})
 _KNOWN_PLANNING_KEYS = frozenset(
@@ -35,6 +50,8 @@ _KNOWN_PLANNING_KEYS = frozenset(
      "availability"}
 )
 _KNOWN_AVAILABILITY_KEYS = frozenset({"days", "start", "end"})
+_KNOWN_REMINDER_KEYS = frozenset({"deadline_offsets_minutes"})
+_KNOWN_SCHEDULER_KEYS = frozenset({"poll_interval_seconds", "replan_debounce_seconds"})
 
 
 class Weekday(StrEnum):
@@ -112,6 +129,75 @@ class PlanningConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReminderConfig:
+    """When deadline reminders become due, expressed as offsets before the deadline."""
+
+    deadline_offsets_minutes: tuple[int, ...] = DEFAULT_DEADLINE_REMINDER_OFFSETS
+
+    def __post_init__(self) -> None:
+        seen: set[int] = set()
+        for offset in self.deadline_offsets_minutes:
+            if not isinstance(offset, int) or isinstance(offset, bool):
+                raise InvalidAssistantConfig(
+                    "reminders.deadline_offsets_minutes must contain integers"
+                )
+            if offset < 0:
+                raise InvalidAssistantConfig(
+                    "reminders.deadline_offsets_minutes must not contain negative offsets"
+                )
+            if offset > MAX_DEADLINE_REMINDER_OFFSET_MINUTES:
+                raise InvalidAssistantConfig(
+                    "reminders.deadline_offsets_minutes must not exceed 43200 (30 days)"
+                )
+            if offset in seen:
+                raise InvalidAssistantConfig(
+                    f"reminders.deadline_offsets_minutes repeats the offset {offset}"
+                )
+            seen.add(offset)
+        normalized = tuple(sorted(seen, reverse=True))
+        if normalized != self.deadline_offsets_minutes:
+            object.__setattr__(self, "deadline_offsets_minutes", normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerConfig:
+    """How the daemon scheduler polls, and how long it coalesces replan requests."""
+
+    poll_interval_seconds: int = DEFAULT_SCHEDULER_POLL_SECONDS
+    replan_debounce_seconds: int = DEFAULT_REPLAN_DEBOUNCE_SECONDS
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.poll_interval_seconds, int)
+            or isinstance(self.poll_interval_seconds, bool)
+        ):
+            raise InvalidAssistantConfig("scheduler.poll_interval_seconds must be an integer")
+        if not (
+            MIN_SCHEDULER_POLL_SECONDS
+            <= self.poll_interval_seconds
+            <= MAX_SCHEDULER_POLL_SECONDS
+        ):
+            raise InvalidAssistantConfig(
+                "scheduler.poll_interval_seconds must be between "
+                f"{MIN_SCHEDULER_POLL_SECONDS} and {MAX_SCHEDULER_POLL_SECONDS}"
+            )
+        if (
+            not isinstance(self.replan_debounce_seconds, int)
+            or isinstance(self.replan_debounce_seconds, bool)
+        ):
+            raise InvalidAssistantConfig("scheduler.replan_debounce_seconds must be an integer")
+        if not (
+            MIN_REPLAN_DEBOUNCE_SECONDS
+            <= self.replan_debounce_seconds
+            <= MAX_REPLAN_DEBOUNCE_SECONDS
+        ):
+            raise InvalidAssistantConfig(
+                "scheduler.replan_debounce_seconds must be between "
+                f"{MIN_REPLAN_DEBOUNCE_SECONDS} and {MAX_REPLAN_DEBOUNCE_SECONDS}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class IndexingConfig:
     """How often the daemon reconciles storage roots."""
 
@@ -176,6 +262,8 @@ class AssistantConfig:
     roots: tuple[ConfiguredStorageRoot, ...] = ()
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     planning: PlanningConfig | None = None
+    reminders: ReminderConfig = field(default_factory=ReminderConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -211,6 +299,8 @@ class AssistantConfig:
             roots=roots,
             indexing=indexing,
             planning=planning,
+            reminders=_parse_reminders(data.get("reminders")),
+            scheduler=_parse_scheduler(data.get("scheduler")),
             format_version=format_version,
         )
 
@@ -337,6 +427,49 @@ def _int_option(value: Mapping[str, object], key: str, default: int) -> int:
     return raw
 
 
+def _parse_reminders(value: object) -> ReminderConfig:
+    if value is None:
+        return ReminderConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[reminders] must be a table")
+    unknown = sorted(set(value) - _KNOWN_REMINDER_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [reminders] keys: {', '.join(unknown)}")
+    offsets = value.get("deadline_offsets_minutes")
+    if offsets is None:
+        return ReminderConfig()
+    if not isinstance(offsets, Sequence) or isinstance(offsets, (str, bytes)):
+        raise InvalidAssistantConfig(
+            "reminders.deadline_offsets_minutes must be a list of minutes"
+        )
+    return ReminderConfig(deadline_offsets_minutes=tuple(offsets))
+
+
+def _parse_scheduler(value: object) -> SchedulerConfig:
+    if value is None:
+        return SchedulerConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[scheduler] must be a table")
+    unknown = sorted(set(value) - _KNOWN_SCHEDULER_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [scheduler] keys: {', '.join(unknown)}")
+    return SchedulerConfig(
+        poll_interval_seconds=_scheduler_int(
+            value, "poll_interval_seconds", DEFAULT_SCHEDULER_POLL_SECONDS
+        ),
+        replan_debounce_seconds=_scheduler_int(
+            value, "replan_debounce_seconds", DEFAULT_REPLAN_DEBOUNCE_SECONDS
+        ),
+    )
+
+
+def _scheduler_int(value: Mapping[str, object], key: str, default: int) -> int:
+    raw = value.get(key, default)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise InvalidAssistantConfig(f"scheduler.{key} must be an integer")
+    return raw
+
+
 def _parse_availability(entry: object) -> WeeklyAvailabilityRule:
     if not isinstance(entry, Mapping):
         raise InvalidAssistantConfig("each [[planning.availability]] entry must be a table")
@@ -385,9 +518,17 @@ def _parse_clock(value: object, field_name: str) -> int:
 
 __all__ = [
     "CONFIG_FORMAT_VERSION",
+    "DEFAULT_DEADLINE_REMINDER_OFFSETS",
     "DEFAULT_INDEX_INTERVAL_SECONDS",
+    "DEFAULT_REPLAN_DEBOUNCE_SECONDS",
+    "DEFAULT_SCHEDULER_POLL_SECONDS",
+    "MAX_DEADLINE_REMINDER_OFFSET_MINUTES",
     "MAX_INDEX_INTERVAL_SECONDS",
+    "MAX_REPLAN_DEBOUNCE_SECONDS",
+    "MAX_SCHEDULER_POLL_SECONDS",
     "MIN_INDEX_INTERVAL_SECONDS",
+    "MIN_REPLAN_DEBOUNCE_SECONDS",
+    "MIN_SCHEDULER_POLL_SECONDS",
     "WEEKDAY_ORDER",
     "AssistantConfig",
     "ConfiguredLocalRoot",
@@ -395,6 +536,8 @@ __all__ = [
     "ConfiguredVaultRoot",
     "IndexingConfig",
     "PlanningConfig",
+    "ReminderConfig",
+    "SchedulerConfig",
     "Weekday",
     "WeeklyAvailabilityRule",
 ]
