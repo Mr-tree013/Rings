@@ -516,6 +516,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0014_playbooks.sql",
         "0015_inbound_observations.sql",
         "0016_conversations.sql",
+        "0017_conversation_external_reviews.sql",
     ]
 
 
@@ -2455,7 +2456,7 @@ def test_the_mcp_surface_adds_no_schema() -> None:
     """§49: MCP keeps no durable server state, so migrations still end at 0015."""
     migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
 
-    assert migrations[-1] == "0016_conversations.sql"
+    assert migrations[-1] == "0017_conversation_external_reviews.sql"
     assert not [name for name in migrations if "mcp" in name]
 
 
@@ -2827,9 +2828,9 @@ def test_the_release_keeps_the_migration_set_closed() -> None:
     names = [path.name for path in migrations]
 
     assert names[0] == "0001_initial.sql"
-    assert names[-1] == "0016_conversations.sql"
-    assert len(names) == 16
-    assert "0017" not in "".join(names)
+    assert names[-1] == "0017_conversation_external_reviews.sql"
+    assert len(names) == 17
+    assert "0018" not in "".join(names)
 
 
 def test_status_names_the_v1_capabilities_and_no_imaginary_ones() -> None:

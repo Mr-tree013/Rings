@@ -43,6 +43,11 @@ HELP_TEXT = """\
   · 今天论文写了一个半小时
   · 刚才那个任务我已经做完了
   · 这份资料里有没有提到申请截止日期？
+  · 最近有什么需要处理的邮件？
+  · 回复刚才那封，说我周五之前交。
+  · 确认发送
+  · 不要发
+  · 帮我查一下刚才那封邮件有没有发出去。
 
 会话控制（不是领域操作）：
   /help          显示这些例子
@@ -51,8 +56,8 @@ HELP_TEXT = """\
   /use <id>      切换到某个会话
   /exit          退出
 
-我不做的：从对话里发邮件、提交校外系统的手续、创建审批或执行外部动作——
-这些需要单独的审批流程，会在后续版本接入。
+发邮件这件事：我会先起草，然后把**将要发出的完整内容**给你看，只有你回复「确认发送」才会发出。
+「可以」「好」不会发送邮件。提交校外系统的手续（eHall）仍然不在这里。
 """
 
 CONTROL_HELP = "只认识 /help、/new、/threads、/use、/exit 这几个会话控制。"
@@ -104,6 +109,10 @@ async def _session(
         console.print(f"[bold]Tree >[/bold] {GREETING}")
         if resumed:
             console.print(f"[dim]{RESUMED_NOTICE}[/dim]")
+        pending = await service.pending_external_preview(thread.id)
+        if pending is not None:
+            # A reviewed send survives a restart; it is re-shown, never re-executed (§17).
+            console.print(f"[bold]Tree >[/bold] {pending}")
         while True:
             try:
                 line = input_fn("You > ")

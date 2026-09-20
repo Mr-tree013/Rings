@@ -71,6 +71,15 @@ class ConversationOperationType(StrEnum):
 
     KNOWLEDGE_ASK = "knowledge.ask"
 
+    MAIL_STATUS = "mail.status"
+    MAIL_SYNC = "mail.sync"
+    MAIL_LIST = "mail.list"
+    MAIL_SHOW = "mail.show"
+    MAIL_THREAD = "mail.thread"
+    MAIL_REPLY_DRAFT = "mail.reply_draft"
+    MAIL_PREPARE_REPLY_SEND = "mail.prepare_reply_send"
+    MAIL_RECONCILE_SEND = "mail.reconcile_send"
+
 
 READ_OPERATIONS = frozenset(
     {
@@ -81,6 +90,10 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.PLAN_CURRENT,
         ConversationOperationType.NOTIFICATION_LIST,
         ConversationOperationType.KNOWLEDGE_ASK,
+        ConversationOperationType.MAIL_STATUS,
+        ConversationOperationType.MAIL_LIST,
+        ConversationOperationType.MAIL_SHOW,
+        ConversationOperationType.MAIL_THREAD,
     }
 )
 """Operations that only read. They execute immediately (ADR-0033 §10)."""
@@ -206,6 +219,138 @@ class KnowledgeAskArguments:
         _text(self.question, "question")
         if self.root_id is not None:
             _text(self.root_id, "root_id")
+
+
+# -------------------------------------------------------------------------- mail arguments
+
+
+@dataclass(frozen=True, slots=True)
+class MailStatusArguments:
+    """The mailbox at a glance: stored messages, unread work, prepared sends."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_STATUS, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MailSyncArguments:
+    """One incremental IMAP receive (read-only on the server, durable locally)."""
+
+    account_id: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_SYNC, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.account_id is not None:
+            _text(self.account_id, "account_id")
+
+
+@dataclass(frozen=True, slots=True)
+class MailListArguments:
+    """List stored messages, newest first."""
+
+    limit: int = 10
+    requires_reply: bool = False
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_LIST, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.limit <= 25:
+            raise InvalidConversationPlan("mail.list supports 1 to 25 messages")
+
+
+@dataclass(frozen=True, slots=True)
+class MailShowArguments:
+    """One stored message, by an identity that was in the supplied context."""
+
+    message_id: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_SHOW, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.message_id, "message_id")
+
+
+@dataclass(frozen=True, slots=True)
+class MailThreadArguments:
+    """One stored thread and its messages."""
+
+    thread_id: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_THREAD, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.thread_id, "thread_id")
+
+
+@dataclass(frozen=True, slots=True)
+class MailReplyDraftArguments:
+    """Draft a reply with the existing reply-draft service.
+
+    `body_text` is what the user asked Tree to say ("说我周五之前交"), already written out by the
+    interpretation turn. When it is absent the existing service composes the body itself.
+    """
+
+    message_id: str
+    body_text: str | None = None
+    context_query: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_REPLY_DRAFT, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.message_id, "message_id")
+        if self.body_text is not None:
+            _text(self.body_text, "body_text")
+        if self.context_query is not None:
+            _text(self.context_query, "context_query")
+
+
+@dataclass(frozen=True, slots=True)
+class MailPrepareReplySendArguments:
+    """Freeze one draft version into an immutable, reviewable `mail.send` action.
+
+    This prepares; it never approves and never executes (ADR-0034 §10).
+
+    Either `draft_id` or `message_id` identifies the draft: a turn that drafts and prepares in one
+    go cannot know the draft's id yet, so it names the message and the runtime uses the newest
+    draft for it.
+    """
+
+    draft_id: str | None = None
+    message_id: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_PREPARE_REPLY_SEND, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.draft_id is None and self.message_id is None:
+            raise InvalidConversationPlan(
+                "mail.prepare_reply_send needs a draft_id or a message_id"
+            )
+        if self.draft_id is not None:
+            _text(self.draft_id, "draft_id")
+        if self.message_id is not None:
+            _text(self.message_id, "message_id")
+
+
+@dataclass(frozen=True, slots=True)
+class MailReconcileSendArguments:
+    """Ask the Sent mailbox whether one prepared message actually arrived."""
+
+    action_id: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_RECONCILE_SEND, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.action_id is not None:
+            _text(self.action_id, "action_id")
 
 
 # ---------------------------------------------------------------------------- write arguments
@@ -384,6 +529,14 @@ ConversationOperationArguments = (
     | NotificationListArguments
     | NotificationReadArguments
     | KnowledgeAskArguments
+    | MailStatusArguments
+    | MailSyncArguments
+    | MailListArguments
+    | MailShowArguments
+    | MailThreadArguments
+    | MailReplyDraftArguments
+    | MailPrepareReplySendArguments
+    | MailReconcileSendArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
 
@@ -430,6 +583,16 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.NOTIFICATION_LIST: frozenset({"unread_only"}),
     ConversationOperationType.NOTIFICATION_READ: frozenset({"notification_id"}),
     ConversationOperationType.KNOWLEDGE_ASK: frozenset({"question", "root_id"}),
+    ConversationOperationType.MAIL_STATUS: frozenset(),
+    ConversationOperationType.MAIL_SYNC: frozenset({"account_id"}),
+    ConversationOperationType.MAIL_LIST: frozenset({"limit", "requires_reply"}),
+    ConversationOperationType.MAIL_SHOW: frozenset({"message_id"}),
+    ConversationOperationType.MAIL_THREAD: frozenset({"thread_id"}),
+    ConversationOperationType.MAIL_REPLY_DRAFT: frozenset(
+        {"message_id", "body_text", "context_query"}
+    ),
+    ConversationOperationType.MAIL_PREPARE_REPLY_SEND: frozenset({"draft_id", "message_id"}),
+    ConversationOperationType.MAIL_RECONCILE_SEND: frozenset({"action_id"}),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""
 
@@ -600,6 +763,38 @@ def build_arguments(
             question=_strings(payload.get("question"), "question"),
             root_id=_optional_strings(payload.get("root_id"), "root_id"),
         )
+    if kind is ConversationOperationType.MAIL_STATUS:
+        return MailStatusArguments()
+    if kind is ConversationOperationType.MAIL_SYNC:
+        return MailSyncArguments(
+            account_id=_optional_strings(payload.get("account_id"), "account_id")
+        )
+    if kind is ConversationOperationType.MAIL_LIST:
+        return MailListArguments(
+            limit=_integer(payload.get("limit"), "limit", default=10),
+            requires_reply=_boolean(
+                payload.get("requires_reply"), "requires_reply", default=False
+            ),
+        )
+    if kind is ConversationOperationType.MAIL_SHOW:
+        return MailShowArguments(message_id=_strings(payload.get("message_id"), "message_id"))
+    if kind is ConversationOperationType.MAIL_THREAD:
+        return MailThreadArguments(thread_id=_strings(payload.get("thread_id"), "thread_id"))
+    if kind is ConversationOperationType.MAIL_REPLY_DRAFT:
+        return MailReplyDraftArguments(
+            message_id=_strings(payload.get("message_id"), "message_id"),
+            body_text=_optional_strings(payload.get("body_text"), "body_text"),
+            context_query=_optional_strings(payload.get("context_query"), "context_query"),
+        )
+    if kind is ConversationOperationType.MAIL_PREPARE_REPLY_SEND:
+        return MailPrepareReplySendArguments(
+            draft_id=_optional_strings(payload.get("draft_id"), "draft_id"),
+            message_id=_optional_strings(payload.get("message_id"), "message_id"),
+        )
+    if kind is ConversationOperationType.MAIL_RECONCILE_SEND:
+        return MailReconcileSendArguments(
+            action_id=_optional_strings(payload.get("action_id"), "action_id")
+        )
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
 
 
@@ -718,6 +913,14 @@ __all__ = [
     "ConversationPlan",
     "ConversationPlanMode",
     "KnowledgeAskArguments",
+    "MailListArguments",
+    "MailPrepareReplySendArguments",
+    "MailReconcileSendArguments",
+    "MailReplyDraftArguments",
+    "MailShowArguments",
+    "MailStatusArguments",
+    "MailSyncArguments",
+    "MailThreadArguments",
     "NotificationListArguments",
     "NotificationReadArguments",
     "PlanApplyProposalArguments",

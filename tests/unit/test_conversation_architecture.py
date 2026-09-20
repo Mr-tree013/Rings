@@ -32,7 +32,14 @@ CONVERSATION_APPLICATION = (
     "application/conversation_render.py",
     "application/conversation_capabilities/registry.py",
     "application/conversation_capabilities/handlers.py",
+    "application/conversation_external_review.py",
 )
+
+MODEL_FACING_APPLICATION = tuple(
+    module for module in CONVERSATION_APPLICATION
+    if module != "application/conversation_external_review.py"
+)
+"""Everything the model's plan flows through — and not the controller that settles a review."""
 
 FORBIDDEN_EVERYWHERE = (
     "sqlite3",
@@ -59,22 +66,29 @@ FORBIDDEN_IN_APPLICATION = (
     "assistant.application.approval_service",
     "assistant.application.action_service",
     "assistant.application.action_execution",
-    "assistant.application.mail_send_actions",
     "assistant.application.ehall_certificate",
 )
+"""What the model-facing conversation path may not reach.
+
+The mail-send *preparation* service is allowed from Phase 10B on: it creates an immutable action
+and stops. The approval and execution services are not, from anywhere in the model-facing path.
+"""
 
 FORBIDDEN_NAMES = (
     "ApprovalService",
     "ActionExecutionService",
-    "ActionService",
     "ActionExecutor",
-    "MailSendActionService",
     "EHallCertificateService",
     "ModelTool",
     "ToolExecutor",
     "AgentToolLoop",
     "FunctionCallingExecutor",
 )
+"""The authorities the model-facing path may not name.
+
+`MailSendActionService` is deliberately absent from this list: preparing an immutable action is
+what Phase 10B adds to the model's reach, and it stops there (ADR-0034 §5-6).
+"""
 
 
 def _read(relative: str) -> str:
@@ -105,7 +119,7 @@ def test_the_conversation_domain_is_pure() -> None:
 
 
 def test_the_conversation_application_reaches_no_concrete_technology() -> None:
-    for relative in CONVERSATION_APPLICATION:
+    for relative in MODEL_FACING_APPLICATION:
         modules = _imported_modules(relative)
         for prefix in FORBIDDEN_IN_APPLICATION:
             offending = sorted(
@@ -117,14 +131,68 @@ def test_the_conversation_application_reaches_no_concrete_technology() -> None:
 
 
 def test_no_conversation_module_can_name_an_approval_or_executor() -> None:
-    for relative in (*CONVERSATION_DOMAIN, *CONVERSATION_APPLICATION):
+    """The model-facing path may not name the approval or execution machinery at all.
+
+    The one exception is the deterministic controller, whose entire job is to settle a review; the
+    next test pins what *it* is forbidden to depend on instead.
+    """
+    for relative in (*CONVERSATION_DOMAIN, *MODEL_FACING_APPLICATION):
         text = _read(relative)
         for name in FORBIDDEN_NAMES:
             assert name not in text, f"{relative} names {name}"
 
 
+def test_the_external_controller_has_no_model_in_its_graph() -> None:
+    """ADR-0034 §20: the thing that can send mail cannot talk to a model."""
+    relative = "application/conversation_external_review.py"
+    modules = _imported_modules(relative)
+
+    for forbidden in (
+        "assistant.ports.model",
+        "assistant.adapters.model",
+        "assistant.application.conversation_interpreter",
+        "assistant.application.conversation_prompt",
+        "assistant.application.structured_model",
+        "assistant.application.structured_model",
+        "assistant.store",
+        "assistant.adapters",
+    ):
+        assert forbidden not in modules, f"{relative} imports {forbidden}"
+
+    tree = ast.parse(_read(relative), filename=relative)
+    identifiers = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    } | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    for name in ("ModelPort", "ModelRequest", "ModelMessage", "ModelResponse", "instructions"):
+        assert name not in identifiers, f"{relative} uses {name}"
+
+
+def test_the_external_controller_may_only_reach_approval_and_execution() -> None:
+    """The controller's whole purpose is settlement, so its imports are pinned to that."""
+    modules = _imported_modules("application/conversation_external_review.py")
+    application_imports = sorted(
+        module for module in modules if module.startswith("assistant.application")
+    )
+
+    assert application_imports == [
+        "assistant.application.action_execution",
+        "assistant.application.approval_service",
+        "assistant.application.mail_send_status",
+    ]
+
+
+def test_the_model_facing_path_cannot_reach_the_controller() -> None:
+    """The interpreter and the capability handlers never import the approval controller."""
+    for relative in MODEL_FACING_APPLICATION:
+        if relative == "application/conversation_service.py":
+            continue  # the service routes a human sentence to it, and nothing else does
+        assert (
+            "conversation_external_review" not in _imported_modules(relative)
+        ), relative
+
+
 def test_no_dynamic_execution_or_reflection_based_dispatch() -> None:
-    for relative in CONVERSATION_APPLICATION:
+    for relative in MODEL_FACING_APPLICATION:
         tree = ast.parse(_read(relative), filename=relative)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -176,5 +244,6 @@ def test_the_migration_set_is_pinned_through_the_conversation_migration() -> Non
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0016_conversations.sql"
-    assert len([name for name in names if name.startswith("0016")]) == 1
+    assert names[-1] == "0017_conversation_external_reviews.sql"
+    assert len([name for name in names if name.startswith("0017")]) == 1
+    assert "0018" not in "".join(names)

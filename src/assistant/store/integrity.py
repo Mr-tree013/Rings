@@ -168,6 +168,29 @@ def _conversation_section(connection: sqlite3.Connection) -> IntegritySection:
         "LEFT JOIN conversation_turns AS t ON t.id = o.turn_id WHERE t.id IS NULL"
     ).fetchall():
         critical.append(f"conversation operation {row['operation_id']} has no turn")
+    # Conversational external reviews (Phase 10B): a review is a pointer to one exact action, so
+    # every link in that chain has to still hold.
+    for row in connection.execute(
+        "SELECT r.id AS review_id FROM conversation_external_reviews AS r "
+        "LEFT JOIN conversation_operations AS o ON o.id = r.conversation_operation_id "
+        "LEFT JOIN conversation_turns AS t ON t.id = o.turn_id "
+        "WHERE o.id IS NULL OR t.id IS NULL OR t.thread_id <> r.thread_id"
+    ).fetchall():
+        critical.append(f"conversation review {row['review_id']} does not belong to its thread")
+    for row in connection.execute(
+        "SELECT r.id AS review_id FROM conversation_external_reviews AS r "
+        "LEFT JOIN action_requests AS a ON a.id = r.action_request_id "
+        "WHERE a.id IS NULL OR a.action_type <> r.action_type "
+        "OR a.fingerprint <> r.action_fingerprint"
+    ).fetchall():
+        critical.append(f"conversation review {row['review_id']} does not match its action")
+    for row in connection.execute(
+        "SELECT r.id AS review_id FROM conversation_external_reviews AS r "
+        "LEFT JOIN execution_runs AS e ON e.id = r.execution_run_id "
+        "WHERE r.execution_run_id IS NOT NULL "
+        "AND (e.id IS NULL OR e.action_id <> r.action_request_id)"
+    ).fetchall():
+        critical.append(f"conversation review {row['review_id']} names another action's run")
     if critical:
         return IntegritySection(
             "conversation",

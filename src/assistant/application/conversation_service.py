@@ -32,6 +32,11 @@ from assistant.application.conversation_capabilities.registry import (
     OperationResult,
 )
 from assistant.application.conversation_context import ConversationContextBuilder
+from assistant.application.conversation_external_review import (
+    ConfirmationOutcome,
+    ConversationExternalReviewService,
+    PreparedReview,
+)
 from assistant.application.conversation_prompt import CONFIRM_PHRASES, REJECT_PHRASES
 from assistant.domain.conversation import (
     CONFIRMATION_TTL_MINUTES,
@@ -53,6 +58,12 @@ from assistant.domain.conversation_plan import (
     ConversationPlanMode,
     PlannedOperation,
 )
+from assistant.domain.conversation_review import (
+    ConversationExternalReview,
+    ConversationExternalReviewStatus,
+    matches_send_cancellation,
+    matches_send_confirmation,
+)
 from assistant.domain.errors import (
     ConversationCapabilityUnavailable,
     ConversationThreadNotFound,
@@ -65,6 +76,9 @@ from assistant.ports.conversation_repository import ConversationRepository
 
 CONFIRMATION_INTERPRETER_VERSION = "deterministic-confirmation-v1"
 """Recorded on a turn the confirmation vocabulary answered, so no model call is implied."""
+
+EXTERNAL_CONFIRMATION_INTERPRETER_VERSION = "deterministic-external-confirmation-v1"
+"""Recorded on a turn that settled a reviewed external action without a model call."""
 
 CONFIRMATION_INTENT_CONFIRM = "confirm"
 CONFIRMATION_INTENT_REJECT = "reject"
@@ -96,6 +110,7 @@ class ConversationService:
         clock: Clock,
         planning_timezone: str | None = None,
         confirmation_ttl: timedelta | None = None,
+        external: ConversationExternalReviewService | None = None,
     ) -> None:
         self._repository = repository
         self._interpreter = interpreter
@@ -106,6 +121,7 @@ class ConversationService:
         self._confirmation_ttl = confirmation_ttl or timedelta(
             minutes=CONFIRMATION_TTL_MINUTES
         )
+        self._external = external
 
     # ------------------------------------------------------------------ session surface
 
@@ -208,6 +224,33 @@ class ConversationService:
 
     # ------------------------------------------------------------------------- the turn
 
+    async def pending_external_preview(self, thread_id: ConversationThreadId) -> str | None:
+        """A waiting reviewed send, re-rendered from its immutable payload (ADR-0034 §17).
+
+        Called when a session starts. It never executes anything: the point is that a human sees
+        the exact bytes again before deciding.
+        """
+        if self._external is None:
+            return None
+        await self._external.expire_due(thread_id)
+        reviews = await self._external.waiting(thread_id)
+        if not reviews:
+            return None
+        payload = await self._external.payload_of(reviews[0])
+        if payload is None:
+            return render.render_review_stale()
+        return "\n".join(
+            (render.render_review_pending_notice(), render.render_mail_send_preview(payload))
+        )
+
+    async def waiting_external_reviews(
+        self, thread_id: ConversationThreadId
+    ) -> tuple[ConversationExternalReview, ...]:
+        """The live reviews of one thread, without settling anything."""
+        if self._external is None:
+            return ()
+        return tuple(await self._external.waiting(thread_id))
+
     async def send(self, thread_id: ConversationThreadId, text: str) -> ConversationReply:
         """Record one user message and do whatever the runtime is allowed to do about it."""
         thread = await self._repository.get_thread(thread_id)
@@ -224,6 +267,24 @@ class ConversationService:
                 created_at=now,
             )
         )
+        if self._external is not None:
+            # An external review is settled before anything is interpreted, and only by the words
+            # the human actually typed (ADR-0034 §11, §23). A generic "可以" is not one of them.
+            reviews = await self._external.waiting(thread.id)
+            if reviews and matches_send_confirmation(text):
+                return await self._settle_external(thread, user_message.id, reviews)
+            if reviews and matches_send_cancellation(text):
+                for review in reviews:
+                    await self._external.cancel(review)
+                return await self._finish(
+                    thread,
+                    await self._control_turn(thread, user_message.id),
+                    ConversationTurnStatus.COMPLETED,
+                    render.render_review_withdrawn(),
+                )
+            # Only once the deterministically handled phrases are out of the way is an expired
+            # review closed, so "确认发送" after the window answered, never a model call.
+            await self._external.expire_due(thread.id)
         pending = await self._repository.operations_waiting_for_confirmation(thread.id)
         intent = _confirmation_intent(text)
         if pending and intent is not None:
@@ -236,6 +297,8 @@ class ConversationService:
     async def _interpret_and_run(
         self, thread: ConversationThread, user_message_id: ConversationMessageId, text: str
     ) -> ConversationReply:
+
+
         context = await self._context_builder.build(
             thread.id,
             confirmation_pending=bool(
@@ -334,6 +397,37 @@ class ConversationService:
                 )
             if outcome.result is not None:
                 results.append(outcome.result)
+            if (
+                planned.operation_type
+                is ConversationOperationType.MAIL_PREPARE_REPLY_SEND
+                and outcome.result is not None
+                and outcome.operation is not None
+            ):
+                prepared = await self._open_external_review(
+                    thread, outcome.operation, outcome.result.ref
+                )
+                if prepared is not None:
+                    # The user is shown the payload, not a summary of it (ADR-0034 §7-8).
+                    text_out = "\n".join(
+                        part
+                        for part in (
+                            render.render_results(
+                                results[:-1], timezone=self._planning_timezone
+                            ),
+                            render.render_mail_send_preview(prepared.payload),
+                        )
+                        if part
+                    )
+                    return await self._finish(
+                        thread,
+                        turn,
+                        ConversationTurnStatus.COMPLETED,
+                        text_out,
+                        operation_types=tuple(operation_types),
+                    )
+            if planned.operation_type is ConversationOperationType.MAIL_REPLY_DRAFT:
+                # A draft that moved on invalidates the review that was showing the old text.
+                await self._supersede_waiting_reviews(thread)
             if (
                 planned.operation_type is ConversationOperationType.PLAN_PROPOSE_WEEK
                 and outcome.result is not None
@@ -462,6 +556,79 @@ class ConversationService:
             operation_types=(operation.operation_type.value,),
         )
 
+    # ------------------------------------------------------- external action settlement
+
+    async def _control_turn(
+        self, thread: ConversationThread, user_message_id: ConversationMessageId
+    ) -> ConversationTurn:
+        """The turn row for a message no model interpreted."""
+        context = await self._context_builder.build(thread.id, confirmation_pending=True)
+        return await self._repository.add_turn(
+            ConversationTurn(
+                thread_id=thread.id,
+                user_message_id=user_message_id,
+                interpreter_version=EXTERNAL_CONFIRMATION_INTERPRETER_VERSION,
+                context_fingerprint=_fingerprint(context.to_json()),
+                created_at=self._clock.now(),
+            )
+        )
+
+    async def _settle_external(
+        self,
+        thread: ConversationThread,
+        user_message_id: ConversationMessageId,
+        reviews: Sequence[ConversationExternalReview],
+    ) -> ConversationReply:
+        """Handle one explicit send confirmation: deterministic, no model, no guessing."""
+        turn = await self._control_turn(thread, user_message_id)
+        external = self._external
+        if external is None:  # pragma: no cover - the caller only routes here when it exists
+            return await self._finish(
+                thread, turn, ConversationTurnStatus.FAILED, render.render_empty_turn()
+            )
+        if len(reviews) > 1:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_review_ambiguous(len(reviews)),
+            )
+        outcome = await external.confirm(reviews[0])
+        return await self._finish(
+            thread, turn, ConversationTurnStatus.COMPLETED, _settlement_text(outcome)
+        )
+
+    async def _open_external_review(
+        self,
+        thread: ConversationThread,
+        operation: ConversationOperation,
+        action_reference: str | None,
+    ) -> PreparedReview | None:
+        """Freeze one prepared action for review, and remember the pointer to it."""
+        if self._external is None or action_reference is None:
+            return None
+        from uuid import UUID
+
+        try:
+            action_id = UUID(action_reference)
+        except ValueError:  # pragma: no cover - the handler always returns its own action id
+            return None
+        try:
+            return await self._external.open(
+                thread_id=thread.id, operation_id=operation.id, action_id=action_id
+            )
+        except DomainError:
+            # The action is gone or no longer reviewed: the operation itself already succeeded, and
+            # the user is told about the review failure rather than shown a broken preview.
+            return None
+
+    async def _supersede_waiting_reviews(self, thread: ConversationThread) -> None:
+        """Mark every waiting review of a thread stale, because what it reviewed changed."""
+        if self._external is None:
+            return
+        for review in await self._external.waiting(thread.id):
+            await self._external.supersede(review)
+
     # ------------------------------------------------------------------- execution fence
 
     async def _store_operation(
@@ -493,7 +660,10 @@ class ConversationService:
         stored = await self._store_operation(
             turn, ordinal, planned, status=ConversationOperationStatus.PROPOSED
         )
-        return await self._execute_existing(turn, stored)
+        outcome = await self._execute_existing(turn, stored)
+        return _Execution(
+            result=outcome.result, failure=outcome.failure, operation=stored
+        )
 
     async def _execute_existing(
         self, turn: ConversationTurn, operation: ConversationOperation
@@ -594,12 +764,27 @@ class _Execution:
 
     result: OperationResult | None
     failure: str | None
+    operation: ConversationOperation | None = None
 
 
 def _apply_arguments(proposal_id: str) -> ConversationOperationArguments:
     from assistant.domain.conversation_plan import PlanApplyProposalArguments
 
     return PlanApplyProposalArguments(proposal_id=proposal_id)
+
+
+def _settlement_text(outcome: ConfirmationOutcome) -> str:
+    """One settled review, in the words the user needs (ADR-0034 §19)."""
+    status = outcome.review.status
+    if status is ConversationExternalReviewStatus.SUCCEEDED:
+        return render.render_send_result("succeeded")
+    if status is ConversationExternalReviewStatus.UNKNOWN:
+        return render.render_send_result("unknown")
+    if status is ConversationExternalReviewStatus.FAILED:
+        return render.render_send_result("failed", outcome.failure_reason)
+    if status is ConversationExternalReviewStatus.EXPIRED:
+        return render.render_review_expired()
+    return render.render_review_stale(outcome.failure_reason)
 
 
 def _replace_operation(

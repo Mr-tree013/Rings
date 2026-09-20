@@ -554,6 +554,20 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
 - 本地写入必须先落 `APPLYING`，中断即 `UNKNOWN_LOCAL`，永不自动重放；对话日志不记录原始
   消息文本。
 
+### 6.2 对话式外部动作规则（Phase 10B，ADR-0034）
+
+- 模型只能"准备"外部动作：`mail.reply_draft` / `mail.prepare_reply_send`。`mail.send`、
+  `approval.*`、`action.execute`、`execution.*` **不得**进入模型能力表。
+- 审批链保持不变：`ActionRequest → Approval → ExecutionRun`；对话只是它的前端。
+- 预览必须由 `ActionRequest` payload 渲染；不得让模型总结"将要发送什么"。
+- 只有**人的原始消息**能触发确定性发送解析；`可以 / 好 / ok` 不是发送确认（那是本地计划的语汇）。
+- challenge 明文只在一次确定性调用中存在：不落库、不进模型、不返回给调用方。
+- `ConversationExternalReviewService` 不得依赖 `ModelPort` / interpreter / prompt；
+  `ConversationInterpreter` 与 capability handler 不得依赖 approval / execution service。
+- 任一 payload 变化（收件人、主题、正文、回复元数据、draft 版本）必须让 review 变 STALE，
+  并重新准备一个新的 `ActionRequest`；旧指纹永不授权新内容。
+- SMTP `UNKNOWN` 不自动重试；重启不自动执行；eHall 仍不在对话能力内。
+
 **Phase 1 已完成（v0.1.0）**：durable event core。包括 SQLite 持久层与迁移系统
 （`store/db.py`、`store/migrations.py`、`store/events.py`）、`InboundEvent` 领域模型与
 状态机、数据库级去重、async repository 边界（ADR-0009）、`EventInbox` 幂等摄取入口、

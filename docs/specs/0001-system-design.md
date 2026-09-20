@@ -102,6 +102,34 @@ ConversationCapabilityRegistry —— 代码拥有的 confirmation policy
 - 对话历史是 durable 的，但不会自动变成 `ConfirmedFact`，也不替代 Roots / Facts。
 - 本地写入先持久化 `APPLYING`，中断则成为 `UNKNOWN_LOCAL`，绝不自动重放。
 
+### 4.2 对话式外部动作（Phase 10B，ADR-0034）
+
+发邮件是唯一一种能从对话里触发的**外部**副作用，而它仍然完全走既有边界：
+
+```text
+用户一句话
+      ↓
+ConversationInterpreter → mail.reply_draft / mail.prepare_reply_send
+      ↓  （既有 MailDraftService → MailSendActionService）
+immutable ActionRequest（mail.send）
+      ↓
+conversation_external_reviews：指向该 action 的 id / type / fingerprint，30 分钟有效
+      ↓  用户下一条消息是明确发送语（确认发送 / 发送 / 发吧 / confirm send）
+ConversationExternalReviewService（确定性，无 ModelPort）
+      ↓  issue challenge → create Approval → execute
+ExecutionRun（既有）
+```
+
+硬性约束：
+
+- 预览必须由 `ActionRequest` 的 payload 渲染，模型不参与撰写预览；
+- 首轮只能说"准备"：即使说"直接发"，也只会得到预览；
+- 通用确认语（可以 / 好 / ok）**不能**发送邮件，只对本地计划有效；
+- challenge 明文只在一次确定性调用里存在，不落库、不进模型；
+- payload / 收件人 / 主题 / 正文 / 回复元数据任一变化都会让 review 变成 STALE，必须重新准备；
+- `mail.send` 不在模型能力表里；`approval.*`、`action.execute`、`execution.*` 同样不存在；
+- SMTP `UNKNOWN` 永不自动重试；重启不会自动执行已审批或未知的动作。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）

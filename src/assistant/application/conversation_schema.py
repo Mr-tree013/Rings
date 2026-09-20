@@ -172,6 +172,68 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         },
         ("question", "root_id"),
     ),
+    _operation(
+        "mail.status",
+        "Summarise the mailbox: stored messages, what is waiting for a reply, prepared sends.",
+    ),
+    _operation(
+        "mail.sync",
+        "Receive new mail once (IMAP read-only, stored locally). Omit account_id "
+        "for every account.",
+        {"account_id": {"type": ["string", "null"], "maxLength": 200}},
+        ("account_id",),
+    ),
+    _operation(
+        "mail.list",
+        "List recent stored messages. Use this before referring to a message.",
+        {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 25},
+            "requires_reply": {"type": "boolean"},
+        },
+        ("limit", "requires_reply"),
+    ),
+    _operation(
+        "mail.show",
+        "Show one stored message, by an id from recent_entities.",
+        {"message_id": {"type": "string", "minLength": 1, "maxLength": 200}},
+        ("message_id",),
+    ),
+    _operation(
+        "mail.thread",
+        "Show one stored thread and its messages, by an id from recent_entities.",
+        {"thread_id": {"type": "string", "minLength": 1, "maxLength": 200}},
+        ("thread_id",),
+    ),
+    _operation(
+        "mail.reply_draft",
+        "Draft a reply to one stored message with the existing reply-draft service. Put what the "
+        "user asked to say in `body_text`; leave it null to let the drafting service compose it.",
+        {
+            "message_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            "body_text": {"type": ["string", "null"], "maxLength": _MAX_TEXT_CHARS},
+            "context_query": {"type": ["string", "null"], "maxLength": _MAX_TEXT_CHARS},
+        },
+        ("message_id", "body_text", "context_query"),
+    ),
+    _operation(
+        "mail.prepare_reply_send",
+        "Freeze one reply draft into an immutable mail.send action and show the user the exact "
+        "preview. This prepares only: it never approves and never sends, and the user must confirm "
+        "afterwards with an explicit send phrase. Use draft_id when a draft id is in "
+        "recent_entities, otherwise the message_id you drafted the reply to.",
+        {
+            "draft_id": {"type": ["string", "null"], "maxLength": 200},
+            "message_id": {"type": ["string", "null"], "maxLength": 200},
+        },
+        ("draft_id", "message_id"),
+    ),
+    _operation(
+        "mail.reconcile_send",
+        "Check the Sent mailbox for one prepared message whose delivery is unknown. Omit "
+        "action_id for the most recent prepared send.",
+        {"action_id": {"type": ["string", "null"], "maxLength": 200}},
+        ("action_id",),
+    ),
 )
 
 CONVERSATION_SCHEMA_V1: JsonSchemaOutput = JsonSchemaOutput(

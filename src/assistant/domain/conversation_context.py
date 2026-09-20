@@ -38,6 +38,9 @@ class ConversationEntityKind(StrEnum):
     PROPOSAL = "proposal"
     CALENDAR_EVENT = "calendar_event"
     NOTIFICATION = "notification"
+    MAIL_MESSAGE = "mail_message"
+    MAIL_THREAD = "mail_thread"
+    MAIL_DRAFT = "mail_draft"
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 from assistant.application.calendar_service import CalendarService, CreateCalendarEvent
+from assistant.application.case_service import CaseService
 from assistant.application.conversation_capabilities.registry import (
     ConfirmationPolicy,
     ConversationCapability,
@@ -23,6 +24,11 @@ from assistant.application.conversation_capabilities.registry import (
     OperationResult,
 )
 from assistant.application.grounded_answer import GroundedAnswerService
+from assistant.application.mail_drafts import MailDraftService
+from assistant.application.mail_send_actions import MailSendActionService
+from assistant.application.mail_send_reconciliation import MailSendReconciliationService
+from assistant.application.mail_send_status import MailDeliveryState, MailSendStatusService
+from assistant.application.mail_sync import MailSyncService
 from assistant.application.planner_service import PlannerService
 from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.work_service import WorkService
@@ -32,6 +38,14 @@ from assistant.domain.conversation_plan import (
     ConversationOperationArguments,
     ConversationOperationType,
     KnowledgeAskArguments,
+    MailListArguments,
+    MailPrepareReplySendArguments,
+    MailReconcileSendArguments,
+    MailReplyDraftArguments,
+    MailShowArguments,
+    MailStatusArguments,
+    MailSyncArguments,
+    MailThreadArguments,
     NotificationListArguments,
     NotificationReadArguments,
     PlanApplyProposalArguments,
@@ -48,8 +62,12 @@ from assistant.domain.conversation_plan import (
     WorkRecordArguments,
 )
 from assistant.domain.deadline import Deadline
+from assistant.domain.errors import ConversationCapabilityUnavailable
 from assistant.domain.grounded_answer import KnowledgeEvidence
 from assistant.domain.knowledge import SourceSpanKind
+from assistant.domain.mail import MailMessage
+from assistant.domain.mail_analysis import MailAnalysis
+from assistant.domain.mail_draft import MailDraft
 from assistant.domain.planning import (
     PlanProposalDetail,
     PlanProposalStatus,
@@ -58,6 +76,9 @@ from assistant.domain.planning import (
 from assistant.domain.task import Task, TaskId, TaskStatus
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
+from assistant.ports.mail_draft_repository import MailDraftRepository
+from assistant.ports.mail_intelligence_repository import MailIntelligenceRepository
+from assistant.ports.mail_repository import MailRepository
 from assistant.ports.scheduler_repository import SchedulerRepository
 
 CALENDAR_LIST_LIMIT = 60
@@ -65,6 +86,15 @@ CALENDAR_LIST_LIMIT = 60
 
 NOTIFICATION_LIST_LIMIT = 20
 """How many notifications one `notification.list` answer may carry."""
+
+MAIL_LIST_LIMIT = 25
+"""How many messages one `mail.list` answer may carry."""
+
+MAIL_BODY_EXCERPT_CHARS = 1200
+"""How much of one message body `mail.show` may quote back to the user."""
+
+MAIL_THREAD_LIMIT = 20
+"""How many messages of one thread `mail.thread` may carry."""
 
 
 class ConversationHandlers:
@@ -81,6 +111,15 @@ class ConversationHandlers:
         knowledge: GroundedAnswerService,
         commitments: CommitmentRepository,
         clock: Clock,
+        mail: MailRepository | None = None,
+        mail_intelligence: MailIntelligenceRepository | None = None,
+        mail_sync: MailSyncService | None = None,
+        mail_drafts: MailDraftService | None = None,
+        mail_sends: MailSendActionService | None = None,
+        mail_send_status: MailSendStatusService | None = None,
+        mail_reconciliation: MailSendReconciliationService | None = None,
+        cases: CaseService | None = None,
+        mail_drafts_repository: MailDraftRepository | None = None,
         knowledge_limit: int = 8,
     ) -> None:
         self._tasks = tasks
@@ -91,6 +130,15 @@ class ConversationHandlers:
         self._knowledge = knowledge
         self._commitments = commitments
         self._clock = clock
+        self._mail = mail
+        self._mail_intelligence = mail_intelligence
+        self._mail_sync = mail_sync
+        self._mail_drafts = mail_drafts
+        self._mail_sends = mail_sends
+        self._mail_send_status = mail_send_status
+        self._mail_reconciliation = mail_reconciliation
+        self._cases = cases
+        self._mail_drafts_repository = mail_drafts_repository
         self._knowledge_limit = knowledge_limit
 
     # ------------------------------------------------------------------------- reads
@@ -236,6 +284,240 @@ class ConversationHandlers:
                 ),
             },
         )
+
+    # --------------------------------------------------------------------------- mail
+
+    async def mail_status(self, arguments: ConversationOperationArguments) -> OperationResult:
+        _expect(MailStatusArguments, arguments)
+        mail, intelligence, sends = self._require_mail()
+        stored = await mail.count_messages()
+        statuses = await sends.list_statuses(limit=MAIL_LIST_LIMIT)
+        unresolved = [
+            status
+            for status in statuses
+            if status.state is MailDeliveryState.SENDING_UNKNOWN
+        ]
+        waiting = [
+            status
+            for status in statuses
+            if status.state in (MailDeliveryState.DRAFT, MailDeliveryState.APPROVED)
+        ]
+        needing_reply = 0
+        for message in await mail.list_messages(limit=MAIL_LIST_LIMIT):
+            analysis = await intelligence.get_analysis(message.id)
+            if analysis is not None and analysis.requires_reply:
+                needing_reply += 1
+        return OperationResult(
+            kind="mail_status",
+            data={
+                "stored_messages": stored,
+                "requires_reply": needing_reply,
+                "waiting_sends": len(waiting),
+                "unresolved_sends": len(unresolved),
+            },
+        )
+
+    async def mail_sync(self, arguments: ConversationOperationArguments) -> OperationResult:
+        synced = _expect(MailSyncArguments, arguments)
+        service = self._mail_sync
+        if service is None:
+            raise ConversationCapabilityUnavailable(
+                "no mail account is configured, so there is nothing to receive"
+            )
+        result = await service.sync_once(synced.account_id)
+        return OperationResult(
+            kind="mail_synced",
+            data={
+                "accounts": [
+                    {
+                        "account_id": account.account_id,
+                        "status": account.status.value,
+                        "new_messages": account.new_messages,
+                        "matched_existing": account.matched_existing,
+                    }
+                    for account in result.accounts
+                ]
+            },
+        )
+
+    async def mail_list(self, arguments: ConversationOperationArguments) -> OperationResult:
+        listed = _expect(MailListArguments, arguments)
+        mail, intelligence, _ = self._require_mail()
+        messages = await mail.list_messages(limit=min(listed.limit, MAIL_LIST_LIMIT))
+        payload: list[dict[str, object]] = []
+        for message in messages:
+            analysis = await intelligence.get_analysis(message.id)
+            if listed.requires_reply and not (
+                analysis is not None and analysis.requires_reply
+            ):
+                continue
+            payload.append(_mail_message_payload(message, analysis))
+        return OperationResult(
+            kind="mail_messages",
+            data={"messages": payload, "requires_reply_filter": listed.requires_reply},
+        )
+
+    async def mail_show(self, arguments: ConversationOperationArguments) -> OperationResult:
+        shown = _expect(MailShowArguments, arguments)
+        mail, intelligence, _ = self._require_mail()
+        message_id = await mail.resolve_message_id(shown.message_id)
+        message = await mail.get_message(message_id)
+        if message is None:  # pragma: no cover - resolution just found it
+            from assistant.domain.errors import MailMessageNotFound
+
+            raise MailMessageNotFound(message_id)
+        analysis = await intelligence.get_analysis(message.id)
+        body = message.body_text or ""
+        truncated = len(body) > MAIL_BODY_EXCERPT_CHARS
+        return OperationResult(
+            kind="mail_message",
+            ref=str(message.id),
+            data={
+                **_mail_message_payload(message, analysis),
+                "body": body[:MAIL_BODY_EXCERPT_CHARS].strip(),
+                "body_truncated": truncated,
+                "body_available": message.body_status.value == "available",
+            },
+        )
+
+    async def mail_thread(self, arguments: ConversationOperationArguments) -> OperationResult:
+        asked = _expect(MailThreadArguments, arguments)
+        _, intelligence, _ = self._require_mail()
+        thread_id = await intelligence.resolve_thread_id(asked.thread_id)
+        messages = await intelligence.list_thread_messages(thread_id)
+        payload: list[dict[str, object]] = []
+        for message in messages[:MAIL_THREAD_LIMIT]:
+            analysis = await intelligence.get_analysis(message.id)
+            payload.append(_mail_message_payload(message, analysis))
+        return OperationResult(
+            kind="mail_thread",
+            ref=str(thread_id),
+            data={"thread_id": str(thread_id), "messages": payload},
+        )
+
+    async def mail_reply_draft(self, arguments: ConversationOperationArguments) -> OperationResult:
+        asked = _expect(MailReplyDraftArguments, arguments)
+        mail, _, _ = self._require_mail()
+        drafts = self._require_drafts()
+        message_id = await mail.resolve_message_id(asked.message_id)
+        result = await drafts.create_reply_draft(
+            message_id, context_query=asked.context_query
+        )
+        draft = result.draft
+        if asked.body_text is not None and asked.body_text.strip() != draft.body_text.strip():
+            # The user said what to write ("说我周五之前交"): the durable draft carries exactly
+            # that, through the existing edit path, as a new draft version.
+            draft = await drafts.edit_draft(draft.id, body=asked.body_text)
+        return OperationResult(
+            kind="mail_draft",
+            ref=str(draft.id),
+            data={
+                "draft_id": str(draft.id),
+                "version": draft.version,
+                "subject": draft.subject,
+                "to_addresses": list(draft.to_addresses),
+                "body": draft.body_text,
+                "needs_user_input": list(draft.needs_user_input),
+                "reply_to_message_id": str(draft.reply_to_message_id),
+            },
+        )
+
+    async def mail_prepare_reply_send(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        asked = _expect(MailPrepareReplySendArguments, arguments)
+        sends = self._mail_sends
+        cases = self._cases
+        if sends is None or cases is None:
+            raise ConversationCapabilityUnavailable(
+                "sending needs a configured mail account and an outbound credential"
+            )
+        draft = await self._resolve_draft_for_prepare(asked)
+        case = await cases.create_case(f"Reply: {draft.subject}"[:120])
+        preparation = await sends.prepare_send(draft.id, case.id)
+        payload = preparation.payload
+        return OperationResult(
+            kind="mail_prepared",
+            ref=str(preparation.action.id),
+            data={
+                "action_id": str(preparation.action.id),
+                "case_id": str(case.id),
+                "draft_id": str(draft.id),
+                "draft_version": payload.draft_version,
+                "account_id": payload.account_id,
+                "from_address": payload.from_address,
+                "to_addresses": list(payload.to_addresses),
+                "subject": payload.subject,
+                "body_text": payload.body_text,
+                "in_reply_to_header": payload.in_reply_to_header,
+                "references": list(payload.references),
+                "rfc_message_id": payload.rfc_message_id,
+            },
+        )
+
+    async def mail_reconcile_send(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        asked = _expect(MailReconcileSendArguments, arguments)
+        sends = self._mail_send_status
+        reconciliation = self._mail_reconciliation
+        if sends is None or reconciliation is None:
+            raise ConversationCapabilityUnavailable(
+                "reconciliation needs a configured mail account"
+            )
+        reference = asked.action_id
+        if reference is None:
+            statuses = await sends.list_statuses(limit=1)
+            if not statuses:
+                return OperationResult(kind="mail_reconciliation_absent", data={})
+            reference = str(statuses[0].action.id)
+        outcome = await reconciliation.reconcile(reference)
+        return OperationResult(
+            kind="mail_reconciled",
+            ref=str(outcome.reconciliation.action_id)
+            if outcome.reconciliation is not None
+            else reference,
+            data={
+                "result": outcome.result.value,
+                "already_sent": outcome.already_sent,
+                "resolved": outcome.resolved,
+            },
+        )
+
+    # ------------------------------------------------------------------------ mail support
+
+    async def _resolve_draft_for_prepare(
+        self, asked: MailPrepareReplySendArguments
+    ) -> MailDraft:
+        """Find the draft to freeze: by id, or the newest draft written for one message."""
+        drafts = self._require_drafts()
+        if asked.draft_id is not None:
+            return (await drafts.get_draft(asked.draft_id)).draft
+        message_id = str(asked.message_id)
+        matches = [
+            listing.draft
+            for listing in await drafts.list_drafts(limit=MAIL_LIST_LIMIT)
+            if str(listing.draft.reply_to_message_id) == message_id
+        ]
+        if not matches:
+            from assistant.domain.errors import MailDraftNotFound
+
+            raise MailDraftNotFound(f"no reply draft exists for message {message_id}")
+        return matches[0]
+
+    def _require_mail(
+        self,
+    ) -> tuple[MailRepository, MailIntelligenceRepository, MailSendStatusService]:
+        if self._mail is None or self._mail_intelligence is None or self._mail_send_status is None:
+            raise ConversationCapabilityUnavailable(
+                "this host has no mail storage configured"
+            )
+        return self._mail, self._mail_intelligence, self._mail_send_status
+
+    def _require_drafts(self) -> MailDraftService:
+        if self._mail_drafts is None:
+            raise ConversationCapabilityUnavailable("reply drafting is not available here")
+        return self._mail_drafts
 
     # ------------------------------------------------------------------------ writes
 
@@ -461,6 +743,34 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.notification_read,
         ),
+        (ConversationOperationType.MAIL_STATUS, ConfirmationPolicy.READ, handlers.mail_status),
+        (
+            ConversationOperationType.MAIL_LIST,
+            ConfirmationPolicy.READ,
+            handlers.mail_list,
+        ),
+        (ConversationOperationType.MAIL_SHOW, ConfirmationPolicy.READ, handlers.mail_show),
+        (
+            ConversationOperationType.MAIL_THREAD,
+            ConfirmationPolicy.READ,
+            handlers.mail_thread,
+        ),
+        (
+            ConversationOperationType.MAIL_RECONCILE_SEND,
+            ConfirmationPolicy.READ,
+            handlers.mail_reconcile_send,
+        ),
+        (ConversationOperationType.MAIL_SYNC, ConfirmationPolicy.LOCAL_WRITE, handlers.mail_sync),
+        (
+            ConversationOperationType.MAIL_REPLY_DRAFT,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.mail_reply_draft,
+        ),
+        (
+            ConversationOperationType.MAIL_PREPARE_REPLY_SEND,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.mail_prepare_reply_send,
+        ),
     )
     return ConversationCapabilityRegistry(
         ConversationCapability(operation_type=kind, policy=policy, handler=handler)
@@ -493,6 +803,29 @@ def _task_payload(
         "actual_seconds": actual_seconds,
         "description": task.description,
     }
+
+
+def _mail_message_payload(
+    message: MailMessage, analysis: MailAnalysis | None
+) -> dict[str, object]:
+    """One stored message as the conversation may quote it."""
+    return {
+        "message_id": str(message.id),
+        "account_id": message.account_id,
+        "subject": message.subject or "(no subject)",
+        "from_address": message.from_address,
+        "to_addresses": list(message.to_addresses),
+        "received_at": _received_at(message),
+        "requires_reply": analysis is not None and analysis.requires_reply,
+        "category": None if analysis is None else analysis.category.value,
+        "summary": None if analysis is None else analysis.summary,
+        "thread_id": None,
+    }
+
+
+def _received_at(message: MailMessage) -> str:
+    instant = message.sent_at or message.first_seen_at
+    return instant.isoformat()
 
 
 def _interval_payload(title: str, starts_at: datetime, ends_at: datetime) -> dict[str, object]:

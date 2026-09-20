@@ -158,8 +158,13 @@ async def test_a_pending_migration_is_reported_not_applied(runtime: RuntimeFixtu
     temporary = runtime.runtime.parent / "migrations"
     temporary.mkdir(exist_ok=True)
     for path in Path("migrations").glob("*.sql"):
-        (temporary / path.name).write_text("-- 0016 placeholder", encoding="utf-8")
-    (temporary / "0016_future.sql").write_text("SELECT 1;", encoding="utf-8")
+        (temporary / path.name).write_text("-- placeholder", encoding="utf-8")
+    # One migration the reviewed files contain and the database has not applied. Its version has to
+    # be *ahead* of every shipped one, or it collides with a file this build really ships.
+    latest = max(
+        int(path.name[:4]) for path in Path("migrations").glob("*.sql")
+    )
+    (temporary / f"{latest + 1:04d}_future.sql").write_text("SELECT 1;", encoding="utf-8")
     service = runtime.integrity_service()
     from assistant.adapters.ops.content_objects import RuntimeContentObjects
     from assistant.application.integrity_service import IntegrityService

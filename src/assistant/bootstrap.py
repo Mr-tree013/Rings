@@ -61,6 +61,9 @@ from assistant.application.conversation_capabilities import (
     build_phase_10a_registry,
 )
 from assistant.application.conversation_context import ConversationContextBuilder
+from assistant.application.conversation_external_review import (
+    ConversationExternalReviewService,
+)
 from assistant.application.conversation_interpreter import ConversationInterpreterService
 from assistant.application.conversation_service import ConversationService
 from assistant.application.ehall_certificate import EHallCertificateService
@@ -142,6 +145,7 @@ from assistant.store.backup import SqliteRuntimeBackup
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
+from assistant.store.conversation_reviews import SqliteConversationReviewRepository
 from assistant.store.conversations import SqliteConversationRepository
 from assistant.store.db import Database
 from assistant.store.events import SqliteEventRepository
@@ -1203,6 +1207,36 @@ def conversation_context_builder(
         scheduler_repository(database),
         clock,
         planning_timezone=_planning_timezone_of(config),
+        mail=mail_repository(database),
+        mail_intelligence=mail_intelligence_repository(database),
+        mail_drafts=mail_draft_repository(database),
+    )
+
+
+def conversation_review_repository(database: Database) -> SqliteConversationReviewRepository:
+    """Durable reviews of conversational external actions (ADR-0034)."""
+    return SqliteConversationReviewRepository(database)
+
+
+def conversation_external_review_service(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    executors: Mapping[ActionType, ActionExecutor] | None = None,
+) -> ConversationExternalReviewService:
+    """The deterministic controller that settles one reviewed external action.
+
+    It is built here, at the composition root, and handed to the conversation service as a whole
+    object: the model-facing path never constructs it and never reaches into it (ADR-0034 §20).
+    """
+    return ConversationExternalReviewService(
+        reviews=conversation_review_repository(database),
+        actions=action_repository(database),
+        approvals=approval_service(clock, database),
+        execution=action_execution_service(config, clock, database, executors=executors),
+        sends=mail_send_status_service(clock, database),
+        clock=clock,
     )
 
 
@@ -1225,17 +1259,31 @@ def conversation_capabilities(
     model: ModelPort,
 ) -> ConversationCapabilityRegistry:
     """The frozen Phase 10A capability set, over the existing application services."""
+    knowledge = grounded_context_builder(clock, database)
     handlers = ConversationHandlers(
         tasks=task_service(database, clock, config),
         calendar=calendar_service(database, clock, config),
         work=work_service(database, clock, config),
         planner=planner_service(database, clock, config),
         scheduler=scheduler_repository(database),
-        knowledge=grounded_answer_service(
-            grounded_context_builder(clock, database), config, model=model
-        ),
+        knowledge=grounded_answer_service(knowledge, config, model=model),
         commitments=commitment_repository(database),
         clock=clock,
+        mail=mail_repository(database),
+        mail_intelligence=mail_intelligence_repository(database),
+        mail_sync=(
+            mail_sync_service(config, clock, database)
+            if config is not None and config.mail.accounts
+            else None
+        ),
+        mail_drafts=mail_draft_writer(
+            config, clock, database, model=model, knowledge=knowledge
+        ),
+        mail_sends=mail_send_action_service(config, clock, database),
+        mail_send_status=mail_send_status_service(clock, database),
+        mail_reconciliation=mail_send_reconciliation_service(config, clock, database),
+        cases=case_service(clock, database),
+        mail_drafts_repository=mail_draft_repository(database),
     )
     return build_phase_10a_registry(handlers)
 
@@ -1246,6 +1294,7 @@ def conversation_service(
     config: AssistantConfig | None,
     *,
     model: ModelPort | None = None,
+    executors: Mapping[ActionType, ActionExecutor] | None = None,
 ) -> ConversationService:
     """The Tree conversation runtime — one service, used by `rings` and by `pw chat`.
 
@@ -1264,6 +1313,9 @@ def conversation_service(
         context_builder=conversation_context_builder(database, clock, config),
         clock=clock,
         planning_timezone=_planning_timezone_of(config),
+        external=conversation_external_review_service(
+            database, clock, config, executors=executors
+        ),
     )
 
 
@@ -1287,8 +1339,10 @@ __all__ = [
     "config_loader",
     "conversation_capabilities",
     "conversation_context_builder",
+    "conversation_external_review_service",
     "conversation_interpreter",
     "conversation_repository",
+    "conversation_review_repository",
     "conversation_service",
     "ehall_certificate_executor",
     "ehall_certificate_gateway",

@@ -113,8 +113,9 @@ Tree > Applied the proposal: 3 blocks created, 0 replaced.
 ```
 
 Tree handles local daily work in natural language: tasks, calendar, work sessions, weekly planning
-and questions about your indexed sources. External effects are **not** reachable from the
-conversation; they still go through the `pw` approval chain.
+and questions about your indexed sources. External effects are never the model's to perform: for
+mail, Tree drafts, shows the **exact bytes** that would be sent, and only your explicit
+confirmation sends it — the `pw` approval chain is still the mechanism behind it.
 
 | Entry point | What it is for |
 | --- | --- |

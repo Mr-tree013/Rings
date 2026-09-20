@@ -42,6 +42,10 @@ from assistant.domain.conversation_plan import (
     ConversationOperationType,
     ConversationPlan,
     ConversationPlanMode,
+    MailPrepareReplySendArguments,
+    MailReplyDraftArguments,
+    MailShowArguments,
+    MailThreadArguments,
     NotificationReadArguments,
     PlanApplyProposalArguments,
     PlannedOperation,
@@ -220,6 +224,9 @@ _REFERENCE_KINDS: dict[ConversationOperationType, ConversationEntityKind] = {
     ConversationOperationType.TASK_COMPLETE: ConversationEntityKind.TASK,
     ConversationOperationType.WORK_RECORD: ConversationEntityKind.TASK,
     ConversationOperationType.NOTIFICATION_READ: ConversationEntityKind.NOTIFICATION,
+    ConversationOperationType.MAIL_SHOW: ConversationEntityKind.MAIL_MESSAGE,
+    ConversationOperationType.MAIL_REPLY_DRAFT: ConversationEntityKind.MAIL_MESSAGE,
+    ConversationOperationType.MAIL_THREAD: ConversationEntityKind.MAIL_THREAD,
 }
 """Which entity kind each operation may reference, and what it must have seen to do so."""
 
@@ -249,6 +256,22 @@ def _validate_references(
                 "plan.apply_proposal referenced a proposal that was not in the context it was "
                 "given"
             )
+    if arguments.operation_type is ConversationOperationType.MAIL_PREPARE_REPLY_SEND and isinstance(
+        arguments, MailPrepareReplySendArguments
+    ):
+        # A turn that drafts and prepares in one go cannot know the draft's id yet, so it names
+        # the message instead; either way the identity must have come from the context.
+        if arguments.draft_id is not None:
+            allowed = known_ids.get(ConversationEntityKind.MAIL_DRAFT, frozenset())
+            reference = arguments.draft_id
+        else:
+            allowed = known_ids.get(ConversationEntityKind.MAIL_MESSAGE, frozenset())
+            reference = arguments.message_id
+        if reference not in allowed:
+            raise InvalidConversationPlan(
+                "mail.prepare_reply_send referenced a draft or message that was not in the "
+                "context it was given"
+            )
 
 
 def _referenced_id(arguments: ConversationOperationArguments) -> object:
@@ -261,6 +284,12 @@ def _referenced_id(arguments: ConversationOperationArguments) -> object:
         return arguments.task_id
     if isinstance(arguments, NotificationReadArguments):
         return arguments.notification_id
+    if isinstance(arguments, (MailShowArguments, MailReplyDraftArguments)):
+        return arguments.message_id
+    if isinstance(arguments, MailThreadArguments):
+        return arguments.thread_id
+    if isinstance(arguments, MailPrepareReplySendArguments):
+        return arguments.draft_id or arguments.message_id
     return None
 
 

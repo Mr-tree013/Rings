@@ -46,7 +46,8 @@ FORBIDDEN_OPERATION_PREFIXES = (
 )
 
 
-def test_the_vocabulary_is_exactly_the_phase_10a_set() -> None:
+def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
+    """Phase 10A's daily-local operations plus Phase 10B's documented mail surface."""
     expected = {
         "status.get",
         "task.list",
@@ -65,14 +66,41 @@ def test_the_vocabulary_is_exactly_the_phase_10a_set() -> None:
         "notification.list",
         "notification.read",
         "knowledge.ask",
+        "mail.status",
+        "mail.sync",
+        "mail.list",
+        "mail.show",
+        "mail.thread",
+        "mail.reply_draft",
+        "mail.prepare_reply_send",
+        "mail.reconcile_send",
     }
 
     assert {member.value for member in ConversationOperationType} == expected
 
 
 def test_no_external_or_privileged_operation_exists() -> None:
+    """The reviewed mail surface is the only external-adjacent vocabulary that exists.
+
+    `mail.send` itself is still absent: a conversation prepares a send and a deterministic
+    controller settles it, so the model never names the effect (ADR-0034 §2-4).
+    """
+    reviewed_mail = {
+        "mail.status",
+        "mail.sync",
+        "mail.list",
+        "mail.show",
+        "mail.thread",
+        "mail.reply_draft",
+        "mail.prepare_reply_send",
+        "mail.reconcile_send",
+    }
     for member in ConversationOperationType:
+        if member.value in reviewed_mail:
+            continue
         assert not member.value.startswith(FORBIDDEN_OPERATION_PREFIXES), member.value
+
+    assert "mail.send" not in {member.value for member in ConversationOperationType}
 
 
 def test_the_schema_offers_every_operation_and_nothing_generic() -> None:

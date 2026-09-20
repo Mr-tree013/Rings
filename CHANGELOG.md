@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Conversational mail with exact human approval (Phase 10B, ADR-0034).** A conversation can read
+  recent mail, resolve a message or thread, draft a reply with the existing draft service, and
+  prepare an immutable `mail.send` action — then it stops and shows the exact payload. Sending needs
+  the user's own explicit phrase (`确认发送`, `发送`, `发吧`, `confirm send`), parsed deterministically
+  without a model call; `可以`/`好`/`ok` confirm a local plan and nothing else. The approval,
+  challenge and execution are still the v1 services, invoked by a controller that has no model in
+  its dependency graph.
+- Migration `0017_conversation_external_reviews.sql`: one durable pointer per reviewed action
+  (action id, type, fingerprint, status, expiry, execution run), at most one live review per
+  conversation thread.
 - **Tree Conversation (Phase 10A, ADR-0033).** `rings`, and `pw chat` for the same runtime, are the
   primary conversational surface: a sentence is interpreted into a closed set of typed local
   operations (tasks, calendar, work sessions, weekly planning, the notification inbox and grounded

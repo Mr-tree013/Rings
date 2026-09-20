@@ -44,6 +44,10 @@ process: the provider client is opened once, not per turn.
 看看刚才的计划
 这周还有什么空闲时间？
 我的课程说明里有没有写补交规则？
+最近有什么需要处理的邮件？
+回复刚才那封，说我周五之前交。
+确认发送
+帮我查一下刚才那封邮件有没有发出去。
 ```
 
 Each of those becomes one or more typed operations. A turn proposes at most five, in order, and
@@ -77,15 +81,67 @@ expiry. Saying yes twice applies the plan once; a confirmation that expired is r
 asked to regenerate it. If more than one confirmation is somehow pending, Tree asks which one
 rather than choosing.
 
-The only operation that requires a confirmation is `plan.apply_proposal`. Everything else in the
-conversation's capability set is either a read (executes immediately) or an unambiguous local write
-(executes immediately).
+Among the local operations, `plan.apply_proposal` is the only one that requires a confirmation:
+everything else is either a read (executes immediately) or an unambiguous local write (executes
+immediately). Mail is different, and is described next.
+
+## Mail: draft, exact preview, then one explicit send
+
+Mail is the one capability in the conversation that can leave the machine, and it is deliberately
+the slowest one to use:
+
+```text
+You > 最近有什么需要处理的邮件？
+Tree > 最近 3 封：
+       - [4f2a1c08] teacher@example.edu · SE 实验三 · 2026-09-21 09:00（+08:00） · 需要回复
+
+You > 回复张老师，说我周五之前交
+Tree > 草稿已准备好（…）        ← 起草用的是既有的 reply-draft 服务
+
+You > 确认发送，把要发的内容给我看
+Tree > 将要发送的邮件（以下内容就是实际发出的内容）：
+       · 发件账号：smail（student@example.edu）
+       · 收件人：teacher@example.edu
+       · 主题：Re: SE 实验三
+       · Message-ID：<…>
+       正文：
+       ---
+       好的，我周五之前交。
+       ---
+       确认发送吗？回复「确认发送」我就发送，或回复「取消」。
+
+You > 确认发送
+Tree > 已发送。
+```
+
+What makes this safe:
+
+* **The preview is the payload.** It is rendered from the immutable `ActionRequest` the existing
+  mail-send service produced — not from the draft, and not from anything a model wrote. What you
+  read is what the executor sends.
+* **A first turn can prepare, never send.** "直接发", "不用给我看" and "自动发送" all end in the same
+  preview, because a first turn has shown you nothing to consent to.
+* **Only your own explicit phrase settles it.** Sending accepts
+  `确认发送 / 发送 / 发吧 / 确认发出 / send / confirm send`; withdrawing accepts
+  `取消 / 不要发 / 不发送 / cancel`. "可以", "好", "嗯" and "ok" are **not** send confirmations —
+  they confirm a local plan and nothing else.
+* **The confirmation never reaches a model.** It is parsed by code, and the challenge token the
+  approval needs is created and consumed inside that one deterministic call. You never see it.
+* **Editing invalidates the review.** Change the draft after the preview and the old confirmation
+  goes stale; Tree prepares a new action (a new fingerprint) and shows a new preview.
+* **An interruption is never retried.** A send whose result is unknown stays unknown and is never
+  resent automatically. You can ask "帮我查一下到底发出去没有", which uses the existing Sent-folder
+  reconciliation and its "not found does not prove it was not delivered" rule.
+
+Conversational mail is reply-only, exactly like the underlying v1 mail domain: no contact book, no
+new-message compose, no attachments and no scheduling.
 
 ## What it will not do
 
-* **No external actions.** Sending mail, submitting eHall forms, creating an approval and executing
-  an action are not in the conversation's capability set. Ask anyway and Tree says so — in words,
-  not by pointing you at six commands.
+* **No eHall and no generic actions.** Mail is the only external capability a conversation can
+  prepare; submitting eHall forms, creating an approval and executing an arbitrary action are not
+  in the capability set. Ask anyway and Tree says so — in words, not by pointing you at six
+  commands.
 * **No automatic facts.** "记住我的办公室在仙林" is a statement in a conversation, not a human
   confirmation of a durable fact. Long-term facts keep their own confirmation flow, and Phase 10A
   does not wire the conversation into it.
@@ -106,7 +162,7 @@ succeeded. Inspect the current state, then ask again.
 These are conversation-session controls, not domain operations:
 
 ```text
-/help          show natural-language examples
+/help          show natural-language examples (tasks, planning, mail, knowledge)
 /new           archive this conversation and start a new one
 /threads       list recent conversations
 /use <id>      switch to one of them (id or unique prefix)
@@ -127,6 +183,9 @@ the CLI remains the advanced surface and its own `--help` is the place for it.
   documents, facts and playbooks are not attached.
 * Knowledge reaches a turn only through the grounded-answer boundary, which returns citations from
   your indexed sources — or says it found no evidence.
+* A pending send stores a *pointer* to the prepared action (its id, type and fingerprint) — never
+  the challenge token, never a copy of the body as conversation state. The preview is re-read from
+  the action itself every time it is shown.
 
 ## Commands
 

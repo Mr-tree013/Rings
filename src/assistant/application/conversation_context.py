@@ -19,7 +19,7 @@ back with citations.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from assistant.domain.conversation import ConversationMessage, ConversationThreadId
 from assistant.domain.conversation_context import (
@@ -38,11 +38,17 @@ from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
 from assistant.ports.conversation_repository import ConversationRepository
+from assistant.ports.mail_draft_repository import MailDraftRepository
+from assistant.ports.mail_intelligence_repository import MailIntelligenceRepository
+from assistant.ports.mail_repository import MailRepository
 from assistant.ports.planning_repository import PlanningRepository
 from assistant.ports.scheduler_repository import SchedulerRepository
 
 CALENDAR_LOOKAHEAD_DAYS = 14
 """How far ahead calendar events are summarised for a follow-up reference."""
+
+_MAIL_ENTITY_BOUND = 12
+"""How many recent messages, threads and drafts a follow-up may refer to."""
 
 _PRIORITY_RANK = {
     TaskPriority.HIGH: 0,
@@ -63,6 +69,9 @@ class ConversationContextBuilder:
         clock: Clock,
         *,
         planning_timezone: str | None,
+        mail: MailRepository | None = None,
+        mail_intelligence: MailIntelligenceRepository | None = None,
+        mail_drafts: MailDraftRepository | None = None,
         max_messages: int = MAX_CONTEXT_MESSAGES,
         max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
         max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -75,6 +84,9 @@ class ConversationContextBuilder:
         self._scheduler = scheduler
         self._clock = clock
         self._planning_timezone = planning_timezone
+        self._mail = mail
+        self._mail_intelligence = mail_intelligence
+        self._mail_drafts = mail_drafts
         self._max_messages = max_messages
         self._max_history_chars = max_history_chars
         self._max_entities = max_entities
@@ -107,6 +119,7 @@ class ConversationContextBuilder:
             *await self._proposal_entities(),
             *await self._calendar_entities(now),
             *await self._notification_entities(),
+            *await self._mail_entities(),
         )
 
     async def _task_entities(self) -> tuple[ConversationEntityRef, ...]:
@@ -170,6 +183,62 @@ class ConversationContextBuilder:
             )
             for notification in notifications
         )
+
+    async def _mail_entities(self) -> tuple[ConversationEntityRef, ...]:
+        """Recent mail metadata — never the bodies, never the whole mailbox (ADR-0034 §8).
+
+        A follow-up like "回复刚才那封" is possible because the message ids are here; what the
+        message actually says is fetched through `mail.show` when the user asks for it.
+        """
+        if self._mail is None or self._mail_intelligence is None:
+            return ()
+        entities: list[ConversationEntityRef] = []
+        for message in await self._mail.list_messages(limit=self._max_entities):
+            analysis = await self._mail_intelligence.get_analysis(message.id)
+            label = f"{message.from_address or '（未知发件人）'}：{message.subject or '（无主题）'}"
+            detail = [f"received={_instant(message.sent_at or message.first_seen_at)}"]
+            if analysis is not None:
+                detail.append(f"category={analysis.category.value}")
+                detail.append(f"requires_reply={str(analysis.requires_reply).lower()}")
+            entities.append(
+                ConversationEntityRef(
+                    kind=ConversationEntityKind.MAIL_MESSAGE,
+                    id=str(message.id),
+                    label=label,
+                    detail=" ".join(detail),
+                )
+            )
+        summaries = await self._mail_intelligence.list_thread_summaries(
+            limit=self._max_entities
+        )
+        for summary in summaries:
+            entities.append(
+                ConversationEntityRef(
+                    kind=ConversationEntityKind.MAIL_THREAD,
+                    id=str(summary.thread.id),
+                    label=summary.subject_preview or "（无主题会话）",
+                    detail=(
+                        f"messages={summary.message_count} "
+                        f"latest={_instant(summary.latest_at)}"
+                    ),
+                )
+            )
+        if self._mail_drafts is not None:
+            for draft in await self._mail_drafts.list_drafts(limit=self._max_entities):
+                entities.append(
+                    ConversationEntityRef(
+                        kind=ConversationEntityKind.MAIL_DRAFT,
+                        id=str(draft.id),
+                        label=f"{'、'.join(draft.to_addresses)}：{draft.subject}",
+                        detail=f"version={draft.version} account={draft.account_id}",
+                    )
+                )
+        return tuple(entities)
+
+
+def _instant(value: datetime) -> str:
+    """Render an instant as UTC ISO 8601 for the model to read."""
+    return value.astimezone(UTC).isoformat()
 
 
 def _recent_history(

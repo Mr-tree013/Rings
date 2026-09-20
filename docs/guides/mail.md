@@ -1,5 +1,25 @@
 # Mail: receive, understand, draft, approve, send
 
+## The normal path is a conversation
+
+Everything below this section is the mechanism. The way to use it day to day is
+[Tree Conversation](conversation.md):
+
+```text
+You > 最近有什么需要处理的邮件？
+Tree > …
+You > 回复张老师，说我周五之前交
+Tree > [the exact bytes that would be sent]
+       确认发送吗？
+You > 确认发送
+Tree > 已发送。
+```
+
+The conversation prepares the same `ActionRequest` this guide documents, shows you its exact
+payload, and settles it with one explicit phrase — "确认发送", not "可以". The `pw`
+commands below remain the advanced surface: they are how you debug, inspect, reconcile and operate
+the same durable state, and they are what the conversation calls underneath.
+
 ## What it does
 
 Rings receives mail over IMAP, stores it durably, groups it into deterministic threads, asks the
