@@ -647,8 +647,9 @@ pw backup restore ~/assistant-backup.gab --to ~/recovery/growing-assistant
 - **恢复只写 staging**：`--to` 的目录必须不存在或为空，且不能是当前 runtime 数据目录本身/父/子；
   没有 `--in-place`、没有 `--force`。内容是先写到同 parent 的临时目录，验证 + finalization 全部通过后
   才原子 rename 成最终目录；失败时只删掉这条命令自己创建的临时目录。恢复出来的目录就是**一个
-  完整的数据目录**（`assistant.db` + `mail/raw/…` + `web/snapshots/…`），等价于
-  `$XDG_DATA_HOME/growing-assistant/`，所以按下面的方式用 `XDG_DATA_HOME` 指向它即可。
+  完整的数据目录**：运行态数据库加上归档里两类被引用的对象，位置与该 runtime 目录下原本的
+  布局完全一致（mail raw 仍在 `<runtime>/mail/…`，web snapshot 仍在 `<runtime>/web/snapshots/…`），
+  因此它等价于 `$XDG_DATA_HOME/growing-assistant/`，按下面的方式用 `XDG_DATA_HOME` 指向它即可。
 - **恢复会失效授权，但保留历史**：finalization 在恢复出来的数据库上把未消费的 `ApprovalChallenge`
   置为 consumed、把仍然有效的 `Approval` 置为 superseded（不会假装它被使用过）、作废未使用的
   mobile pairing token、revoke 所有 mobile session —— **恢复后必须重新 `pw mobile pair`**。
