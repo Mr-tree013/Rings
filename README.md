@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.5.0（完整的可审计邮件工作流：收信 → 线程 → 分类 → 草稿 → 人工审批 → SMTP 发送 → 不确定结果对账）
+## 当前状态：v0.6.0（可审计的邮件工作流 + 第一个白名单 eHall 事务）
 
 已完成：
 
@@ -21,9 +21,9 @@
 不启动 `event-worker`：一个连不上 provider 的 worker 只会把每封邮件 dead-letter，而停在
 `RECEIVED` 的积压可以在配置好 model 后继续处理。
 
-**唯一真实的外部副作用是「经人工批准的 SMTP 发送」**：executor 注册表只包含 `mail.send`，
-且只有在该账号配置了 SMTP 时才注册。daemon 自身不会发送任何邮件——发送只能由
-`pw action execute` 经过一次已消费的人工 approval 完成（eHall / browser 不存在）。
+**真实外部副作用只有两个，且都必须经过人工批准**：`mail.send`（配置了 SMTP 时注册）与
+`ehall.submit-certificate`（`[ehall] enabled = true` 时注册）。daemon 自己既不发邮件也不开
+浏览器：两者都只能由 `pw action execute` 在消费一次人工 approval 之后执行。
 
 **尚未实现的加速机制**：filesystem watcher 快速路径。当前正确性来自周期 reconciliation，
 因此变更检测有一个有界延迟（默认 300 秒，可配置到 10 秒）。
@@ -299,9 +299,63 @@ pw mail send reconcile ACTION
   `smtplib` 只出现在 `adapters/mail/smtp.py`；发送只能经 `ActionExecutionService` +
   一次已消费的人工 approval。
 
-**尚未实现**：eHall executor、browser executor、mobile approval UI、正文索引/问答（把邮件正文
-送进 knowledge index）、thread 回溯修复、分类结果自动转 Task/Case、事件删除同步
-（server-side deletion）、attachment materialization、QQ 与站点 watcher。
+南京大学 eHall「证明书申请」（Phase 6C）：**已实现** 第一个白名单 eHall 事务 —— 只有一个专用
+pipeline，不是通用浏览器 agent：
+
+```bash
+# 一次性：安装浏览器运行时（不联网下载模型，只装 Chromium）
+uv run playwright install chromium
+
+# 1. 手动登录（本项目永远不接触学校密码）
+pw ehall login
+
+# 2. 只读查看当前表单契约（不改动网页）
+pw ehall certificate inspect
+
+# 3. 用显式值准备一个 exact action（此时不在网页里填任何字段）
+pw case add "申请在读证明"
+pw ehall certificate prepare --case CASE \
+  --field applicant-name=张同学 \
+  --field certificate-type=在读证明
+
+# 4. 复核 + 既有审批链（与 Phase 6A/6B 完全相同）
+pw ehall certificate show ACTION
+pw action show ACTION
+pw action challenge ACTION
+pw action approve ACTION TOKEN
+pw action execute ACTION
+```
+
+要点：
+
+- **只有一个能力**：action type 固定为 `ehall.submit-certificate`，service 固定为「证明书申请」。
+  `pw ehall` 没有 `submit` / `click` / `open` / `fill`，也没有 service URL、selector 之类的参数；
+  退课、撤销申请、删除、退宿等高风险能力在代码里**不存在**，不是靠 prompt 禁止。
+- **登录是人的事**：`pw ehall login` 打开 headed Chromium 停在 eHall 首页，SSO/MFA 由用户自己完成；
+  代码里没有填用户名/密码的路径，config 里也没有 `username`/`password` 字段，cookie 只保存在
+  `$XDG_DATA_HOME/growing-assistant/ehall/nju-profile/`（0700，不进 repo/cache）。
+- **顶层导航白名单**：只允许 `ehall.nju.edu.cn` / `ehallapp.nju.edu.cn` / `authserver.nju.edu.cn`
+  （HTTPS）；其它顶层跳转一律 `EHallUnexpectedOrigin` 失败关闭。子资源/CDN 不受限。
+- **prepare 不填表**：inspect 后只在本地校验（字段是否存在、必填是否齐全、select/radio 是否命中
+  允许项），然后把 service identity、有序字段定义、materials、submit control 与用户填的值冻结成
+  immutable `ActionRequest`。所有值只来自 `--field KEY=VALUE`，没有知识库/邮件/模型自动填充。
+- **page contract 一变就失效**：fingerprint 覆盖 service、page markers、有序字段定义与选项、
+  required materials、submit control。执行前重新 inspect，fingerprint 不一致 → `EHallPageChanged`，
+  **一个字符都不会输入**，也不会提交。
+- **提交只发生一次，且必须有审批**：执行流程是「重新校验 contract → 精确填写 → 逐字段 readback
+  比对 → 点击唯一白名单 submit」。click 之前的任何失败（页面变了、session 过期、readback 不一致）
+  都是明确 `FAILED`；click 之后无法判定则是 `UNKNOWN`，会阻塞同一 action 的再次执行，CLI 提示
+  去 eHall 人工确认，**绝不自动重发**。
+- **没有任何后台浏览器**：daemon 里没有 `ehall-worker`，EventWorker / Scheduler / MailSync /
+  MailAnalysis / MailHandler / Interpreter / GroundedAnswer 都无法 import eHall adapter；
+  浏览器只在用户显式运行 CLI 时启动，且 `pw doctor` 会检查 playwright 与 Chromium 是否就绪。
+- **NJU 可能改版**：portal 的标题、字段与页面结构都可能变化。page contract 不匹配会在提交前
+  停下（fail closed），而不是自动适配；本阶段的 selector 不是「永远稳定」的承诺。
+
+**尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
+mobile approval UI、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
+分类结果自动转 Task/Case、事件删除同步（server-side deletion）、attachment materialization、
+QQ 与站点 watcher。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。
 
@@ -319,6 +373,8 @@ MailDraft（本地草稿；不发送）
   → pw mail send prepare → ActionRequest（immutable + Message-ID + fingerprint）
   → Approval（人类、exact fingerprint、single-use）→ SMTP over TLS（FAILED / SUCCEEDED / UNKNOWN）
   → pw mail send reconcile（只读 Sent 对账，永不重发）
+  → pw ehall certificate prepare（白名单 ehall.submit-certificate）
+  → 同一审批链 → headed browser（contract 校验 / 精确填写 / readback / 单次 submit）
   → result → archive → PlaybookCandidate → review/test → Playbook
 ```
 
@@ -330,9 +386,9 @@ MailDraft（本地草稿；不发送）
 
 1. 幂等由代码与持久状态保证，模型不参与幂等判断。
 2. 任何外部副作用必须绑定具体 `ActionRequest` 的人工 `Approval`（approval 绑定 action
-   fingerprint，内容变化即失效；runtime 没有自行批准的代码路径）。Phase 6A 已实现该边界：
+   fingerprint，内容变化即失效；runtime 没有自行批准的代码路径）。Phase 6A/6B/6C 已实现该边界：
    approval 只能由 `pw action approve` 用一次性 token 创建，执行前重新校验 fingerprint，
-   且 production executor 能力集为空（ADR-0023）。
+   production 能力集只有 `mail.send` 与 `ehall.submit-certificate` 两项（ADR-0023/0024/0025）。
 3. 事实区分 `FactCandidate` 与 `ConfirmedFact`；自动填表只允许使用已确认、未过期、来源可追溯、
    且被目标字段许可的事实。
 4. 高风险能力（退课、撤销申请、退宿等）在代码能力集合中物理不存在，不靠 prompt 禁止。

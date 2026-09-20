@@ -22,6 +22,8 @@ from assistant.domain.config import AssistantConfig
 from assistant.store.events import SqliteEventRepository
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "assistant"
+EHALL_ADAPTER_DIR = "adapters/ehall/"
+"""The only package allowed to import Playwright (ADR-0025)."""
 SMTP_MODULE = "adapters/mail/smtp.py"
 """The one module allowed to speak SMTP (ADR-0024)."""
 RANDOMNESS_MODULES = frozenset(
@@ -1237,6 +1239,177 @@ def test_only_the_execution_service_can_reach_a_send_capability() -> None:
     assert not text_offenders, text_offenders
 
 
+EHALL_MODULES = (
+    "domain/ehall.py",
+    "ports/ehall_certificate.py",
+    "application/ehall_certificate.py",
+    "adapters/ehall/session.py",
+    "adapters/ehall/page.py",
+    "adapters/ehall/nju_certificate.py",
+    "adapters/ehall/executor.py",
+    "cli_ehall.py",
+)
+
+DESTRUCTIVE_ACTION_TYPES = (
+    "drop-course",
+    "drop_course",
+    "withdraw",
+    "cancel-application",
+    "delete-application",
+    "checkout-dorm",
+    "resign",
+    "submit-any-form",
+    "arbitrary-submit",
+)
+
+
+def test_only_the_ehall_package_imports_playwright() -> None:
+    """Playwright is one package deep, and nothing above it can name a page or a selector."""
+    offenders = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if any(
+            name.startswith("playwright") for name in _imported_modules(path)
+        )
+        and not str(path.relative_to(SOURCE_ROOT)).startswith(EHALL_ADAPTER_DIR)
+    ]
+
+    assert not offenders, offenders
+    assert (SOURCE_ROOT / EHALL_ADAPTER_DIR / "session.py").is_file()
+
+
+def test_the_application_layer_cannot_name_a_browser() -> None:
+    """No port or application module has an identifier for a page, a selector or a click.
+
+    Checked on the syntax tree rather than on prose: the port's docstring *explains* that a caller
+    cannot name a selector, and that explanation is the design, not a violation of it.
+    """
+    forbidden_names = {
+        "playwright",
+        "selector",
+        "locator",
+        "goto",
+        "click",
+        "fill",
+        "evaluate",
+        "BrowserPort",
+        "Page",
+    }
+    offenders: list[str] = []
+    for relative in ("ports/ehall_certificate.py", "application/ehall_certificate.py"):
+        path = SOURCE_ROOT / relative
+        if names := _identifiers(path) & forbidden_names:
+            offenders.append(f"{relative} names {sorted(names)}")
+    assert not offenders, offenders
+
+
+def test_ehall_has_exactly_two_typed_operations() -> None:
+    """The port is the certificate errand, not a browser automation surface."""
+    from assistant.ports.ehall_certificate import EHallCertificateGateway
+
+    methods = {
+        name
+        for name in dir(EHallCertificateGateway)
+        if not name.startswith("_")
+    }
+    assert methods == {"inspect_form", "submit_certificate"}
+
+
+def test_only_the_whitelisted_action_types_exist() -> None:
+    """High-risk operations are absent from the code, not forbidden by a prompt.
+
+    Checked on the action-type vocabulary: every `ActionType("…")` the project constructs must be
+    one of the two deliberate capabilities. A withdrawal or deletion path cannot appear without
+    first appearing as a literal here.
+    """
+    from assistant.domain.action import ActionType
+
+    allowed = {"mail.send", "ehall.submit-certificate"}
+    constructed: set[str] = set()
+    for path in sorted(SOURCE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ActionType"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                constructed.add(node.args[0].value)
+
+    assert constructed <= allowed, sorted(constructed - allowed)
+    assert ActionType("ehall.submit-certificate").value == "ehall.submit-certificate"
+    for destructive in DESTRUCTIVE_ACTION_TYPES:
+        assert not destructive.startswith("mail.")  # the vocabulary below is never registered
+    from assistant.adapters.ehall.executor import E_HALL_CERTIFICATE_ACTION_TYPE
+
+    assert E_HALL_CERTIFICATE_ACTION_TYPE.value == "ehall.submit-certificate"
+
+
+def test_no_model_or_background_path_can_reach_the_ehall_pipeline() -> None:
+    """A browser opens because a person asked, never because a message or a schedule arrived."""
+    forbidden = (
+        "assistant.adapters.ehall",
+        "assistant.application.ehall_certificate",
+        "assistant.ports.ehall_certificate",
+        "assistant.domain.ehall",
+    )
+    watched = (
+        *BACKGROUND_MODULES,
+        "application/mail_send_actions.py",
+        "application/mail_send_reconciliation.py",
+    )
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in watched
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden)
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_daemon_does_not_supervise_a_browser_service() -> None:
+    """There is no `ehall-worker`: the browser runs only while a user is running a command."""
+    text = (SOURCE_ROOT / "daemon" / "app.py").read_text(encoding="utf-8")
+    for forbidden in ("ehall", "browser", "playwright", "EHall"):
+        assert forbidden not in text, forbidden
+
+
+def test_the_ehall_path_cannot_reach_a_model() -> None:
+    """No model decides a form value, and no model can drive the pipeline."""
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in EHALL_MODULES
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(
+            (
+                "assistant.ports.model",
+                "assistant.application.structured_model",
+                "assistant.adapters.model",
+                "assistant.application.interpreter",
+                "assistant.application.grounded_answer",
+                "assistant.application.knowledge_search",
+            )
+        )
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_ehall_path_has_no_retry_loop() -> None:
+    """A submit click is never repeated by code: an unclear result goes to a person."""
+    offenders: list[str] = []
+    for relative in EHALL_MODULES:
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        for needle in ("retry(", "resubmit", "submit_again", "for attempt in", "while attempt"):
+            if needle in text:
+                offenders.append(f"{relative} mentions {needle}")
+    assert not offenders, offenders
+
+
 def test_the_send_path_has_no_automatic_retry_or_resend_command() -> None:
     """A resend is never a code path: it is a decision a person makes in front of the content."""
     from assistant.cli_mail_send import mail_send_app
@@ -1266,13 +1439,18 @@ def test_no_generic_browser_or_http_capability_exists() -> None:
     SMTP is the one transport the project implements, and only in `SMTP_MODULE`; there is still no
     generic browser, HTTP or shell executor to widen the capability set by accident.
     """
-    # `httpx` is excluded: it is the model adapter's client, not an action executor's capability.
-    forbidden_modules = ("selenium", "playwright", "pyppeteer", "requests")
+    # `httpx` is excluded (the model adapter's client) and `playwright` is allowed only inside the
+    # one whitelisted eHall package; everything else stays banned outright.
+    forbidden_modules = ("selenium", "pyppeteer", "requests")
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)} imports {imported}"
         for path in sorted(SOURCE_ROOT.rglob("*.py"))
         for imported in _imported_modules(path)
         if imported.startswith(forbidden_modules)
+        or (
+            imported.startswith("playwright")
+            and not str(path.relative_to(SOURCE_ROOT)).startswith(EHALL_ADAPTER_DIR)
+        )
     ]
 
     assert not offenders, offenders

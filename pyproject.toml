@@ -1,6 +1,6 @@
 [project]
 name = "growing-assistant"
-version = "0.5.0"
+version = "0.6.0"
 description = "A personal assistant that grows: mail, personal knowledge, eHall errands and mobile approval in one auditable loop."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -11,6 +11,7 @@ dependencies = [
     "pypdf>=6.19.0",
     "httpx>=0.28.1",
     "jsonschema>=4.26.0",
+    "playwright>=1.63.0",
 ]
 
 [project.scripts]

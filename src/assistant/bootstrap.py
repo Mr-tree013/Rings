@@ -14,6 +14,10 @@ from pathlib import Path
 
 from assistant.adapters.config.toml_config import TomlConfigLoader
 from assistant.adapters.content.registry import SuffixExtractorRegistry
+from assistant.adapters.ehall.executor import EHallCertificateExecutor
+from assistant.adapters.ehall.nju_certificate import NjuCertificateGateway
+from assistant.adapters.ehall.page import PlaywrightEHallPage
+from assistant.adapters.ehall.session import EHallBrowserSession
 from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
@@ -37,6 +41,7 @@ from assistant.application.action_service import ActionService
 from assistant.application.approval_service import ApprovalService
 from assistant.application.calendar_service import CalendarService
 from assistant.application.case_service import CaseService
+from assistant.application.ehall_certificate import EHallCertificateService
 from assistant.application.event_inbox import EventInbox
 from assistant.application.event_worker import EventWorker
 from assistant.application.greedy_planner import GreedyPlanner
@@ -72,6 +77,7 @@ from assistant.application.task_service import TaskService
 from assistant.application.work_service import WorkService
 from assistant.domain.action import ActionType
 from assistant.domain.config import (
+    DEFAULT_EHALL_TIMEOUT_SECONDS,
     DEFAULT_MAIL_TIMEOUT_SECONDS,
     AssistantConfig,
     MailAccountConfig,
@@ -162,11 +168,19 @@ def registered_action_executors(
     executor, so `pw action execute` answers `CapabilityUnavailable` without consuming an
     approval. A capability appears here only when it has been written and reviewed on purpose.
     """
-    if config is None or not any(
-        account.smtp_configured for account in config.mail.accounts
-    ):
-        return {}
-    return {smtp_mail_executor(config).action_type: smtp_mail_executor(config)}
+    executors: dict[ActionType, ActionExecutor] = {}
+    smtp = smtp_mail_executor(config)
+    if any(account.smtp_configured for account in accounts_of(config)):
+        executors[smtp.action_type] = smtp
+    if config is not None and config.ehall.enabled:
+        ehall = ehall_certificate_executor(config)
+        executors[ehall.action_type] = ehall
+    return executors
+
+
+def accounts_of(config: AssistantConfig | None) -> tuple[MailAccountConfig, ...]:
+    """The configured mail accounts, or none."""
+    return () if config is None else config.mail.accounts
 
 
 def smtp_mail_executor(config: AssistantConfig | None) -> SmtpMailExecutor:
@@ -175,9 +189,8 @@ def smtp_mail_executor(config: AssistantConfig | None) -> SmtpMailExecutor:
     `supports` asks for a credential; `execute` uses it. Neither ever puts the secret in a
     payload, a log line or an error message.
     """
-    accounts = () if config is None else config.mail.accounts
     return SmtpMailExecutor(
-        {account.id: account for account in accounts},
+        {account.id: account for account in accounts_of(config)},
         password_lookup=available_smtp_password,
         timeout_seconds=(
             DEFAULT_MAIL_TIMEOUT_SECONDS if config is None else config.mail.timeout_seconds
@@ -197,6 +210,49 @@ def action_execution_service(
         action_repository(database),
         registered_action_executors(config) if executors is None else executors,
         clock,
+    )
+
+
+def ehall_certificate_gateway(config: AssistantConfig | None) -> NjuCertificateGateway:
+    """The whitelisted certificate pipeline over a headed, manually-logged-in browser.
+
+    The session is created lazily, and only when the pipeline actually runs: `pw ehall status` and
+    `pw doctor` must be able to describe this capability without opening a browser.
+    """
+    timeout = DEFAULT_EHALL_TIMEOUT_SECONDS if config is None else config.ehall.timeout_seconds
+    return NjuCertificateGateway(
+        lambda: EHallBrowserSession(timeout_seconds=timeout),
+        lambda session: _open_ehall_page(session, timeout_seconds=timeout),
+        enabled=config is not None and config.ehall.enabled,
+        timeout_seconds=timeout,
+    )
+
+
+async def _open_ehall_page(
+    session: EHallBrowserSession, *, timeout_seconds: int
+) -> PlaywrightEHallPage:
+    """Open one page in the session, with the adapter's own default timeout."""
+    del timeout_seconds
+    return PlaywrightEHallPage(await session.new_page())
+
+
+def ehall_certificate_executor(
+    config: AssistantConfig | None,
+) -> EHallCertificateExecutor:
+    """The `ehall.submit-certificate` executor, when the pipeline is enabled."""
+    return EHallCertificateExecutor(ehall_certificate_gateway(config))
+
+
+def ehall_certificate_service(
+    config: AssistantConfig | None, clock: Clock, database: Database
+) -> EHallCertificateService:
+    """Inspecting the certificate form and preparing an approvable submission."""
+    return EHallCertificateService(
+        ehall_certificate_gateway(config),
+        case_repository(database),
+        action_repository(database),
+        clock,
+        enabled=config is not None and config.ehall.enabled,
     )
 
 
@@ -783,6 +839,9 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "ehall_certificate_executor",
+    "ehall_certificate_gateway",
+    "ehall_certificate_service",
     "event_inbox",
     "grounded_answer_service",
     "grounded_context_builder",

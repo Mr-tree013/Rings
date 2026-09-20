@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-20
+
+Phase 6C (eHall): the first whitelisted university errand — the certificate application — can be
+inspected, prepared, approved and submitted, with a browser that only opens when a person asks and
+only ever moves through the pipeline it was written for.
+
+### Added
+
+- Approved eHall certificate pipeline (ADR-0025): `ehall.submit-certificate` is the second
+  production capability, registered only when `[ehall] enabled = true`, and it is the only eHall
+  operation that exists — there is no drop-course, withdrawal, cancellation, deletion or
+  arbitrary-form capability anywhere, and the port the application sees has exactly two typed
+  operations (`inspect_form`, `submit_certificate`).
+- Manual, headed, private browser session: `pw ehall login` opens Chromium at the eHall home page
+  and lets the user complete SSO and MFA by hand. There is no code path that fills a username or a
+  password, no configuration key that could hold one, and the profile lives in
+  `$XDG_DATA_HOME/growing-assistant/ehall/nju-profile/` with owner-only permissions. Top-level
+  navigation is allow-listed to the three NJU hosts; anything else fails closed, while sub-resources
+  and CDNs load normally.
+- Read-only inspection and a page contract: `pw ehall certificate inspect` reads the whitelisted
+  service, its required materials and its field schema (text, textarea, select, radio) without
+  typing anything, and computes a SHA-256 over the service identity, page markers, ordered field
+  definitions, required materials and submit control. A required control the pipeline cannot fill
+  (a file upload) blocks the errand instead of being faked.
+- Explicit values and an immutable snapshot: `pw ehall certificate prepare --case CASE --field
+  KEY=VALUE` validates every key, required field and option locally and freezes the contract
+  fingerprint plus the exact values into one immutable `ActionRequest`. No knowledge lookup, mail
+  analysis, model or confirmed fact takes part, and the remote form is never touched during
+  preparation.
+- Execution that re-verifies before it types: the executor re-opens the whitelisted service,
+  re-reads the contract, requires the approved fingerprint, validates every value against the live
+  options, fills only the approved values, reads each one back and requires an exact match, and then
+  clicks the one whitelisted submit control. A changed page, an expired session, a missing field or
+  a readback mismatch is a definite `FAILED` with nothing typed and nothing submitted; anything
+  after the click that the page does not decide is `UNKNOWN`, which blocks a second attempt and is
+  never retried automatically.
+- `pw ehall login|status` and `pw ehall certificate inspect|prepare|show`, plus `pw doctor`
+  reporting whether Playwright and a Chromium build are usable (locally, with no download). There is
+  deliberately no `pw ehall submit`, no `click`, no `open` and no `fill`: the only submission path
+  remains `pw action execute`, after a human approval bound to the exact action payload.
+- No new durable state: the case, the immutable action, the approval and the execution run already
+  carry the audit trail, so migrations still end at `0011_approved_mail_send.sql`.
+
 ## [0.5.0] - 2026-09-20
 
 Phase 6 (mail workflows): the project can now read someone else's mail, understand it, draft a

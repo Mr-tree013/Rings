@@ -56,6 +56,7 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "scheduler",
         "model",
         "mail",
+        "ehall",
     }
 )
 _KNOWN_INDEXING_KEYS = frozenset({"interval_seconds", "run_on_startup"})
@@ -97,6 +98,12 @@ _KNOWN_MAIL_ACCOUNT_KEYS = frozenset(
         "sent_mailbox",
     }
 )
+
+DEFAULT_EHALL_ENABLED: Final[bool] = False
+DEFAULT_EHALL_TIMEOUT_SECONDS: Final[int] = 30
+MIN_EHALL_TIMEOUT_SECONDS: Final[int] = 10
+MAX_EHALL_TIMEOUT_SECONDS: Final[int] = 120
+_KNOWN_EHALL_KEYS = frozenset({"enabled", "timeout_seconds"})
 
 SMTP_SECURITY_MODES: Final[tuple[str, ...]] = ("starttls", "ssl")
 """The only two ways this project will speak SMTP. There is no plaintext mode and no switch to
@@ -571,6 +578,29 @@ class ConfiguredVaultRoot(ConfiguredStorageRoot):
 
 
 @dataclass(frozen=True, slots=True)
+class EHallConfig:
+    """Whether this host may drive the whitelisted eHall pipeline at all.
+
+    There is deliberately nothing else to configure. The service is fixed by the pipeline, the
+    browser runs headed so the user can see what it does, and the login is manual — so there is no
+    URL, no selector, no origin list and no credential to put here.
+    """
+
+    enabled: bool = DEFAULT_EHALL_ENABLED
+    timeout_seconds: int = DEFAULT_EHALL_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise InvalidAssistantConfig("ehall.enabled must be a boolean")
+        _validate_range(
+            "ehall.timeout_seconds",
+            self.timeout_seconds,
+            MIN_EHALL_TIMEOUT_SECONDS,
+            MAX_EHALL_TIMEOUT_SECONDS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantConfig:
     """The whole host configuration."""
 
@@ -581,6 +611,7 @@ class AssistantConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     model: ModelConfig | None = None
     mail: MailConfig = field(default_factory=MailConfig)
+    ehall: EHallConfig = field(default_factory=lambda: EHallConfig())
     format_version: int = CONFIG_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -620,6 +651,7 @@ class AssistantConfig:
             scheduler=_parse_scheduler(data.get("scheduler")),
             model=_parse_model(data.get("model")),
             mail=_parse_mail(data.get("mail")),
+            ehall=_parse_ehall(data.get("ehall")),
             format_version=format_version,
         )
 
@@ -823,6 +855,24 @@ def _model_int(value: Mapping[str, object], key: str, default: int) -> int:
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise InvalidAssistantConfig(f"model.{key} must be an integer")
     return raw
+
+
+def _parse_ehall(value: object) -> EHallConfig:
+    """Parse `[ehall]`. Credentials, URLs and selectors are rejected here on purpose."""
+    if value is None:
+        return EHallConfig()
+    if not isinstance(value, Mapping):
+        raise InvalidAssistantConfig("[ehall] must be a table")
+    unknown = sorted(set(value) - _KNOWN_EHALL_KEYS)
+    if unknown:
+        raise InvalidAssistantConfig(f"unknown [ehall] keys: {', '.join(unknown)}")
+    enabled = value.get("enabled", DEFAULT_EHALL_ENABLED)
+    if not isinstance(enabled, bool):
+        raise InvalidAssistantConfig("ehall.enabled must be a boolean")
+    timeout = value.get("timeout_seconds", DEFAULT_EHALL_TIMEOUT_SECONDS)
+    if not isinstance(timeout, int) or isinstance(timeout, bool):
+        raise InvalidAssistantConfig("ehall.timeout_seconds must be an integer")
+    return EHallConfig(enabled=enabled, timeout_seconds=timeout)
 
 
 def _parse_mail(value: object) -> MailConfig:

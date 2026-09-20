@@ -33,11 +33,13 @@ from assistant import (
     cli_ask,
     cli_cases,
     cli_commitments,
+    cli_ehall,
     cli_interpreter,
     cli_mail,
     cli_model,
     cli_scheduler,
 )
+from assistant.adapters.ehall.session import session_state
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.adapters.mail.credentials import (
     available_password as available_mail_password,
@@ -95,6 +97,7 @@ cli_ask.register(app)
 cli_mail.register(app)
 cli_cases.register(app)
 cli_actions.register(app)
+cli_ehall.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""
@@ -170,6 +173,31 @@ def _mail_diagnostics(
     return f"{len(accounts)} configured", rows
 
 
+def _ehall_diagnostics(config: AssistantConfig) -> list[tuple[str, str]]:
+    """Report the eHall capability without launching a browser or touching the network.
+
+    A disabled pipeline is never a problem: most hosts never open a browser at all. An *enabled*
+    one whose runtime is missing is a problem worth failing on, because the user asked for
+    something this host cannot do yet.
+    """
+    if not config.ehall.enabled:
+        return [("ehall", "not configured")]
+    state = session_state()
+    return [
+        ("ehall pipeline", "enabled (certificate application)"),
+        ("playwright", "installed" if state.playwright_installed else "[red]missing[/red]"),
+        (
+            "chromium runtime",
+            (
+                "available"
+                if state.chromium_available
+                else "[red]missing[/red] (uv run playwright install chromium)"
+            ),
+        ),
+        ("ehall profile", str(state.profile_dir)),
+    ]
+
+
 def _scheduler_store_available(database_file: Path) -> bool:
     """Read-only capability probe: are the scheduler tables migrated in?
 
@@ -223,8 +251,12 @@ def status() -> None:
     )
     table.add_row("cli", "[green]ok[/green]")
     table.add_row(
+        "ehall",
+        "whitelisted certificate pipeline (approval-gated, headed browser)",
+    )
+    table.add_row(
         "integrations",
-        "[yellow]not implemented[/yellow] (eHall, browser, web, push)",
+        "[yellow]not implemented[/yellow] (web, push, other eHall services)",
     )
     console.print(table)
     console.print(
@@ -298,6 +330,9 @@ def doctor() -> None:
         table.add_row("mail accounts", mail_rows[0])
         for label, value in mail_rows[1]:
             table.add_row(f"{label} credential", value)
+        ehall_rows = _ehall_diagnostics(config)
+        for label, value in ehall_rows:
+            table.add_row(label, value)
     else:
         table.add_row("config", f"[red]ERROR[/red] ({config_error})")
     console.print(table)
@@ -320,6 +355,15 @@ def doctor() -> None:
             "an enabled mail capability has no credential in the environment: "
             + ", ".join(missing)
         )
+    if config_error is None and config.ehall.enabled:
+        ehall_broken = [
+            label for label, value in _ehall_diagnostics(config) if "missing" in value
+        ]
+        if ehall_broken:
+            _fail(
+                "the eHall pipeline is enabled but its browser runtime is not usable: "
+                + ", ".join(ehall_broken)
+            )
 
     console.print("[green]environment looks usable[/green]")
 

@@ -890,6 +890,83 @@ class InvalidExecutionRun(DomainError):
     """An execution run was built with values that break its invariants."""
 
 
+class EHallDisabled(DomainError):
+    """The host has not enabled the eHall pipeline.
+
+    Disabled is the default, and it is not an error condition for the rest of the project: a host
+    that only reads mail never touches a browser.
+    """
+
+
+class EHallLoginRequired(DomainError):
+    """The eHall session is not logged in (or the login expired).
+
+    Raised by inspection and by execution *before* anything is typed. The user runs
+    `pw ehall login` and completes SSO by hand; this project never sees the university password.
+    """
+
+
+class EHallBrowserUnavailable(DomainError):
+    """Playwright or its Chromium runtime is not usable on this host.
+
+    The package is a declared dependency, but the browser binary is installed separately:
+    `uv run playwright install chromium`.
+    """
+
+
+class EHallUnexpectedOrigin(DomainError):
+    """Top-level navigation left the whitelisted NJU origins, so the pipeline stopped."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        super().__init__(
+            f"eHall navigation left the allowed NJU origins ({url}); refusing to continue"
+        )
+
+
+class EHallServiceMismatch(DomainError):
+    """The certificate service could not be identified exactly, or its page did not match.
+
+    Zero matches, several matches and a missing page marker all end here: the pipeline never
+    guesses which service the user meant, and never continues on a page it does not recognise.
+    """
+
+
+class EHallPageChanged(DomainError):
+    """The live form no longer matches the page contract that was approved.
+
+    The university may change its portal at any time. When the contract changes, the prepared
+    action is stale and nothing is typed or submitted.
+    """
+
+    def __init__(self, action_id: object) -> None:
+        self.action_id = action_id
+        super().__init__(
+            f"the eHall certificate form no longer matches the approved page contract for "
+            f"action {action_id}; prepare a new action and approve it again"
+        )
+
+
+class InvalidEHallForm(DomainError):
+    """A form snapshot, a field definition, a value or a payload breaks an invariant."""
+
+
+class EHallActionMismatch(DomainError):
+    """The action is not an eHall certificate action, so an eHall view cannot describe it."""
+
+    def __init__(self, action_id: object, reason: str) -> None:
+        self.action_id = action_id
+        self.reason = reason
+        super().__init__(f"action {action_id} is not a certificate submission: {reason}")
+
+
+class EHallUnsupportedRequiredField(DomainError):
+    """The form requires a control this pipeline deliberately cannot fill.
+
+    A required file upload is the user's job, not a click this project is willing to fake.
+    """
+
+
 class ExecutionRunNotFound(DomainError):
     """No execution run exists for the requested identity."""
 
@@ -958,6 +1035,14 @@ __all__ = [
     "DomainError",
     "DuplicateCommitment",
     "DuplicateInboundEvent",
+    "EHallActionMismatch",
+    "EHallBrowserUnavailable",
+    "EHallDisabled",
+    "EHallLoginRequired",
+    "EHallPageChanged",
+    "EHallServiceMismatch",
+    "EHallUnexpectedOrigin",
+    "EHallUnsupportedRequiredField",
     "EventNotFound",
     "ExecutionRunNotFound",
     "FileChangedDuringExtraction",
@@ -980,6 +1065,7 @@ __all__ = [
     "InvalidCommandDraft",
     "InvalidCommitment",
     "InvalidDeadline",
+    "InvalidEHallForm",
     "InvalidEventClaim",
     "InvalidEventTransition",
     "InvalidExecutionRun",

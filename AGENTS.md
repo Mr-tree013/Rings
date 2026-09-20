@@ -265,6 +265,27 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   daemon / EventWorker / Scheduler / MailSync / MailAnalysis / MailEventHandler / MailDraftService /
   Interpreter / GroundedAnswer 都不得 import SMTP executor 或 mail-send services；
   `smtplib` 只允许出现在 `adapters/mail/smtp.py`。
+- **eHall capabilities are registered typed pipelines, never a generic browser tool.**
+  Playwright 只允许出现在 `adapters/ehall/`；application/ports/domain 不得出现 page/selector/click/
+  goto/fill 之类标识符，也不得 import playwright。Port 只有 `inspect_form` 与 `submit_certificate`。
+- **The first production eHall capability is certificate submission only.**
+  唯一 action type 是 `ehall.submit-certificate`；drop-course / withdraw / cancel-application /
+  delete / dorm checkout / arbitrary-submit 这类能力在代码里**不存在**（不是 prompt 禁止）。
+- **eHall form values are explicit user input in this phase; no model or personal-fact autofill.**
+  所有可写字段只来自 `--field KEY=VALUE`；禁止 Knowledge search / MailAnalysis / LLM /
+  ConfirmedFact 参与填表。
+- **Preparation must not mutate the remote form.**
+  `pw ehall certificate prepare` 只做只读 inspect + 本地校验，不在网页里 fill，避免 autosave /
+  远端校验在用户 approve 之前发生。
+- **A page-contract change invalidates the prepared action.**
+  fingerprint 覆盖 service identity / page markers / 有序字段定义（key,label,kind,required,options）/
+  required materials / submit control；执行前必须重新 inspect 并要求 fingerprint 完全一致，否则
+  `EHallPageChanged`，且**不输入任何值**、不提交。
+- **The final submit click requires an exact ActionRequest human Approval.**
+  唯一提交入口是 `pw action execute`；没有 `pw ehall submit`，adapter 内部也不得重复点击或重试。
+- **Failures after the submit click are ambiguous unless a success/failure state is explicit, and
+  must never be blindly retried.** click 之前失败 = 明确 FAILED（approval 已消费）；click 之后无法
+  判定 = UNKNOWN，阻塞同一 action 的再次执行，并提示人工去 eHall 查看，绝不自动重发。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -394,6 +415,18 @@ RUNNING 同 transaction）、并发 fencing、UNKNOWN/崩溃语义（不自动 r
 **空的 production capability set**、`pw cases|case add|show|done|cancel` 与
 `pw actions|action show|challenge|approve|execute|cancel`。仍然不发送、无 SMTP/eHall/browser。
 
+**Phase 6C 已完成（v0.6.0）**：第一个白名单 eHall 事务 —— 证明书申请（ADR-0025）：
+manual `pw ehall login` + persistent headed Chromium profile（XDG data，0700）+ NJU top-level
+origin allowlist（ehall / ehallapp / authserver）、typed only pipeline（`inspect_form` /
+`submit_certificate`；没有 generic browser API）、只读 inspect（service 精确匹配 + page marker）、
+page-contract fingerprint（service / markers / 有序字段定义 / materials / submit control）、
+显式 `--field KEY=VALUE` prepare（不在网页里填表）、immutable
+`ActionRequest("ehall.submit-certificate")` + critical preview、既有
+challenge / approve / execute 审批链、执行前重新校验 contract + 精确填写 + readback + 单次
+whitelisted submit click、click 前 = FAILED / click 后不明 = UNKNOWN 且零自动重试、
+`pw ehall login|status|certificate inspect|prepare|show`、doctor 检查 playwright + chromium。
+无 migration 0012：durable audit state 仍由 Case / ActionRequest / Approval / ExecutionRun 承担。
+
 **Phase 6B 已完成（v0.5.0）**：approved SMTP delivery + ambiguous-result reconciliation
 （ADR-0024）：draft `needs_user_input` acknowledgement（`pw mail draft acknowledge`，编辑后重置）、
 可选且必须完整有效的 SMTP config（starttls/ssl，无 plain/verify_tls=false）、
@@ -408,14 +441,13 @@ SUCCEEDED，NOT_FOUND 不证明失败，AMBIGUOUS 不任选，UNAVAILABLE 保持
 
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
-mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
-eHall executor / browser executor / mobile approval UI / 邮件线程回溯修复 /
-site watcher / QQ 渠道 / 个人估时学习 /
-agent tool loop / 多工具只读编排 / command execution boundary（`pw interpret --apply` 之类）/
-重复任务与重复事件 / embedding 与向量检索 / OCR / Office 文档与压缩包展开 /
-filesystem watcher 快速路径 / Web Server / Playwright /
-OS·手机推送投递（当前 reminder 只进 durable notification inbox）/ approval token /
-Case、Approval 等其余 domain entity / Windows Task Scheduler 配置。
+其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
+agent / mobile approval UI / mail 线程回溯修复（parent 迟到不改写历史）/ mail 分类结果自动转 Task /
+site watcher / QQ 渠道 / 个人估时学习 / agent tool loop / 多工具只读编排 /
+command execution boundary（`pw interpret --apply` 之类）/ 重复任务与重复事件 /
+embedding 与向量检索 / OCR / Office 文档与压缩包展开 / filesystem watcher 快速路径 /
+Web Server / OS·手机推送投递（当前 reminder 只进 durable notification inbox）/
+approval token 之外的动作审批扩展 / Windows Task Scheduler 配置。
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
 Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）
