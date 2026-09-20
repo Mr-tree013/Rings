@@ -47,16 +47,16 @@ def test_help_lists_only_implemented_commands() -> None:
     assert "send" not in names
 
 
-def test_doctor_succeeds_on_python_313() -> None:
-    result = runner.invoke(app, ["doctor"])
+def test_doctor_succeeds_on_python_313(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["doctor"], env=_doctor_env(tmp_path))
 
     assert result.exit_code == 0, result.output
     assert "3.13" in result.output
     assert "environment looks usable" in result.output
 
 
-def test_doctor_reports_the_runtime_database_path() -> None:
-    result = runner.invoke(app, ["doctor"])
+def test_doctor_reports_the_runtime_database_path(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["doctor"], env=_doctor_env(tmp_path))
 
     assert result.exit_code == 0, result.output
     assert "runtime db" in result.output
@@ -196,6 +196,15 @@ def _env(tmp_path: Path) -> dict[str, str]:
     }
 
 
+def _doctor_env(tmp_path: Path) -> dict[str, str]:
+    """`doctor` reports on the host it runs on, so it is given an unconfigured one.
+
+    A developer's own config.toml (say, a model section whose key is not exported) must not decide
+    these tests, and a wide console keeps the reported paths from being wrapped mid-filename.
+    """
+    return {**_env(tmp_path), "COLUMNS": "200"}
+
+
 def _write(path: Path, text: str = "content") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -210,8 +219,8 @@ def _initialise_vault(vault: Path) -> None:
     )
 
 
-def test_doctor_reports_search_capabilities() -> None:
-    result = runner.invoke(app, ["doctor"])
+def test_doctor_reports_search_capabilities(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["doctor"], env=_doctor_env(tmp_path))
 
     assert result.exit_code == 0, result.output
     assert "sqlite FTS5" in result.output
