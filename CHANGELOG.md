@@ -5,7 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-09-20
+
+Phase 7 (learning): the assistant can now remember — about the person, and about the work. Facts
+become personal only when a human confirms them, a successful run becomes a playbook only when a
+human names it, tests it and promotes it, and neither path can execute, approve or generalise
+anything on its own. This release also carries Phase 6D's same-LAN mobile control plane.
 
 Phase 6D (mobile): a phone on the same network can read progress, create and finish tasks, edit a
 reply draft and approve one exact action. It cannot send, submit or execute anything — that stays
@@ -95,6 +100,59 @@ on the record.
 - The mobile route table is unchanged (no `/api/facts`), and adding a fact leaves every other table
   — tasks, deadlines, plans, mail, actions, approvals, executions, notifications, sessions —
   byte-for-byte as it was; a test asserts exactly that.
+
+Phase 7B (playbooks): a definitively successful action can be remembered as a reviewed reference
+blueprint — named by a person, dry-run against the current local parser, and promoted only with a
+pass that still applies. A playbook records what worked; it cannot run it again.
+
+### Added
+
+- Durable playbook candidates, replay tests and playbooks (ADR-0028), in three new tables
+  (`0014_playbooks.sql`). A candidate stores a name, a note, the source action, the source
+  `SUCCEEDED` run, the action type and the source fingerprint — a pointer to the immutable
+  `ActionRequest`, never a copy of a mail body or a form's values.
+- Explicit, human-only creation: `pw playbook candidate add ACTION --name ... --note ...`.
+  Nothing creates a candidate by itself, and a test asserts that a successful execution leaves the
+  candidate count unchanged. Creation reloads the action and the run, re-hashes the payload,
+  requires `EXECUTED` plus `SUCCEEDED` plus `finished_at`, and refuses `FAILED`, `UNKNOWN`,
+  `RUNNING` and never-executed actions with `PlaybookSourceNotEligible`. An action type with no
+  replay validator is refused with `PlaybookSourceUnsupported`, so every pending candidate has a
+  test it could pass, and `UNIQUE(source_action_id)` means one success seeds exactly one candidate.
+- Side-effect-free replay: `PlaybookReplayValidator` is a separate protocol from `ActionExecutor`
+  — `action_type`, `contract_version` and a pure `validate(action)`. Two validators are registered
+  by name (`mail.send` re-runs `MailSendPayload.from_payload`, `ehall.submit-certificate` re-runs
+  the typed certificate parser); there is no dynamic import, no plugin discovery and no generic
+  executor. A dry run reads no credential, opens no socket or browser, searches no Sent folder,
+  mints no Message-ID, creates no `ActionRequest`/`Approval`/`ExecutionRun`, and passes with SMTP
+  unconfigured and the eHall pipeline disabled — tests assert the SMTP conversation and the eHall
+  gateway step counts do not move.
+- Honest audit rows: each `playbook_replay_tests` row stores the candidate, the action type, the
+  registered contract version, an `input_fingerprint` over the candidate snapshot and the
+  validator identity, the status, and a tuple of bounded issue codes (`payload-invalid`,
+  `schema-version-unsupported`, `action-type-mismatch`). No payload, body, field value or exception
+  text is persisted, and the schema rejects a passing row with codes or a failing row without one.
+  Corruption — a payload that no longer re-hashes, a missing source run, a drifted candidate
+  fingerprint — raises instead of being recorded as an ordinary result.
+- Human promotion with a current pass: `pw playbook candidate promote` runs one transaction that
+  requires the candidate to still be pending and a `PASSED` test at the current replay contract
+  version with the exact input fingerprint, then inserts the playbook and records the transition.
+  Without such a test it refuses with `PlaybookCandidateNotTested`; there is no `--force`, no
+  `--skip-test` and no `--auto`. A contract-version bump invalidates old passes, while existing
+  playbooks keep the version they were promoted under.
+- `pw playbook candidates|candidate add|show|test|promote|reject` and
+  `pw playbooks|playbook show|retire`, with the usual full-UUID-or-unique-prefix resolution. A dry
+  run prints "Dry-run only. No external side effect was attempted." and, on a pass, says plainly
+  that the payload is still accepted locally and that this proves nothing about the world today.
+
+### Notes
+
+- A playbook is a reference blueprint: it contains no approval, grants no capability, cannot
+  create an `ActionRequest`, and the source has no `PlaybookExecutor`, no
+  `run`/`execute`/`apply`/`instantiate` command and no `${...}`/`{{...}}` parameterisation —
+  architecture tests fail if any of those appear. Rejected candidates and retired playbooks are
+  kept as history, and the mobile route table is unchanged.
+- The fact track and the playbook track stay separate: corrections feed `FactCandidate` and
+  `ConfirmedFact`, successful executions feed `PlaybookCandidate` and `Playbook`.
 
 ## [0.6.0] - 2026-09-20
 

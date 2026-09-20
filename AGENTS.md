@@ -340,6 +340,38 @@ adapters      实现 ports 的外部适配（DeepSeek、IMAP/SMTP、Playwright�
   `secret` / `token` / `credential(s)` / `api_key` / `apikey` / `private_key`，
   按 `.` 与 `_`/`-` 分词匹配，故 `mail.smtp_token` 也被拒绝）。**Fact store is not a
   credential store**：绝不扫描 value 猜测它「像不像密码」。
+- **A successful external action never becomes a Playbook automatically.**
+  成功的 `mail.send` / `ehall.submit-certificate` 不会自动产生任何学习记录；`playbook_candidates`
+  只在用户显式运行 `pw playbook candidate add ACTION --name ... --note ...` 时增长（有真实
+  integration regression 锁定）。
+- **PlaybookCandidates require explicit human creation and review.**
+  候选必须来自**明确 SUCCEEDED 的 ExecutionRun**（action 为 `EXECUTED`、payload fingerprint 重新校验通过、
+  run 属于该 action 且 `finished_at` 存在），FAILED / UNKNOWN / RUNNING / 从未执行的 PREPARED 一律
+  `PlaybookSourceNotEligible`；没有 replay validator 的 action type 在创建时就
+  `PlaybookSourceUnsupported`（保证每个 pending candidate 都可被测试）。**Candidate 不是 Playbook。**
+- **Playbook replay tests are side-effect-free validation only; they never invoke ActionExecutor.**
+  dry-run 只做纯本地解析：`mail.send` 重新走 `MailSendPayload.from_payload`，
+  `ehall.submit-certificate` 重新走 typed certificate parser。**不读凭据、不开 socket、不开浏览器、
+  不查 Sent、不生成新 Message-ID、不调用 ActionExecutor**，也不需要凭据/浏览器可用即可 PASS。
+  `PASS` 只意味着「当前代码仍理解这份 historical payload」，**不**意味着凭据有效、远端页面未变、
+  收件人仍然正确或动作值得再做一次。
+- **Promotion requires a current passing dry-run and explicit human action.**
+  `promote_candidate` 在一个 transaction 内要求 candidate 仍 PENDING、存在 **当前 contract version
+  + 精确 input fingerprint** 的 PASSED test，然后写入 Playbook 并记录转换；没有合格 PASS 则
+  `PlaybookCandidateNotTested`。没有 `--force` / `--skip-test` / `--auto`，也没有自动晋升。
+  replay contract version 变化即让旧 PASS 失效（旧 Playbook 保留其 promoting version，不自动重测/退休）。
+- **Playbooks do not contain or grant Approval.**
+  Playbook 不包含 Approval、不消费 Approval、不创建 `ActionRequest` / `ApprovalChallenge` / `Approval` /
+  `ExecutionRun`，也不绕过任何既有审批要求；它只保存 provenance（source action / run / fingerprint /
+  contract version / promotion test）。
+- **Phase 7 Playbooks are non-executing reference blueprints.**
+  没有 `pw playbook run|execute|apply|instantiate`，没有 `PlaybookExecutor` / `PlaybookRunner`，没有
+  `to_action_request`，也没有 `${...}` / `{{...}}` 参数化模板：**Phase 7B 不做实例化、不做参数推断**。
+  唯一状态转换是 `ACTIVE → RETIRED`，被拒绝的 candidate 与被退休的 Playbook 都永久保留为审计历史。
+- **No model may create, test, promote, parameterize or execute a Playbook.**
+  playbook 路径不 import `ModelPort` / `StructuredModel` / provider adapter；EventWorker / Scheduler /
+  MailAnalysis / MailDispatch / ActionExecution / Interpreter / GroundedAnswer / mobile web 都不能
+  import 或调用 playbook service。创建与晋升入口只有 `pw playbook` → `PlaybookService`。
 - `store/` 是 package，不是单个 `store.py`；未来按 `db / schema / mail / cases / approvals / knowledge / audit`
   拆分，禁止把它养成 God Object。
 - 模型通过 `ports` 中的 `ModelPort` 接入；DeepSeek 未来只是一个 adapter（ADR-0005）。
@@ -504,7 +536,7 @@ sessionless approval-link（fragment token，只 preview + approve）、daemon `
 supervised service（crash 不影响 sibling，stop event 干净退出）。
 **手机端没有任何执行入口**：无 SMTP、无 eHall、无 ActionExecutionService、无 ModelPort。
 
-**Phase 7A 已完成（仍是 0.6.0）**：durable corrections + human-confirmed personal facts
+**Phase 7A 已完成（v0.7.0 的一部分）**：durable corrections + human-confirmed personal facts
 （ADR-0027）：migration 0013（`corrections` / `fact_candidates` / `confirmed_facts`）、
 `Correction` 与 `FactCandidate` / `ConfirmedFact` / `FactCandidateStatus` / `FactState`、
 开放但受约束的 fact key 命名空间（`^[a-z][a-z0-9_.-]{0,127}$`，credential-like segment 一律
@@ -517,6 +549,22 @@ expiry 为读取期派生（无 job）、历史永不删除、`pw corrections|co
 `pw fact candidates|candidate add|show|confirm|reject`、`pw facts|fact show`。
 **本阶段不做 autofill、不把 fact 送进 model/mail/eHall、不自动产生 candidate、不做 Playbook。**
 
+**Phase 7B 已完成（v0.7.0）**：successful execution → reviewed non-executing playbook（ADR-0028）：
+migration 0014（`playbook_candidates` / `playbook_replay_tests` / `playbooks`）、
+`PlaybookCandidate` / `PlaybookReplayTest` / `Playbook` + 三个状态枚举、
+candidate 只能来自明确 SUCCEEDED 的 run（创建时重新读取 action/run、重新 hash payload、
+要求 `EXECUTED` + `SUCCEEDED` + `finished_at`，否则 `PlaybookSourceNotEligible`）、
+`UNIQUE(source_action_id)`（一次成功只能产生一个候选）、candidate 元数据不可编辑、
+`PlaybookReplayValidator` port（`action_type` / `contract_version` / 纯 `validate`，**不是**
+`ActionExecutor`）+ `PlaybookReplayRegistry`（只注册 `mail.send` 与 `ehall.submit-certificate`，
+无动态 import）、两个纯 parser dry-run validator、bounded issue codes
+（`payload-invalid` / `schema-version-unsupported` / `action-type-mismatch`）、
+`replay_input_fingerprint`（candidate + source action/fingerprint/type + validator type + version）、
+`PlaybookRepository` + `SqlitePlaybookRepository`（promote 单 transaction：PENDING + 精确 PASSED test
+→ 插入 playbook + 记录转换）、`PlaybookService`（create / test / promote / reject / retire）、
+`pw playbook candidates|candidate add|show|test|promote|reject` 与 `pw playbooks|playbook show|retire`。
+**本阶段不做实例化、不做参数化、不执行、不创建 Approval，也无任何 model/后台参与。**
+
 以下能力全部属于后续 Phase，尚未实现，不得在文档或回答里描述成已完成：
 
 其它 eHall 事务（退课/撤销/删除/dorm checkout 等高风险能力**永不实现**）/ generic browser
@@ -527,8 +575,8 @@ command execution boundary（`pw interpret --apply` 之类）/ 重复任务与�
 embedding 与向量检索 / OCR / Office 文档与压缩包展开 / filesystem watcher 快速路径 /
 移动端执行动作（手机永不执行，执行只在 host 上 `pw action execute`）/
 approval token 之外的动作审批扩展 / Windows Task Scheduler 配置 /
-**Playbook / PlaybookCandidate / workflow replay / 自动晋升（Phase 7B）** /
-用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（Phase 7B 之后另行评审）。
+把 Playbook 实例化成新的 `ActionRequest`（Phase 7B 明确不做）/ playbook 参数化与模板推断 /
+workflow 自动晋升 / 用已确认 fact 自动填 eHall 表单或自动注入 model/mail context（另行评审）。
 
 （Task/Deadline/CalendarEvent/PlanBlock/WorkSession、PlanProposal、ScheduledJob 与
 Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Phase。）

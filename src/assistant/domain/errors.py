@@ -1143,6 +1143,130 @@ class ConfirmedFactNotFound(DomainError):
         super().__init__(f"confirmed fact {reference} does not exist")
 
 
+class InvalidPlaybookCandidate(DomainError):
+    """A playbook candidate breaks its invariants (blank name, bad snapshot fingerprint)."""
+
+
+class PlaybookCandidateNotFound(DomainError):
+    """No playbook candidate exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"playbook candidate {reference} does not exist")
+
+
+class InvalidPlaybookReplayTest(DomainError):
+    """A replay test breaks its invariants (unknown issue code, incoherent status)."""
+
+
+class InvalidPlaybook(DomainError):
+    """A playbook breaks its invariants (blank name, bad provenance, bad status)."""
+
+
+class PlaybookNotFound(DomainError):
+    """No playbook exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"playbook {reference} does not exist")
+
+
+class PlaybookCandidateExists(DomainError):
+    """This successful action already seeded a reviewed candidate.
+
+    One action, one candidate: re-running the same execution must not multiply audit rows, and
+    rejecting a candidate is a decision, not a reason to try again with a better name.
+    """
+
+    def __init__(self, action_id: object) -> None:
+        self.action_id = action_id
+        super().__init__(
+            f"action {action_id} already has a playbook candidate; a successful action can seed "
+            "one reviewed candidate only"
+        )
+
+
+class InvalidPlaybookCandidateTransition(DomainError):
+    """A candidate was promoted or rejected from a state that forbids it."""
+
+    def __init__(self, candidate_id: object, current: object, target: object) -> None:
+        self.candidate_id = candidate_id
+        self.current = current
+        self.target = target
+        super().__init__(
+            f"playbook candidate {candidate_id} is {current} and cannot become {target}"
+        )
+
+
+class InvalidPlaybookTransition(DomainError):
+    """A playbook was retired from a state that forbids it."""
+
+    def __init__(self, playbook_id: object, current: object, target: object) -> None:
+        self.playbook_id = playbook_id
+        self.current = current
+        self.target = target
+        super().__init__(f"playbook {playbook_id} is {current} and cannot become {target}")
+
+
+class PlaybookSourceNotEligible(DomainError):
+    """The action this candidate would come from is not a definitive success.
+
+    Only an `EXECUTED` action with a `SUCCEEDED` run can seed a candidate: a `FAILED`,
+    `UNKNOWN`, `RUNNING` or still-`PREPARED` action teaches nothing about what worked.
+    """
+
+    def __init__(self, action_id: object, reason: str) -> None:
+        self.action_id = action_id
+        self.reason = reason
+        super().__init__(f"action {action_id} cannot seed a playbook candidate: {reason}")
+
+
+class PlaybookSourceUnsupported(DomainError):
+    """No replay validator exists for this action type, so the candidate could never be tested."""
+
+    def __init__(self, action_type: object) -> None:
+        self.action_type = action_type
+        super().__init__(
+            f"no replay validator is registered for action type {action_type}; this capability "
+            "cannot be reviewed as a playbook"
+        )
+
+
+class PlaybookReplayUnsupported(DomainError):
+    """A replay was requested for an action type this deployment cannot validate."""
+
+    def __init__(self, action_type: object) -> None:
+        self.action_type = action_type
+        super().__init__(f"replay validation is unavailable for action type {action_type}")
+
+
+class PlaybookSourceIntegrityError(DomainError):
+    """The stored source action or execution no longer matches what the candidate recorded.
+
+    A payload whose fingerprint does not re-hash, an execution that is not the one named, or a
+    source that stopped being a success is corruption or tampering — not a failing dry run, and
+    never something to record as an ordinary result and continue past.
+    """
+
+    def __init__(self, action_id: object, reason: str) -> None:
+        self.action_id = action_id
+        self.reason = reason
+        super().__init__(
+            f"the source action {action_id} is no longer usable as provenance: {reason}"
+        )
+
+
+class PlaybookCandidateNotTested(DomainError):
+    """Promotion needs a replay test that passed against the current contract."""
+
+    def __init__(self, candidate_id: object, reason: str) -> None:
+        self.candidate_id = candidate_id
+        self.reason = reason
+        super().__init__(
+            f"playbook candidate {candidate_id} has no current passing dry run: {reason}"
+        )
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1224,6 +1348,11 @@ __all__ = [
     "InvalidModelSchema",
     "InvalidNotification",
     "InvalidPlanBlock",
+    "InvalidPlaybook",
+    "InvalidPlaybookCandidate",
+    "InvalidPlaybookCandidateTransition",
+    "InvalidPlaybookReplayTest",
+    "InvalidPlaybookTransition",
     "InvalidScheduledJob",
     "InvalidScheduledJobClaim",
     "InvalidScheduledJobPayload",
@@ -1282,6 +1411,14 @@ __all__ = [
     "PlanningNotConfigured",
     "PlanningSnapshotChanged",
     "PlanningStateUnstable",
+    "PlaybookCandidateExists",
+    "PlaybookCandidateNotFound",
+    "PlaybookCandidateNotTested",
+    "PlaybookNotFound",
+    "PlaybookReplayUnsupported",
+    "PlaybookSourceIntegrityError",
+    "PlaybookSourceNotEligible",
+    "PlaybookSourceUnsupported",
     "ScheduledJobNotFound",
     "StaleCaseUpdate",
     "StaleEventClaim",

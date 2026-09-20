@@ -39,6 +39,7 @@ from assistant import (
     cli_mail,
     cli_mobile,
     cli_model,
+    cli_playbooks,
     cli_scheduler,
 )
 from assistant.adapters.ehall.session import session_state
@@ -102,6 +103,7 @@ cli_actions.register(app)
 cli_ehall.register(app)
 cli_mobile.register(app)
 cli_facts.register(app)
+cli_playbooks.register(app)
 
 _fail = fail
 """Backwards-compatible alias: the shared helper lives in `assistant.cli_support`."""

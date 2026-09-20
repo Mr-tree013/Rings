@@ -76,6 +76,8 @@ from assistant.application.mail_threading import MailThreadLinker
 from assistant.application.mobile_auth import MobileAuthService
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
+from assistant.application.playbook_replay import PlaybookReplayRegistry
+from assistant.application.playbook_service import PlaybookService
 from assistant.application.retry import RetryPolicy
 from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.application.scheduler_service import SchedulerService
@@ -118,6 +120,7 @@ from assistant.store.mail_send import SqliteMailSendRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.mobile_sessions import SqliteMobileSessionRepository
 from assistant.store.planning import SqlitePlanningRepository
+from assistant.store.playbooks import SqlitePlaybookRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
 from assistant.store.work import SqliteWorkRepository
 
@@ -166,6 +169,35 @@ def learning_service(clock: Clock, database: Database) -> LearningService:
     service and no web route reaches it, which is what keeps promotion a human act.
     """
     return LearningService(learning_repository(database), clock)
+
+
+def playbook_repository(database: Database) -> SqlitePlaybookRepository:
+    """Durable playbook candidates, replay tests and playbooks."""
+    return SqlitePlaybookRepository(database)
+
+
+def playbook_replay_registry() -> PlaybookReplayRegistry:
+    """The two dry-run validators this project has, registered explicitly.
+
+    A registry rather than a lookup by convention: a capability can only be dry-run here if a
+    validator was written and reviewed for it, which is what makes "no candidate without a
+    possible test" true.
+    """
+    return PlaybookReplayRegistry.default()
+
+
+def playbook_service(clock: Clock, database: Database) -> PlaybookService:
+    """Candidate review, side-effect-free dry runs and human promotion.
+
+    Composed for the explicit `pw playbook` commands and nothing else: no worker, no daemon
+    service and no web route can create, test or promote a playbook.
+    """
+    return PlaybookService(
+        playbook_repository(database),
+        action_repository(database),
+        clock,
+        replay=playbook_replay_registry(),
+    )
 
 
 def action_service(clock: Clock, database: Database) -> ActionService:
@@ -967,6 +999,9 @@ __all__ = [
     "model_api_key",
     "planner_service",
     "planning_repository",
+    "playbook_replay_registry",
+    "playbook_repository",
+    "playbook_service",
     "raw_mail_store",
     "registered_action_executors",
     "require_model_config",

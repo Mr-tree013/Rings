@@ -3,7 +3,7 @@
 一个会成长的个人助手：把邮件、个人资料、办事大厅和手机端连成一条可审计的闭环，并把每次成功的
 流程与你的纠正沉淀成可读、可改、可测试的规则。
 
-## 当前状态：v0.6.0（可审计的邮件工作流 + 白名单 eHall 事务 + 局域网手机控制面 + 人工确认的个人事实）
+## 当前状态：v0.7.0（可审计的邮件工作流 + 白名单 eHall 事务 + 手机控制面 + 人工确认的事实与 Playbook）
 
 已完成：
 
@@ -443,11 +443,59 @@ pw corrections                # 你说过的原话（audit）
   本阶段事实只被 store / review / query：eHall `--field` 仍然必须显式输入，mail draft 不会自动注入，
   Interpreter 与 GroundedAnswer 的 context 也没有变化（有 architecture test 锁定）。
 
+已复核的 Playbook（Phase 7B）：**已实现** 「一次成功 → 人工命名候选 → 无副作用 dry-run → 人工晋升」
+的引用蓝图 —— 它记录**什么曾经成功**，但**不能重放、不能执行、不能参数化**：
+
+```bash
+# 1. 指向一次已经明确成功的执行（action 必须是 EXECUTED，run 必须是 SUCCEEDED）
+pw playbook candidate add <ACTION> \
+  --name "Approved certificate workflow" \
+  --note "Successful run reviewed by me"
+
+# 2. 复核候选：来源 action / run / fingerprint 与历史 dry-run
+pw playbook candidate show <CANDIDATE>
+
+# 3. dry-run：只让当前本地 parser 重新读一遍那份被批准的 payload
+pw playbook candidate test <CANDIDATE>
+
+# 4. 人工晋升（要求当前 contract version 下有 PASS；没有 --force / --skip-test）
+pw playbook candidate promote <CANDIDATE>
+
+# 5. 查看 / 退休（退休只是不再引用，历史永存）
+pw playbooks
+pw playbook show <PLAYBOOK>
+pw playbook retire <PLAYBOOK>
+```
+
+要点：
+
+- **成功不会自动学习**：一次 `mail.send` / `ehall.submit-certificate` 成功执行之后，
+  `playbook_candidates` 数量**不变**，直到用户显式 `pw playbook candidate add`；
+  一个成功的 action 最多产生**一个**候选（DB `UNIQUE(source_action_id)`），拒绝也不是重建的理由。
+- **来源必须是明确成功**：创建候选时会重新读取 action 与 run、重新 hash payload，要求
+  `ActionRequest.status == EXECUTED`、`ExecutionRun.status == SUCCEEDED`、`finished_at` 存在；
+  `FAILED` / `UNKNOWN` / `RUNNING` / 从未执行都会被拒绝（`PlaybookSourceNotEligible`）。
+- **dry-run 不接触任何外部系统**：`mail.send` 只重新运行 `MailSendPayload` 的严格 parser，
+  `ehall.submit-certificate` 只重新运行证书 payload parser。**不读 SMTP/IMAP 凭据、不发信、不开浏览器、
+  不查 Sent、不生成新 Message-ID、不调用 `ActionExecutor`、不创建 `Approval` 或 `ExecutionRun`**；
+  即使 SMTP 密码缺失、eHall 关闭、Playwright 未安装，dry-run 依然可以 PASS（有测试与 spy 锁定）。
+- **PASS 的含义很窄**：它只证明「当前代码仍然理解这份 historical payload」。
+  它**不**证明凭据仍然有效、远端页面没有变化、收件人仍然正确，也不证明这个动作值得再做一次。
+- **晋升需要当前版本的 PASS**：promote 在同一个 transaction 内要求候选仍是 pending、且存在
+  **当前 replay contract version + 精确 input fingerprint** 的 PASSED test（否则
+  `PlaybookCandidateNotTested`）。parser 语义变化时递增 contract version，旧 PASS 自动失效，
+  旧 Playbook 保留它当时晋升所用的版本，不自动重测、不自动退休。
+- **Playbook 不携带任何能力**：它不含 Approval、不创建 `ActionRequest`、不绕过审批，
+  CLI 里没有 `pw playbook run|execute|apply|instantiate`，代码里没有 `PlaybookExecutor`，
+  也没有 `${...}` / `{{...}}` 参数化模板 —— 实例化与参数推断是后续 Phase 的事。
+- **审计永远保留**：被拒绝的候选与被退休的 Playbook 都不删除，replay test 逐条追加
+  （只保存 contract version、input fingerprint 与 bounded issue codes，不保存 payload 正文）。
+
 **尚未实现**：其它 eHall 事务（退课/撤销/删除等高风险能力永不实现）、generic browser agent、
 公网部署 / cloud relay / VPN / 第三方登录、手机推送（APNs / FCM / Web Push）、
 手机端执行动作（执行只在 host 上发生）、正文索引/问答（把邮件正文送进 knowledge index）、thread 回溯修复、
 分类结果自动转 Task/Case、事件删除同步（server-side deletion）、attachment materialization、
-QQ 与站点 watcher、个人估时学习、Playbook / workflow replay / 自动晋升（Phase 7B）、
+QQ 与站点 watcher、个人估时学习、把 Playbook 实例化为新 action（参数化 / 模板推断 / 自动晋升）、
 用已确认事实自动填表或自动注入 model/mail context。
 明确边界：**model 不能直接修改 task、文件、scheduler 状态或任何外部服务**；它只能产出文本，
 是否可用由本地 deterministic validation 决定。

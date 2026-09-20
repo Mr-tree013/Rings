@@ -512,6 +512,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0011_approved_mail_send.sql",
         "0012_mobile_web.sql",
         "0013_learning_facts.sql",
+        "0014_playbooks.sql",
     ]
 
 
@@ -1615,11 +1616,15 @@ FACT_IDENTIFIERS = frozenset(
         "confirm_candidate",
         "confirm_fact",
         "create_candidate_with_correction",
-        "reject_candidate",
         "reject_fact",
     }
 )
-"""Names a module has to use to reach personal facts or to promote one."""
+"""Names a module has to use to reach personal facts or to promote one.
+
+`reject_candidate` is absent on purpose: Phase 7B names a *playbook* candidate the same way, and
+the fact-side ban is already carried by `LearningService`, `LearningRepository`, `FactCandidate`,
+`ConfirmedFact`, `confirm_fact`, `confirm_candidate` and `propose_fact`.
+"""
 
 FACT_STORAGE_IMPORTS = (
     "assistant.application.learning_service",
@@ -1750,12 +1755,231 @@ def test_the_web_surface_has_no_fact_route() -> None:
         assert forbidden not in text, forbidden
 
 
-def test_no_playbook_machinery_exists_yet() -> None:
-    """§36: Phase 7A stores facts. Playbooks are a later phase's design, not half of this one."""
-    offenders = [
-        _relative(path)
+PLAYBOOK_MODULES = (
+    "domain/playbook.py",
+    "ports/playbook_replay.py",
+    "ports/playbook_repository.py",
+    "store/playbooks.py",
+    "application/playbook_service.py",
+    "application/playbook_replay/mail_send.py",
+    "application/playbook_replay/ehall_certificate.py",
+    "application/playbook_replay/registry.py",
+    "cli_playbooks.py",
+)
+
+PLAYBOOK_ALLOWED_MODULES = frozenset(
+    {
+        *PLAYBOOK_MODULES,
+        # The package's own `__init__` re-exports the validators; the composition root wires them.
+        "application/playbook_replay/__init__.py",
+        "bootstrap.py",
+    }
+)
+
+PLAYBOOK_IDENTIFIERS = frozenset(
+    {
+        "Playbook",
+        "PlaybookCandidate",
+        "PlaybookCandidateStatus",
+        "PlaybookId",
+        "PlaybookReplayRegistry",
+        "PlaybookReplayTest",
+        "PlaybookRepository",
+        "PlaybookService",
+        "PlaybookStatus",
+        "SqlitePlaybookRepository",
+        "add_replay_test",
+        "create_candidate",
+        "promote_candidate",
+        "retire_playbook",
+        "replay_input_fingerprint",
+    }
+)
+"""Names a module has to use to create, test, promote or retire a playbook."""
+
+PLAYBOOK_STORAGE_IMPORTS = (
+    "assistant.application.playbook_replay",
+    "assistant.application.playbook_service",
+    "assistant.domain.playbook",
+    "assistant.ports.playbook_replay",
+    "assistant.ports.playbook_repository",
+    "assistant.store.playbooks",
+)
+"""Imports that would let a module read or write the playbook tables."""
+
+
+def test_only_the_playbook_path_can_create_test_or_promote_a_playbook() -> None:
+    """§32: one module chain and one command group, and nothing else in the project."""
+    named = [
+        f"{_relative(path)} names {name}"
         for path in _source_modules()
-        if "playbook" in path.read_text(encoding="utf-8").lower()
+        if _relative(path) not in PLAYBOOK_ALLOWED_MODULES
+        for name in _identifiers(path) & PLAYBOOK_IDENTIFIERS
+    ]
+    imported = [
+        f"{_relative(path)} imports {module}"
+        for path in _source_modules()
+        if _relative(path) not in PLAYBOOK_ALLOWED_MODULES
+        for module in _imported_modules(path)
+        if module.startswith(PLAYBOOK_STORAGE_IMPORTS)
+    ]
+
+    assert not named, named
+    assert not imported, imported
+
+
+def test_the_playbook_application_path_reaches_no_store_no_model_and_nothing_executable() -> None:
+    """§34/§50: the service reads actions, writes playbooks and cannot run anything."""
+    forbidden = (
+        "assistant.store",
+        "assistant.adapters",
+        "assistant.ports.model",
+        "assistant.ports.action_executor",
+        "assistant.application.structured_model",
+        "assistant.application.action_execution",
+        "assistant.application.approval_service",
+        "assistant.application.interpreter",
+        "assistant.application.grounded_answer",
+        "assistant.application.mail",
+        "assistant.application.ehall",
+    )
+    offenders = [
+        f"application/playbook_service.py imports {imported}"
+        for imported in _imported_modules(SOURCE_ROOT / "application" / "playbook_service.py")
+        if imported.startswith(forbidden)
+        or imported in {"sqlite3", "httpx", "jsonschema", "smtplib", "playwright"}
     ]
 
     assert not offenders, offenders
+    # The prose in that module *explains* these boundaries; the real check is that its code never
+    # names them, so the sweep looks at identifiers rather than at the docstring text.
+    banned_names = {
+        "ActionExecutionService",
+        "ActionExecutor",
+        "ApprovalService",
+        "ExecutionOutcome",
+        "smtplib",
+        "playwright",
+        "execute",
+    }
+    named = _identifiers(SOURCE_ROOT / "application" / "playbook_service.py") & banned_names
+    assert not named, named
+
+
+def test_the_playbook_domain_stays_pure() -> None:
+    """A candidate, a replay test and a playbook are values: no clock, no storage, no framework."""
+    path = SOURCE_ROOT / "domain" / "playbook.py"
+    text = path.read_text(encoding="utf-8")
+
+    assert "datetime.now(" not in text
+    for imported in _imported_modules(path):
+        assert not imported.startswith(
+            ("assistant.store", "assistant.adapters", "assistant.application", "sqlite3")
+        ), imported
+
+
+def test_a_replay_validator_is_not_an_executor() -> None:
+    """§9/§50: the dry run may re-parse a payload and nothing else — no client, no browser."""
+    forbidden_imports = (
+        "assistant.ports.action_executor",
+        "assistant.adapters",
+        "sqlite3",
+        "httpx",
+        "smtplib",
+        "imaplib",
+        "playwright",
+        "socket",
+        "ssl",
+    )
+    offenders = [
+        f"{relative} imports {imported}"
+        for relative in PLAYBOOK_MODULES
+        if relative.startswith("application/playbook_replay/")
+        for imported in _imported_modules(SOURCE_ROOT / relative)
+        if imported.startswith(forbidden_imports) or imported in set(forbidden_imports)
+    ]
+
+    assert not offenders, offenders
+    banned_names = {"execute", "ActionExecutor", "submit", "send", "connect"}
+    named = [
+        f"{relative} names {name}"
+        for relative in PLAYBOOK_MODULES
+        if relative.startswith("application/playbook_replay/")
+        for name in _identifiers(SOURCE_ROOT / relative) & banned_names
+    ]
+    assert not named, named
+    # The port names exactly three things: the type, the contract version and the pure validate.
+    port = SOURCE_ROOT / "ports" / "playbook_replay.py"
+    assert "class PlaybookReplayValidator(Protocol)" in port.read_text(encoding="utf-8")
+    assert not _identifiers(port) & {"ActionExecutor", "execute", "supports"}
+
+
+def test_there_is_no_playbook_execution_or_parameterisation_api() -> None:
+    """§21/§22: not a command, not a class, not a template placeholder anywhere in the source."""
+    banned_identifiers = {
+        "PlaybookExecutor",
+        "PlaybookRunner",
+        "apply_playbook",
+        "instantiate_playbook",
+        "render_playbook",
+        "run_playbook",
+        "to_action_request",
+        "to_action_payload",
+    }
+    offenders = [
+        f"{_relative(path)} names {name}"
+        for path in _source_modules()
+        for name in _identifiers(path) & banned_identifiers
+    ]
+    assert not offenders, offenders
+
+    # `${...}` and `{{...}}` would be parameter slots; `}}` alone is just JSON-schema dict syntax.
+    template_markers = ("${", "{{")
+    offenders = [
+        f"{_relative(path)} contains {marker}"
+        for path in _source_modules()
+        for marker in template_markers
+        if marker in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, offenders
+
+
+def test_no_background_or_model_path_can_reach_the_playbook_pipeline() -> None:
+    """§32: a successful run is history; only a person turns history into a playbook."""
+    watched = [
+        *BACKGROUND_MODULES,
+        "application/mail_analysis.py",
+        "application/action_execution.py",
+        "application/mail_send_actions.py",
+        "application/mail_send_reconciliation.py",
+        "application/ehall_certificate.py",
+        "application/learning_service.py",
+        "application/structured_model.py",
+        "adapters/model/deepseek.py",
+        "adapters/web/app.py",
+        "adapters/ehall/executor.py",
+        "adapters/mail/smtp.py",
+        "ports/model.py",
+    ]
+    offenders = [
+        f"{relative} reaches {name}"
+        for relative in watched
+        for name in (
+            _identifiers(SOURCE_ROOT / relative)
+            | {
+                imported.split(".")[-1]
+                for imported in _imported_modules(SOURCE_ROOT / relative)
+            }
+        )
+        if name in PLAYBOOK_IDENTIFIERS
+        or name in {"playbook_service", "playbook_repository", "playbooks"}
+    ]
+
+    assert not offenders, offenders
+
+
+def test_the_web_surface_has_no_playbook_route() -> None:
+    """§47: the phone review surface does not grow a playbook endpoint."""
+    text = (SOURCE_ROOT / "adapters" / "web" / "app.py").read_text(encoding="utf-8")
+    for forbidden in ("/api/playbooks", "playbook", "Playbook"):
+        assert forbidden not in text, forbidden
