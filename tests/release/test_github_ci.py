@@ -15,6 +15,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 README = REPOSITORY_ROOT / "README.md"
+README_EN = REPOSITORY_ROOT / "README_en.md"
 
 """The gates, in the order the workflow must run them."""
 GATE_ORDER = (
@@ -153,11 +154,14 @@ def test_the_workflow_pins_no_timezone() -> None:
 
 
 def test_the_readme_shows_the_ci_badge_for_this_workflow() -> None:
-    readme = README.read_text(encoding="utf-8")
-
     badge = "https://github.com/Mr-tree013/Rings/actions/workflows/ci.yml/badge.svg"
-    assert badge in readme
-    sentence = "Every pull request and push to main runs the repository quality gates"
-    assert sentence in readme
-    for unwanted in ("codecov", "coveralls", "shields.io/pypi", "CodeQL"):
-        assert unwanted not in readme, unwanted
+    sentences = (
+        (README, "都会通过 GitHub Actions 运行仓库的质量门"),
+        (README_EN, "runs the repository quality gates in GitHub Actions"),
+    )
+    for page, sentence in sentences:
+        readme = page.read_text(encoding="utf-8")
+        assert badge in readme, page.name
+        assert sentence in readme, page.name
+        for unwanted in ("codecov", "coveralls", "shields.io/pypi", "CodeQL"):
+            assert unwanted not in readme, f"{page.name}: {unwanted}"

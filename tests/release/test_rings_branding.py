@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 README = REPOSITORY_ROOT / "README.md"
+README_EN = REPOSITORY_ROOT / "README_en.md"
 LANGUAGE = REPOSITORY_ROOT / "docs" / "concepts" / "rings-language.md"
 SPEC = REPOSITORY_ROOT / "docs" / "specs" / "0001-system-design.md"
 
@@ -54,9 +55,21 @@ def test_the_readme_carries_the_product_language() -> None:
 
     for word in VOCABULARY:
         assert word in text, word
+    assert "## Tree Model" in text
+    assert "docs/concepts/rings-language.md" in text
+    # The tagline and the motto.
+    assert "与你一同成长" in text
+    assert "让每天的叶子，长成年轮。" in text  # noqa: RUF001 - the motto is intentional
+
+
+def test_the_english_variant_carries_the_same_product_language() -> None:
+    """Both language variants describe the same product in the same vocabulary."""
+    text = _read(README_EN)
+
+    for word in VOCABULARY:
+        assert word in text, word
     assert "## The Tree Model" in text
     assert "docs/concepts/rings-language.md" in text
-    # The tagline, and the one line of Chinese the README is allowed to carry.
     assert "grows with you" in text
     assert "让每天的叶子，长成年轮。" in text  # noqa: RUF001 - the motto is intentional
 
@@ -72,11 +85,13 @@ def test_the_readme_clones_the_public_repository() -> None:
 
 def test_branches_are_capability_modules_not_autonomous_agents() -> None:
     readme = _read(README)
+    readme_en = _read(README_EN)
     language = _read(LANGUAGE)
 
-    assert "not autonomous sub-agents" in readme
+    assert "而不是 autonomous sub-agents" in readme
+    assert "not autonomous sub-agents" in readme_en
     assert "Branches are capability modules, not autonomous sub-agents." in language
-    for text in (readme, language):
+    for text in (readme, readme_en, language):
         for overclaim in ("autonomous branch", "branches act on their own", "self-directed branch"):
             assert overclaim not in text.lower(), overclaim
 

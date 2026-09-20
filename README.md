@@ -1,56 +1,50 @@
 # Rings
 
-A local-first personal operations system that grows with you.
+一个与你一同成长的、**local-first** 的个人运营系统。
 
 让每天的叶子，长成年轮。
 
 [![CI](https://github.com/Mr-tree013/Rings/actions/workflows/ci.yml/badge.svg)](https://github.com/Mr-tree013/Rings/actions/workflows/ci.yml)
 
-**Version:** 1.0.0 · **Reference environment:** Linux / WSL + Python 3.13
+**语言：** 中文 ｜ [English](README_en.md)
 
-Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
-SQLite database plus the files that database references, and reaches the outside world only through
-the integrations you configure.
+**版本：** 1.0.0 · **参考运行环境：** Linux / WSL + Python 3.13
 
-It observes what arrives — mail, public notices, text you forward — turns the intentions you state
-into commitments and plans, prepares carefully bounded external actions, and keeps a reviewed
-history that grows over time.
+Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
-It is not a general autonomous computer agent. There is no shell, no filesystem control, no generic
-browser and no generic HTTP client in it, and every production external effect waits for one exact
-human approval.
+它会观察每天到来的信息——邮件、公开通知、你转发的文本——把你明确表达的意图转化为 commitments 和 plans，准备边界清晰的 external actions，并保留经过 review、会随着时间持续积累的历史记录。
 
-## The Tree Model
+Rings 不是一个通用的 autonomous computer agent。它没有 shell、没有通用文件系统控制、没有通用浏览器，也没有通用 HTTP client；任何生产环境中的外部副作用，都必须等待一次针对**精确动作**的人类 `Approval`。
 
-| Word | Meaning |
+## Tree Model
+
+| 概念 | 含义 |
 | --- | --- |
-| **Roots** | Long-lived, traceable personal sources of truth: your indexed documents and the facts you confirmed, with their provenance. |
-| **Seeds** | The intentions and commitments you plant deliberately: tasks, deadlines, calendar events and planning intent. |
-| **Branches** | The controlled capability areas the Tree can call on. Branches are capability modules, not autonomous sub-agents. |
-| **Leaves** | What arrives each day: mail, observations, pasted or forwarded text. A Leaf may be interpreted, but never becomes a commitment or an action by itself. |
-| **Rings** | The growth record that accumulates over time: work sessions, executions, fact history and reviewed playbooks. |
-| **Tree** | The coordinator you talk to, through the CLI, the mobile page and your editor. It is not an unrestricted autonomous agent. |
+| **Roots** | 长期、可追溯的个人真实来源：你建立索引的文档，以及由你确认并保留 provenance 的事实。 |
+| **Seeds** | 你主动种下的意图与 commitments：tasks、deadlines、calendar events 和 planning intent。 |
+| **Branches** | Tree 可以调用的、受控的能力领域。Branches 是 capability modules，而不是 autonomous sub-agents。 |
+| **Leaves** | 每天进入系统的信息：邮件、observations、粘贴或转发的文本。Leaf 可以被解释，但不会自动变成 commitment 或 action。 |
+| **Rings** | 随时间累积的成长记录：work sessions、executions、fact history 和经过 review 的 playbooks。 |
+| **Tree** | 真正与你交互的协调者，你可以通过 CLI、mobile page 和编辑器与它沟通。它不是一个不受限制的 autonomous agent。 |
 
-The Tree coordinates all of it and never bypasses an `ActionRequest`, a human `Approval`, an
-`ExecutionRun`, fact confirmation, playbook review or the capability registry. The full vocabulary
-lives in [docs/concepts/rings-language.md](docs/concepts/rings-language.md).
+Tree 协调这一切，但永远不会绕过 `ActionRequest`、人类 `Approval`、`ExecutionRun`、fact confirmation、playbook review 或 capability registry。完整的概念说明见 [docs/concepts/rings-language.md](https://github.com/Mr-tree013/Rings/blob/main/docs/concepts/rings-language.md)。
 
-## What Rings Can Do
+## Rings 能做什么
 
-| Branch | What it does |
+| Branch | 能力 |
 | --- | --- |
-| **Planning** | Tasks, deadlines, calendar events, work sessions, and deterministic weekly proposals you review and apply. |
-| **Knowledge** | Indexes the local and vault roots you configure and answers only from them, with citations. |
-| **Mail** | IMAP ingestion, deterministic threads, bounded analysis, local reply drafts, explicitly approved SMTP delivery. |
-| **Observation** | Configured public HTTPS watchers, plus manual and QQ-forwarded input. |
-| **Actions** | Exact `ActionRequest` → human `Approval` → `ExecutionRun`, bound to an immutable payload fingerprint. |
-| **eHall** | One narrow, approved NJU certificate workflow — no generic browser automation. |
-| **Mobile** | A trusted-LAN surface for review and approval. |
-| **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` confirmation, and reviewed non-executing playbooks. |
-| **MCP** | A controlled local stdio integration for VS Code. |
-| **Operations** | Integrity checks, backup, verify and staging restore. |
+| **Planning** | 管理 Tasks、deadlines、calendar events、work sessions，以及由你 review 并应用的 deterministic weekly proposals。 |
+| **Knowledge** | 为你配置的本地和 vault Roots 建立索引，并只基于这些来源进行带引用的回答。 |
+| **Mail** | IMAP ingestion、deterministic threads、bounded analysis、本地 reply drafts，以及经过明确 Approval 的 SMTP delivery。 |
+| **Observation** | 观察你配置的公开 HTTPS 页面，以及手动输入和 QQ 转发内容。 |
+| **Actions** | 精确的 `ActionRequest` → 人类 `Approval` → `ExecutionRun`，并绑定不可变的 payload fingerprint。 |
+| **eHall** | 一个范围严格受限、需要 Approval 的 NJU certificate workflow；没有通用 browser automation。 |
+| **Mobile** | 在可信 LAN 内提供 review 和 Approval 界面。 |
+| **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` 的人工确认流程，以及经过 review、不可执行的 Playbooks。 |
+| **MCP** | 面向 VS Code 的、受控的本地 stdio integration。 |
+| **Operations** | Integrity check、backup、verify 和 staging restore。 |
 
-## Safety by Design
+## 安全设计
 
 ```text
 ActionRequest
@@ -59,22 +53,18 @@ ActionRequest
 → ExecutionRun
 ```
 
-- The model cannot approve external actions, and neither can a background worker: no service has a
-  path to creating an approval.
-- An approval is bound to one exact payload, is single-use, and is consumed before execution begins.
-- Changing the payload requires a new `ActionRequest` and a new `Approval`.
-- Ambiguous external results are never blindly retried; they stay unresolved until a human resolves
-  them.
-- Mobile can approve but cannot execute, and eHall submissions need the same approval chain as mail.
-- Playbooks are reviewed references rather than executable workflows, and confirmed facts do not
-  auto-fill anything in v1.
+- Model 不能批准 external actions，background worker 也不能；任何后台服务都没有创建 `Approval` 的路径。
+- `Approval` 只绑定一个精确 payload，只能使用一次，并且会在执行开始前被消费。
+- 修改 payload 后，必须重新创建 `ActionRequest` 和新的 `Approval`。
+- 对外部系统产生的模糊结果不会盲目重试；它们会保持 unresolved，直到由人处理。
+- Mobile 可以批准，但不能执行；eHall submission 与邮件发送使用同样的 Approval chain。
+- Playbooks 是经过 review 的参考，而不是可执行 workflow；v1 中 `ConfirmedFact` 也不会自动填入任何地方。
 
-The full boundaries are in [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) and
-the [architecture decision records](docs/adr/).
+完整边界说明见 [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) 和 [Architecture Decision Records](https://github.com/Mr-tree013/Rings/blob/main/docs/adr)。
 
-## Quick Start
+## 快速开始
 
-Requires Python 3.13, [uv](https://docs.astral.sh/uv/), and Linux or WSL.
+需要 Python 3.13、[uv](https://docs.astral.sh/uv/) 以及 Linux 或 WSL。
 
 ```bash
 git clone https://github.com/Mr-tree013/Rings.git
@@ -91,50 +81,53 @@ uv run pw integrity check
 uv run assistantd
 ```
 
-In a second terminal:
+然后在第二个终端中运行：
 
 ```bash
 uv run pw status
 ```
 
-The sample configuration is inert until you change it: mail, eHall, mobile and MCP are off and no
-watcher is configured. Credentials are supplied through environment variables, not committed to
-config: `DEEPSEEK_API_KEY`, `GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_PASSWORD` and
-`GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_SMTP_PASSWORD`. `uv run pw mail accounts` and
-`uv run pw model status` report what the host can see without printing a secret.
+示例配置在你主动修改之前不会启用任何外部能力：Mail、eHall、Mobile 和 MCP 默认关闭，也没有配置任何 watcher。
 
-Full setup, every configuration field, credential rules and WSL startup:
-[docs/guides/getting-started.md](docs/guides/getting-started.md).
+Credentials 通过环境变量提供，不写入配置文件：
 
-## Everyday Examples
+- `DEEPSEEK_API_KEY`
+- `GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_PASSWORD`
+- `GROWING_ASSISTANT_MAIL_<ACCOUNT_ID>_SMTP_PASSWORD`
 
-Create a task and see your list:
+`uv run pw mail accounts` 和 `uv run pw model status` 可以显示当前主机能够看到的配置状态，但不会打印 secret。
+
+完整安装流程、全部配置字段、credential 规则和 WSL 启动方式见 [docs/guides/getting-started.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/getting-started.md)。
+
+## 常用示例
+
+创建一个 Task 并查看列表：
 
 ```bash
 uv run pw task add "Write the SE lab report" --estimate 300 --deadline 2026-10-20T23:59:00+08:00
 uv run pw tasks
 ```
 
-Forward something you received elsewhere:
+把你从其他地方收到的信息转发给 Rings：
 
 ```bash
 uv run pw ingest text "Forwarded notice..." --source qq-forward
 ```
 
-Check and sync mail:
+检查并同步邮件：
 
 ```bash
 uv run pw mail status
 uv run pw mail sync
 ```
 
-See what a watched page changed:
+查看被监控页面发生了什么变化：
 
 ```bash
 uv run pw watch observations
 ```
 
-Check the system and take a backup:
+检查系统并创建备份：
 
 ```bash
 uv run pw status
@@ -143,31 +136,31 @@ uv run pw backup create ~/assistant-backup.gab
 uv run pw backup verify ~/assistant-backup.gab
 ```
 
-The full mail approval chain, eHall, mobile pairing, facts and playbooks are in the guides below.
+完整的 Mail Approval chain、eHall、Mobile pairing、Facts 和 Playbooks 使用方式，请查看下面的 guides。
 
-## Documentation
+## 文档
 
-| Topic | Where |
+| 主题 | 文档 |
 | --- | --- |
-| Getting started, configuration, credentials, WSL startup | [docs/guides/getting-started.md](docs/guides/getting-started.md) |
-| The Rings / Tree vocabulary | [docs/concepts/rings-language.md](docs/concepts/rings-language.md) |
-| Tasks, calendar, work sessions, weekly planning | [docs/guides/planning.md](docs/guides/planning.md) |
-| Knowledge indexing and grounded answers | [docs/guides/knowledge.md](docs/guides/knowledge.md) |
-| Mail: sync, analysis, drafts, approved sending | [docs/guides/mail.md](docs/guides/mail.md) |
-| eHall certificate application | [docs/guides/ehall.md](docs/guides/ehall.md) |
-| Mobile control plane | [docs/guides/mobile.md](docs/guides/mobile.md) |
-| Watchers and manual / QQ-forwarded input | [docs/guides/watchers-and-manual-input.md](docs/guides/watchers-and-manual-input.md) |
-| Facts and playbooks | [docs/guides/learning.md](docs/guides/learning.md) |
-| MCP / VS Code | [docs/guides/mcp.md](docs/guides/mcp.md) |
-| Integrity, backup and recovery | [docs/guides/backup-and-recovery.md](docs/guides/backup-and-recovery.md) |
-| Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
-| System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
-| Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.0.0) | [docs/releases/1.0.0.md](docs/releases/1.0.0.md) |
-| Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Security policy | [SECURITY.md](SECURITY.md) |
+| 快速上手、配置、Credentials、WSL 启动 | [docs/guides/getting-started.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/getting-started.md) |
+| Rings / Tree 概念体系 | [docs/concepts/rings-language.md](https://github.com/Mr-tree013/Rings/blob/main/docs/concepts/rings-language.md) |
+| Tasks、Calendar、Work Sessions、Weekly Planning | [docs/guides/planning.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/planning.md) |
+| Knowledge indexing 与 grounded answers | [docs/guides/knowledge.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/knowledge.md) |
+| Mail：同步、分析、Drafts、Approved Sending | [docs/guides/mail.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/mail.md) |
+| eHall certificate application | [docs/guides/ehall.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/ehall.md) |
+| Mobile control plane | [docs/guides/mobile.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/mobile.md) |
+| Watchers 与手动 / QQ 转发输入 | [docs/guides/watchers-and-manual-input.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/watchers-and-manual-input.md) |
+| Facts 与 Playbooks | [docs/guides/learning.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/learning.md) |
+| MCP / VS Code | [docs/guides/mcp.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/mcp.md) |
+| Integrity、Backup 与 Recovery | [docs/guides/backup-and-recovery.md](https://github.com/Mr-tree013/Rings/blob/main/docs/guides/backup-and-recovery.md) |
+| 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
+| 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
+| Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
+| Release Notes（当前版本：v1.0.0） | [docs/releases/1.0.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.0.0.md) |
+| Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
+| Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 
-## Architecture at a Glance
+## 架构概览
 
 ```text
 Interaction
@@ -183,37 +176,30 @@ Execution
 Data
 ```
 
-Modular Monolith · Event Driven · Ports & Adapters · SQLite durable state · Explicit state machines.
+**Modular Monolith · Event Driven · Ports & Adapters · SQLite durable state · Explicit state machines**
 
-One daemon (assistantd) supervises isolated services; the CLI, the LAN mobile page and the local MCP
-server are interaction surfaces over the same durable state. Model provider, mail transport,
-browser, web surface and clock sit behind ports, and the model port has no tool calls, no filesystem
-and no database.
+一个 `assistantd` daemon 负责监管彼此隔离的 services；CLI、LAN Mobile 页面和本地 MCP server 都是在同一份 durable state 之上的 interaction surfaces。Model provider、mail transport、browser、web surface 和 clock 都位于 ports 之后；ModelPort 没有 tool calls、没有 filesystem 权限，也不能访问 database。
 
-Rings is the public project name; the v1 compatibility surface keeps its historical identifiers —
-the Python package is still `assistant`, the distribution is still `growing-assistant`, and the
-`pw`, `assistantd` and `growing-assistant-mcp` entry points, the XDG `growing-assistant` directories
-and the `GROWING_ASSISTANT_*` environment variables are unchanged.
+Rings 是公开的项目名称；为了保持 v1 compatibility，历史 identifiers 不变：Python package 仍叫 `assistant`，distribution 仍叫 `growing-assistant`；`pw`、`assistantd`、`growing-assistant-mcp` 这些 entry points、XDG 中的 `growing-assistant` 目录，以及 `GROWING_ASSISTANT_*` 环境变量都保持不变。
 
-Read more: [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) and
-[docs/adr/](docs/adr/).
+更多内容见 [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) 和 [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr)。
 
-## Known Limitations
+## 已知限制
 
-- Mobile is a trusted-LAN HTTP page, not a public Internet service.
-- SMTP is not exactly-once: an interrupted send becomes `UNKNOWN`.
-- eHall page changes fail closed instead of adapting.
-- eHall `UNKNOWN` requires manual inspection.
-- Watchers observe public, unauthenticated HTTPS pages only.
-- Knowledge retrieval is local FTS5, not a vector database.
-- Confirmed facts do not auto-fill anything in v1.
-- Playbooks do not execute.
-- MCP is local stdio only, and read-only by default.
-- A backup excludes credentials and the eHall browser session.
-- Linux / WSL is the reference runtime.
-- There is no database downgrade.
+- Mobile 是可信 LAN 内的 HTTP 页面，不是面向公网的服务。
+- SMTP 不保证 exactly-once；发送过程中断时，状态会变为 `UNKNOWN`。
+- eHall 页面发生变化时会 fail closed，而不是自动适配。
+- eHall 的 `UNKNOWN` 状态需要人工检查。
+- Watchers 只观察公开、无需身份验证的 HTTPS 页面。
+- Knowledge retrieval 使用本地 FTS5，而不是 vector database。
+- v1 中 `ConfirmedFact` 不会自动填入任何地方。
+- Playbooks 不会执行。
+- MCP 只支持本地 stdio，并且默认 read-only。
+- Backup 不包含 credentials，也不包含 eHall browser session。
+- Linux / WSL 是参考运行环境。
+- 不支持 database downgrade。
 
-## Development
+## 开发
 
 ```bash
 uv run ruff check .
@@ -221,11 +207,10 @@ uv run mypy src
 uv run pytest
 ```
 
-Tests are network-free by design: an autouse guard fails any attempt to open a socket.
+Tests 在设计上不访问网络：一个 autouse guard 会让任何 socket 打开尝试直接失败。
 
-Every pull request and push to main runs the repository quality gates in GitHub Actions
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). See [CONTRIBUTING.md](CONTRIBUTING.md).
+每个 Pull Request 和每次 push 到 `main`，都会通过 GitHub Actions 运行仓库的质量门（[`.github/workflows/ci.yml`](https://github.com/Mr-tree013/Rings/blob/main/.github/workflows/ci.yml)）。更多贡献规则见 [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md)。
 
 ## License
 
-No license has been selected yet. Until one is added, this repository is not licensed for reuse.
+目前尚未选择 License。在添加 License 之前，本仓库没有授权他人对代码进行复用。

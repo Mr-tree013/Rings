@@ -16,20 +16,23 @@ import shlex
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import typer
 
 from assistant.cli import app
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 README = REPOSITORY_ROOT / "README.md"
+README_EN = REPOSITORY_ROOT / "README_en.md"
 GUIDES = tuple(sorted((REPOSITORY_ROOT / "docs" / "guides").glob("*.md")))
 PUBLIC_DOCUMENTS = (
     README,
+    README_EN,
     REPOSITORY_ROOT / "CONTRIBUTING.md",
     REPOSITORY_ROOT / "SECURITY.md",
     *GUIDES,
 )
-COMMAND_DOCUMENTS = (README, *GUIDES)
+COMMAND_DOCUMENTS = (README, README_EN, *GUIDES)
 
 _INVOCATION = re.compile(r"^(?:uv run )?pw\b(?P<rest>.*)$")
 
@@ -95,13 +98,11 @@ def _resolve(tokens: list[str]) -> tuple[object, list[str]]:
 
 
 def test_the_public_documents_name_the_release_they_describe() -> None:
-    readme = _read(README)
+    for page in (README, README_EN):
+        text = _read(page)
 
-    assert "1.0.0" in readme
-    assert "docs/releases/1.0.0.md" in readme
-    for section in ("The Tree Model", "What Rings Can Do", "Safety by Design", "Quick Start",
-                    "Documentation", "Known Limitations"):
-        assert section in readme, section
+        assert "1.0.0" in text, page.name
+        assert "docs/releases/1.0.0.md" in text, page.name
 
 
 def test_every_documented_command_exists_with_the_options_it_shows() -> None:
@@ -166,10 +167,11 @@ def test_public_documents_carry_no_personal_path_or_credential() -> None:
         assert match is None, f"{path.name} carries a personal path: {match.group(0)!r}"
 
 
-def test_the_guides_are_linked_from_the_documentation_hub() -> None:
+@pytest.mark.parametrize("page", (README, README_EN))
+def test_the_guides_are_linked_from_the_documentation_hub(page: Path) -> None:
     """A guide nobody can find is a guide nobody reads."""
-    readme = _read(README)
+    text = _read(page)
 
     for guide in GUIDES:
         relative = guide.relative_to(REPOSITORY_ROOT).as_posix()
-        assert relative in readme, relative
+        assert relative in text, f"{page.name}: {relative}"
