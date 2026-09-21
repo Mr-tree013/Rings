@@ -77,7 +77,7 @@ async def test_a_used_runtime_is_backed_up_with_its_referenced_objects(
     assert manifest.counts.mail_messages == 1
     assert manifest.counts.web_observations == 1
     assert manifest.counts.confirmed_facts == 1
-    assert manifest.migration_files[-1] == "0018_recurring_calendar_rules.sql"
+    assert manifest.migration_files[-1] == "0019_contacts_and_outbound_mail.sql"
 
 
 async def test_the_archive_excludes_everything_it_must(
@@ -365,6 +365,92 @@ async def test_weekly_commitments_survive_a_backup_and_a_restore(
         window_start=window_start, window_end=window_start + timedelta(days=7)
     )
     assert len(occurrences) == 1  # the same future, derived rather than archived
+
+
+async def test_contacts_and_unsent_new_mail_survive_a_restore(
+    runtime: RuntimeFixture, tmp_path: Path
+) -> None:
+    """Contacts and new-mail drafts are SQLite authority, so the archive carries them.
+
+    Nothing about the format changes (ADR-0037 §36). What must *not* survive is authority: a
+    restored runtime has no live approval and no execution for the prepared letter.
+    """
+    from datetime import UTC, datetime
+
+    from assistant.adapters.mail.smtp import rfc2822_date
+    from assistant.application.case_service import CaseService
+    from assistant.application.contacts import ContactService
+    from assistant.application.mail_send_actions import MailSendActionService
+    from assistant.domain.new_mail_draft import NewMailDraft
+    from assistant.store.contacts import SqliteContactRepository
+    from assistant.store.db import Database
+    from assistant.store.mail import SqliteMailRepository
+    from assistant.store.mail_drafts import SqliteMailDraftRepository
+    from assistant.store.mail_send import SqliteMailSendRepository
+    from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
+    from tests.support.mail_send import smtp_account
+
+    await _seeded(runtime)
+    contact = await runtime.add_contact()
+    account = smtp_account()
+    drafts = SqliteNewMailDraftRepository(runtime.database)
+    draft = await drafts.add_draft(
+        NewMailDraft(
+            account_id=account.id,
+            to_address="alice@example.edu",
+            subject="测试",
+            body_text="你好",
+            created_at=datetime(2026, 9, 25, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 25, 9, 0, tzinfo=UTC),
+        )
+    )
+    case = await CaseService(
+        runtime.cases_repository, runtime.actions, runtime.clock
+    ).create_case("Send a test letter")
+    preparation = await MailSendActionService(
+        SqliteMailDraftRepository(runtime.database),
+        SqliteMailRepository(runtime.database),
+        runtime.cases_repository,
+        runtime.actions,
+        SqliteMailSendRepository(runtime.database),
+        runtime.clock,
+        accounts=(account,),
+        message_id_factory=lambda domain: "<restore-check@example.edu>",
+        date_header_factory=rfc2822_date,
+        new_drafts=drafts,
+    ).prepare_new_send(draft.id, case.id)
+    service = runtime.backup_service()
+    archive = service.create(tmp_path / "backup.gab")
+    destination = tmp_path / "recovered"
+
+    result = service.restore(archive.path, destination)
+
+    assert result.integrity_ok is True
+    recovered = Database.at(destination / "assistant.db")
+    contacts = await ContactService(
+        SqliteContactRepository(recovered), runtime.clock
+    ).list_active()
+    restored_drafts = await SqliteNewMailDraftRepository(recovered).list_drafts()
+    with recovered.connect() as connection:
+        approvals = connection.execute("SELECT count(*) AS total FROM approvals").fetchone()[
+            "total"
+        ]
+        runs = connection.execute(
+            "SELECT count(*) AS total FROM execution_runs"
+        ).fetchone()["total"]
+        links = connection.execute(
+            "SELECT count(*) AS total FROM mail_send_links"
+        ).fetchone()["total"]
+
+    assert [item.email_address for item in contacts] == ["zhang@example.edu"]
+    assert contacts[0].id == contact.id
+    assert [(item.to_address, item.version) for item in restored_drafts] == [
+        ("alice@example.edu", 1)
+    ]
+    assert links == 1  # the prepared letter is still reconciliable
+    assert approvals == 0  # authority is not recreated by a restore
+    assert runs == 0
+    _ = preparation.action.id
 
 
 async def test_a_restore_invalidates_live_capabilities_but_keeps_history(

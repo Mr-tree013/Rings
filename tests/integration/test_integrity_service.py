@@ -310,3 +310,160 @@ async def test_two_active_rules_with_one_meaning_are_reported(
     section = report.section("recurring")
     assert section.severity is IntegritySeverity.CRITICAL
     assert any("share one meaning" in finding for finding in section.findings)
+
+
+# ---------------------------------------------------------- contacts and new outbound mail
+
+
+async def test_a_healthy_runtime_with_contacts_passes(runtime: RuntimeFixture) -> None:
+    await _seed(runtime)
+    await runtime.add_contact()
+
+    report = await runtime.integrity_service().check()
+
+    assert report.passed is True
+    assert report.section("contacts").severity is IntegritySeverity.OK
+    assert report.section("contacts").summary == "1 contact(s) checked, 1 active"
+    assert report.section("outbound").severity is IntegritySeverity.OK
+
+
+async def test_a_contact_that_no_longer_hashes_to_its_fingerprint_is_critical(
+    runtime: RuntimeFixture,
+) -> None:
+    contact = await runtime.add_contact()
+    with runtime.database.connect() as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE contacts SET email_address = ? WHERE id = ?",
+            ("zhang2@example.edu", str(contact.id)),
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("contacts")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert report.passed is False
+    assert any(str(contact.id)[:8] in finding for finding in section.findings)
+
+
+async def test_a_contact_key_that_disagrees_with_its_address_is_critical(
+    runtime: RuntimeFixture,
+) -> None:
+    contact = await runtime.add_contact()
+    with runtime.database.connect() as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE contacts SET email_key = ? WHERE id = ?",
+            ("someone-else@example.edu", str(contact.id)),
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("contacts")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("address key" in finding for finding in section.findings)
+
+
+async def test_two_active_contacts_with_one_meaning_are_reported(
+    runtime: RuntimeFixture,
+) -> None:
+    contact = await runtime.add_contact()
+    with runtime.database.connect() as connection:
+        connection.execute("DROP INDEX contacts_active_identity_idx")
+        connection.execute(
+            "INSERT INTO contacts (id, display_name, email_address, email_key, status, "
+            "contact_fingerprint, created_at, updated_at, retired_at) SELECT ?, display_name, "
+            "email_address, email_key, status, contact_fingerprint, created_at, updated_at, "
+            "retired_at FROM contacts WHERE id = ?",
+            (str(uuid4()), str(contact.id)),
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("contacts")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("share one name and address" in finding for finding in section.findings)
+
+
+async def test_a_contact_row_that_breaks_its_own_invariants_is_reported(
+    runtime: RuntimeFixture,
+) -> None:
+    contact = await runtime.add_contact()
+    with runtime.database.connect() as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE contacts SET display_name = ? WHERE id = ?", ("   ", str(contact.id))
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("contacts")
+    assert section.severity is IntegritySeverity.FAIL
+    assert any("cannot be interpreted" in finding for finding in section.findings)
+
+
+async def test_a_new_mail_send_is_checked_against_its_link_and_draft(
+    runtime: RuntimeFixture,
+) -> None:
+    """The stored link, the draft version and the approved payload must describe one letter."""
+    from datetime import UTC, datetime
+
+    from assistant.adapters.mail.smtp import rfc2822_date
+    from assistant.application.case_service import CaseService
+    from assistant.application.mail_send_actions import MailSendActionService
+    from assistant.domain.new_mail_draft import NewMailDraft
+    from assistant.store.mail import SqliteMailRepository
+    from assistant.store.mail_drafts import SqliteMailDraftRepository
+    from assistant.store.mail_send import SqliteMailSendRepository
+    from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
+    from tests.support.mail_send import smtp_account
+
+    account = smtp_account()
+    drafts = SqliteNewMailDraftRepository(runtime.database)
+    draft = await drafts.add_draft(
+        NewMailDraft(
+            account_id=account.id,
+            to_address="alice@example.edu",
+            subject="测试",
+            body_text="你好",
+            created_at=datetime(2026, 9, 25, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 25, 9, 0, tzinfo=UTC),
+        )
+    )
+    case = await CaseService(
+        runtime.cases_repository, runtime.actions, runtime.clock
+    ).create_case("Send a test letter")
+    service = MailSendActionService(
+        SqliteMailDraftRepository(runtime.database),
+        SqliteMailRepository(runtime.database),
+        runtime.cases_repository,
+        runtime.actions,
+        SqliteMailSendRepository(runtime.database),
+        runtime.clock,
+        accounts=(account,),
+        message_id_factory=lambda domain: "<check@example.edu>",
+        date_header_factory=rfc2822_date,
+        new_drafts=drafts,
+    )
+    preparation = await service.prepare_new_send(draft.id, case.id)
+
+    report = await runtime.integrity_service().check()
+
+    assert report.section("outbound").severity is IntegritySeverity.OK
+    assert report.section("outbound").summary == "1 new mail send(s) checked"
+    assert report.passed is True
+
+    with runtime.database.connect() as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE new_mail_drafts SET version = 0 WHERE id = ?", (str(draft.id),)
+        )
+
+    tampered = await runtime.integrity_service().check()
+
+    section = tampered.section("outbound")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any(
+        "snapshots a version the draft never had" in finding for finding in section.findings
+    )
+    assert str(preparation.action.id)[:8] in " ".join(section.findings)

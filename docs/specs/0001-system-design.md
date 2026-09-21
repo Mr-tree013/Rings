@@ -156,6 +156,32 @@ PlanProposal（仍由人确认后才 apply）
 - 对话层不写 SQL、不拥有第二套规则模型：`ConversationHandlers` 只调用 `RecurringCalendarService`；
 - 每周规则是**本地**写入：不产生 `ActionRequest` / `Approval` / `ExecutionRun`，不触达外部系统。
 
+### 4.4 对话式新建邮件与联系人（Phase 10E，ADR-0037）
+
+回复邮件与新邮件在**执行前收敛到同一条管道**，区别只在草稿从哪来：
+
+```text
+mail.compose_new（模型写 subject/body；runtime 解析收件人与发件账号）
+      ↓  持久化 NewMailDraft（version 单调递增）
+mail.prepare_new_send
+      ↓  与回复共用 MailSendActionService → 同一个 immutable ActionRequest("mail.send")
+mail_send_links（closed variant：draft_id 或 new_draft_id，二者恰有其一）
+      ↓  ConversationExternalReviewService：从 ActionRequest payload 渲染精确预览
+      用户明确说「确认发送」→ 既有 Approval → ExecutionRun → SMTP executor（唯一一个）
+```
+
+硬性约束：
+
+- 收件人只有三种来源：**用户本条消息里出现的地址**、唯一一个 ACTIVE `Contact`、「我自己」对应的已配置可发信账号；
+- 模型不得发明地址：它提出的 explicit address 必须（归一化后）出现在用户原文里，否则在第一次写入前拒绝，零草稿 / 零 ActionRequest / 零 review；
+- 名字查不到、同名多个、可发信账号多个 → 追问，绝不猜；「我自己」只由已配置的 send-ready 账号决定，与本地邮件数量无关；
+- 联系人（`contacts`）是本地结构化身份记录，**不是** `ConfirmedFact`，不授予任何权限；同名不同地址是两条记录；
+- 新邮件草稿（`new_mail_drafts`）与回复草稿分表：回复保持「必须有来源邮件」的不变量，两者在**执行前**收敛；
+- `MailSendPayload` 增加闭合判别字段 `kind`（reply / new），new 变体不带任何回复头；历史 payload 仍然有效；
+- 编辑预览后的草稿 → 旧 review STALE，draft 版本 +1，准备新的 ActionRequest（fingerprint 不同），必须重新明确确认；
+- SMTP `UNKNOWN` 语义不变、永不自动重试；对账仍按 payload 中的稳定 Message-ID；
+- 本阶段不支持附件、定时发送、自动发送、通讯录/网络查询；对话能力集仍无 `mail.send` / `approval.*` / `action.*` / `execution.*`。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）
@@ -248,8 +274,9 @@ classification
 | `ExecutionRun` | 动作实际执行记录 |
 | `FactCandidate` | 模型或程序抽取出的未确认事实 |
 | `ConfirmedFact` | 用户确认且具有来源的事实 |
+| `Contact` | 本地结构化身份记录（姓名 + 邮箱地址），用于确定性地解析收件人；不是事实，不授予权限 |
 
-禁止把 `Case`、`Task`、`ScheduledJob` 混用。
+禁止把 `Case`、`Task`、`ScheduledJob` 混用，也禁止把 `Contact` 当作 `ConfirmedFact`。
 
 ### 6.1 Product Language（公开概念词汇，post-v1）
 
@@ -510,3 +537,4 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0034 Conversational external action review
 - ADR-0035 A conversation reliability boundary
 - ADR-0036 Weekly recurring calendar rules
+- ADR-0037 Conversational outbound mail and deterministic recipient resolution

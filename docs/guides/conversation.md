@@ -65,6 +65,10 @@ same source.
 回复刚才那封，说我周五之前交。
 确认发送
 帮我查一下刚才那封邮件有没有发出去。
+发个打招呼的邮件给我自己
+张老师邮箱是 zhang@example.edu，记成联系人
+给张老师发邮件，说我周五之前交报告
+我有哪些联系人？
 ```
 
 Each of those becomes one or more typed operations. A turn proposes at most five, in order, and
@@ -157,6 +161,45 @@ the way you think about it.
 Mail is the one capability in the conversation that can leave the machine, and it is deliberately
 the slowest one to use:
 
+### A new letter, and the three kinds of recipient
+
+```text
+You > 发个打招呼的邮件给我自己
+Tree > 将要发送的邮件（以下内容就是实际发出的内容）：
+       · 发件账号：smail（me@example.edu）
+       · 收件人：me@example.edu
+       · 主题：打个招呼
+       · Message-ID：<…>
+       正文：
+       ---
+       你好，这是一封来自 Rings 的测试邮件。
+       ---
+       确认发送吗？回复「确认发送」我就发送，或回复「取消」。
+You > 可以
+Tree > 要发送的话，请回复「确认发送」。
+You > 确认发送
+Tree > 已发送。
+```
+
+Who a new letter can go to is a closed list, and every other case is a question:
+
+* **an address you wrote yourself** — `给 alice@example.com 发封邮件，主题“测试”，内容“你好”`.
+  If a model proposes an address that is not in your own message, Tree refuses *before* any draft
+  exists, says which address it meant, and asks you to write it yourself;
+* **a contact you recorded** — `张老师邮箱是 zhang@example.edu，记成联系人`, and afterwards
+  `给张老师发邮件，说我周五之前交报告`. Two contacts with one name means Tree asks which one;
+  an unknown name means Tree tells you it does not know the address yet;
+* **your own configured mailbox** — `发个打招呼的邮件给我自己`. With exactly one send-ready
+  account that is unambiguous; with several, Tree asks which mailbox to use rather than picking the
+  first.
+
+Contacts are local records of *identity*: they are not personal facts, they never become a
+`ConfirmedFact`, and they grant no permission. They exist so a name you wrote can become an address
+deterministically. `我有哪些联系人？` lists them; `以后不要用这个联系人了。` retires one (nothing is
+deleted, and past mail is untouched).
+
+### A reply
+
 ```text
 You > 最近有什么需要处理的邮件？
 Tree > 最近 3 封：
@@ -200,8 +243,9 @@ What makes this safe:
   resent automatically. You can ask "帮我查一下到底发出去没有", which uses the existing Sent-folder
   reconciliation and its "not found does not prove it was not delivered" rule.
 
-Conversational mail is reply-only, exactly like the underlying v1 mail domain: no contact book, no
-new-message compose, no attachments and no scheduling.
+What conversational mail still does not do is attachments, scheduled sending and automatic sending,
+and it does not look a recipient up in an address book or over the network: the only sources of an
+address are your own words, a stored contact and your configured mailbox.
 
 ### Which mailbox is configured is not how much mail is stored
 

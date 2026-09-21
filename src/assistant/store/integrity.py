@@ -19,15 +19,19 @@ Three rules hold throughout:
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 
+from assistant.domain.contact import ContactStatus
 from assistant.domain.errors import DomainError
 from assistant.domain.integrity import IntegritySection, IntegritySeverity
+from assistant.domain.mail_send import MailSendKind, MailSendPayload
 from assistant.ports.integrity_repository import (
     ConfiguredRoot,
     DatabaseAudit,
     IntegrityObject,
 )
+from assistant.store.contacts import CONTACT_FIELDS, row_to_contact
 from assistant.store.db import Database
 from assistant.store.errors import StoreError
 from assistant.store.recurring_calendar import RULE_FIELDS, row_to_rule
@@ -52,7 +56,9 @@ class SqliteIntegrityRepository:
                     _conversation_section(connection),
                     _learning_section(connection),
                     _recurring_section(connection),
+                    _contact_section(connection),
                     _mail_section(connection),
+                    _outbound_section(connection),
                     _observation_section(connection),
                 )
                 return DatabaseAudit(
@@ -310,6 +316,98 @@ def _recurring_section(connection: sqlite3.Connection) -> IntegritySection:
     return IntegritySection("recurring", IntegritySeverity.OK, summary)
 
 
+def _contact_section(connection: sqlite3.Connection) -> IntegritySection:
+    """Contacts: every live record must still mean the name and address it claims (ADR-0037 §35).
+
+    Each row is read back through the domain constructor — so its name, address, lifecycle and
+    timestamps are re-checked — and its fingerprint is re-derived from the stored fields. A
+    fingerprint is an identity, never content, so nothing here prints an address.
+    """
+    critical: list[str] = []
+    failing: list[str] = []
+    total = 0
+    active = 0
+    for row in connection.execute(
+        f"SELECT {CONTACT_FIELDS} FROM contacts ORDER BY created_at, id"
+    ).fetchall():
+        total += 1
+        identifier = str(row[0])[:8]
+        try:
+            contact = row_to_contact(row)
+        except (DomainError, ValueError, KeyError) as exc:
+            failing.append(f"contact {identifier} cannot be interpreted: {exc}")
+            continue
+        if contact.status is ContactStatus.ACTIVE:
+            active += 1
+        if contact.fingerprint != str(row[5]):
+            critical.append(f"contact {identifier} does not hash to its stored fingerprint")
+        if contact.email_key != str(row[3]):
+            critical.append(f"contact {identifier} address key does not match its address")
+    for row in connection.execute(
+        "SELECT contact_fingerprint AS fingerprint, count(*) AS total FROM contacts "
+        "WHERE status = 'active' GROUP BY contact_fingerprint HAVING count(*) > 1"
+    ).fetchall():
+        critical.append(
+            f"{row['total']} active contacts share one name and address "
+            f"({str(row['fingerprint'])[:8]})"
+        )
+    summary = f"{total} contact(s) checked, {active} active"
+    if critical:
+        return IntegritySection("contacts", IntegritySeverity.CRITICAL, summary, tuple(critical))
+    if failing:
+        return IntegritySection("contacts", IntegritySeverity.FAIL, summary, tuple(failing))
+    return IntegritySection("contacts", IntegritySeverity.OK, summary)
+
+
+def _outbound_section(connection: sqlite3.Connection) -> IntegritySection:
+    """New outbound mail: the link and the approved payload must describe the same letter.
+
+    A `mail.send` link names either a reply draft or a new-mail draft; for the new-mail half this
+    re-derives the payload and checks that its kind, draft id and draft version are exactly the
+    ones the link recorded — the invariant that makes "what was reviewed is what is sent" a fact
+    about stored data rather than a hope (ADR-0037 §35).
+    """
+    critical: list[str] = []
+    failing: list[str] = []
+    total = 0
+    for row in connection.execute(
+        "SELECT l.action_id, l.new_draft_id, l.draft_version, a.payload_json "
+        "FROM mail_send_links AS l "
+        "LEFT JOIN action_requests AS a ON a.id = l.action_id "
+        "WHERE l.new_draft_id IS NOT NULL ORDER BY l.created_at, l.action_id"
+    ).fetchall():
+        total += 1
+        identifier = str(row["action_id"])[:8]
+        if row["payload_json"] is None:
+            critical.append(f"new mail send {identifier} has no action")
+            continue
+        try:
+            payload = MailSendPayload.from_payload(json.loads(str(row["payload_json"])))
+        except (DomainError, ValueError, TypeError) as exc:
+            failing.append(f"new mail send {identifier} has an unreadable payload: {exc}")
+            continue
+        if payload.kind is not MailSendKind.NEW:
+            critical.append(f"new mail send {identifier} is not tagged as a new letter")
+        if str(payload.draft_id) != str(row["new_draft_id"]):
+            critical.append(f"new mail send {identifier} names a different draft than its link")
+        if payload.draft_version != int(str(row["draft_version"])):
+            critical.append(f"new mail send {identifier} names a different draft version")
+    for row in connection.execute(
+        "SELECT l.action_id FROM mail_send_links AS l "
+        "LEFT JOIN new_mail_drafts AS d ON d.id = l.new_draft_id "
+        "WHERE l.new_draft_id IS NOT NULL AND d.version < l.draft_version"
+    ).fetchall():
+        critical.append(
+            f"new mail send {str(row['action_id'])[:8]} snapshots a version the draft never had"
+        )
+    summary = f"{total} new mail send(s) checked"
+    if critical:
+        return IntegritySection("outbound", IntegritySeverity.CRITICAL, summary, tuple(critical))
+    if failing:
+        return IntegritySection("outbound", IntegritySeverity.FAIL, summary, tuple(failing))
+    return IntegritySection("outbound", IntegritySeverity.OK, summary)
+
+
 def _mail_section(connection: sqlite3.Connection) -> IntegritySection:
     """Mail identity, threading, drafts and send links."""
     findings: list[str] = []
@@ -341,7 +439,8 @@ def _mail_section(connection: sqlite3.Connection) -> IntegritySection:
         findings.append(f"draft {row['draft_id']} replies to a missing message")
     for row in connection.execute(
         "SELECT l.action_id AS action_id FROM mail_send_links AS l "
-        "LEFT JOIN mail_drafts AS d ON d.id = l.draft_id WHERE d.id IS NULL"
+        "LEFT JOIN mail_drafts AS d ON d.id = l.draft_id "
+        "WHERE l.draft_id IS NOT NULL AND d.id IS NULL"
     ).fetchall():
         findings.append(f"send link {row['action_id']} points at a missing draft")
     if findings:

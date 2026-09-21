@@ -40,7 +40,7 @@ from assistant.ports.integrity_repository import DatabaseAudit, IntegrityReposit
 
 LOGGER = logging.getLogger("assistant.integrity")
 
-REVIEWED_MIGRATION_COUNT = 16
+REVIEWED_MIGRATION_COUNT = 19
 """How many migration files the reviewed schema has; pinned again by an architecture test."""
 
 

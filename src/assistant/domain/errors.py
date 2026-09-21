@@ -626,6 +626,38 @@ class InvalidMailDraft(DomainError):
     """A reply draft, its recipients or its stored sources break an invariant."""
 
 
+class InvalidContact(DomainError):
+    """A contact's name, address or lifecycle breaks an invariant."""
+
+
+class ContactNotFound(DomainError):
+    """No contact exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"contact {reference} does not exist")
+
+
+class InvalidNewMailDraft(DomainError):
+    """A new-mail draft's recipient, subject, body or version breaks an invariant."""
+
+
+class NewMailDraftNotFound(DomainError):
+    """No new-mail draft exists for the requested identity."""
+
+    def __init__(self, reference: object) -> None:
+        self.reference = reference
+        super().__init__(f"new mail draft {reference} does not exist")
+
+
+class MailRecipientUnresolved(DomainError):
+    """A recipient, or the account to send from, could not be resolved deterministically.
+
+    Raised before any draft is written and before any model is asked to guess: the runtime either
+    knows which address a name means, or it asks. It never invents one.
+    """
+
+
 class MailDraftNotFound(DomainError):
     """No draft exists for the requested identity."""
 

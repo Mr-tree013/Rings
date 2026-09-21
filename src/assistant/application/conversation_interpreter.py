@@ -45,10 +45,13 @@ from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
     CalendarRecurringEditArguments,
     CalendarRecurringRetireArguments,
+    ContactEditArguments,
+    ContactRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     ConversationPlan,
     ConversationPlanMode,
+    MailPrepareNewSendArguments,
     MailPrepareReplySendArguments,
     MailReplyDraftArguments,
     MailShowArguments,
@@ -314,6 +317,8 @@ _REFERENCE_KINDS: dict[ConversationOperationType, ConversationEntityKind] = {
     ConversationOperationType.CALENDAR_RECURRING_RETIRE: (
         ConversationEntityKind.RECURRING_CALENDAR_RULE
     ),
+    ConversationOperationType.CONTACT_EDIT: ConversationEntityKind.CONTACT,
+    ConversationOperationType.CONTACT_RETIRE: ConversationEntityKind.CONTACT,
 }
 """Which entity kind each operation may reference, and what it must have seen to do so."""
 
@@ -359,6 +364,18 @@ def _validate_references(
                 "mail.prepare_reply_send referenced a draft or message that was not in the "
                 "context it was given"
             )
+    if (
+        arguments.operation_type is ConversationOperationType.MAIL_PREPARE_NEW_SEND
+        and isinstance(arguments, MailPrepareNewSendArguments)
+        and arguments.draft_id is not None
+        # A null id means "the draft this same turn writes", so only a named draft is checked —
+        # and a name the model was not given is refused exactly like any other invented reference.
+        and arguments.draft_id
+        not in known_ids.get(ConversationEntityKind.NEW_MAIL_DRAFT, frozenset())
+    ):
+        raise InvalidConversationPlan(
+            "mail.prepare_new_send referenced a draft that was not in the context it was given"
+        )
 
 
 def _referenced_id(arguments: ConversationOperationArguments) -> object:
@@ -379,6 +396,10 @@ def _referenced_id(arguments: ConversationOperationArguments) -> object:
         return arguments.draft_id or arguments.message_id
     if isinstance(arguments, (CalendarRecurringEditArguments, CalendarRecurringRetireArguments)):
         return arguments.rule_id
+    if isinstance(arguments, ContactEditArguments):
+        return arguments.contact_id
+    if isinstance(arguments, ContactRetireArguments):
+        return arguments.contact_id
     return None
 
 

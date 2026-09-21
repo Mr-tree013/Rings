@@ -28,12 +28,15 @@ from assistant.domain.mail_send import (
     MailSendReconciliation,
     MailSendReconciliationResult,
 )
+from assistant.domain.new_mail_draft import NewMailDraftId
 from assistant.store.actions import action_parameters
 from assistant.store.db import Database, transaction
 from assistant.store.errors import CommitmentStoreError
 from assistant.store.serialization import from_utc_iso, to_utc_iso
 
-_LINK_FIELDS = "action_id, draft_id, draft_version, rfc_message_id, created_at"
+_LINK_FIELDS = (
+    "action_id, draft_id, new_draft_id, draft_version, rfc_message_id, created_at"
+)
 _RECONCILIATION_FIELDS = (
     "id, action_id, execution_run_id, result, checked_at, mailbox_name, uidvalidity, uid"
 )
@@ -58,6 +61,13 @@ class SqliteMailSendRepository:
     ) -> MailSendLink | None:
         return await asyncio.to_thread(
             self._get_link_for_draft_version_sync, draft_id, draft_version
+        )
+
+    async def get_link_for_new_draft_version(
+        self, draft_id: NewMailDraftId, draft_version: int
+    ) -> MailSendLink | None:
+        return await asyncio.to_thread(
+            self._get_link_for_new_draft_version_sync, draft_id, draft_version
         )
 
     async def list_links(self, *, limit: int | None = 20) -> list[MailSendLink]:
@@ -106,10 +116,11 @@ class SqliteMailSendRepository:
                     action_parameters(action),
                 )
                 connection.execute(
-                    f"INSERT INTO mail_send_links ({_LINK_FIELDS}) VALUES (?, ?, ?, ?, ?)",
+                    f"INSERT INTO mail_send_links ({_LINK_FIELDS}) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         str(link.action_id),
-                        str(link.draft_id),
+                        None if link.draft_id is None else str(link.draft_id),
+                        None if link.new_draft_id is None else str(link.new_draft_id),
                         link.draft_version,
                         link.rfc_message_id,
                         to_utc_iso(link.created_at),
@@ -135,6 +146,17 @@ class SqliteMailSendRepository:
         with self._database.connect() as connection:
             row = connection.execute(
                 f"SELECT {_LINK_FIELDS} FROM mail_send_links WHERE draft_id = ? "
+                "AND draft_version = ?",
+                (str(draft_id), draft_version),
+            ).fetchone()
+        return None if row is None else _row_to_link(row)
+
+    def _get_link_for_new_draft_version_sync(
+        self, draft_id: NewMailDraftId, draft_version: int
+    ) -> MailSendLink | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                f"SELECT {_LINK_FIELDS} FROM mail_send_links WHERE new_draft_id = ? "
                 "AND draft_version = ?",
                 (str(draft_id), draft_version),
             ).fetchone()
@@ -273,7 +295,10 @@ def _row_to_link(row: sqlite3.Row) -> MailSendLink:
     try:
         return MailSendLink(
             action_id=UUID(str(row["action_id"])),
-            draft_id=UUID(str(row["draft_id"])),
+            draft_id=None if row["draft_id"] is None else UUID(str(row["draft_id"])),
+            new_draft_id=(
+                None if row["new_draft_id"] is None else UUID(str(row["new_draft_id"]))
+            ),
             draft_version=int(row["draft_version"]),
             rfc_message_id=str(row["rfc_message_id"]),
             created_at=from_utc_iso(str(row["created_at"])),

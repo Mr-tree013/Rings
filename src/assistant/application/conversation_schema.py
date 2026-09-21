@@ -40,6 +40,8 @@ _WEEKDAY = {"type": "integer", "minimum": 1, "maximum": 7}
 _NULLABLE_WEEKDAY = {"type": ["integer", "null"], "minimum": 1, "maximum": 7}
 _TIMEZONE_NAME = {"type": ["string", "null"], "maxLength": 64}
 _NULLABLE_TEXT = {"type": ["string", "null"], "maxLength": _MAX_TEXT_CHARS}
+_RECIPIENT_KIND = {"enum": ["explicit_email", "contact", "self", None]}
+_NULLABLE_SHORT_TEXT = {"type": ["string", "null"], "maxLength": 200}
 _TASK_ID = {"type": "string", "format": "uuid"}
 _PRIORITY = {"enum": ["low", "normal", "high", None]}
 _ESTIMATE = {"type": ["integer", "null"], "minimum": 1, "maximum": 60000}
@@ -302,6 +304,78 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         "List the mail accounts this host is configured to use. Configured accounts are not the "
         "same thing as stored messages: use this whenever the user asks which mailbox or address "
         "Tree can read.",
+    ),
+    _operation(
+        "mail.compose_new",
+        "Write a NEW letter (not a reply) and prepare it for the user's review. Write the subject "
+        "and the body yourself. Choose exactly one recipient source: `explicit_email` with an "
+        "address the user actually typed in this message, `contact` with a name the user wrote, or "
+        "`self` for 我自己. Never invent an address: an explicit address that is not in the user's "
+        "own message is refused by the runtime. Leave `sender_account` null unless the user named "
+        "one. Leave `draft_id` null for a new letter; pass the id of the draft you are revising "
+        "(and it is then fine to leave `recipient_kind` null to keep its recipient). This only "
+        "prepares: the user must confirm the exact preview afterwards.",
+        {
+            "subject": {"type": "string", "minLength": 1, "maxLength": _MAX_TEXT_CHARS},
+            "body": {"type": "string", "minLength": 1, "maxLength": _MAX_TEXT_CHARS},
+            "recipient_kind": _RECIPIENT_KIND,
+            "recipient_address": _NULLABLE_SHORT_TEXT,
+            "recipient_name": _NULLABLE_SHORT_TEXT,
+            "sender_account": _NULLABLE_SHORT_TEXT,
+            "draft_id": _NULLABLE_SHORT_TEXT,
+        },
+        (
+            "subject",
+            "body",
+            "recipient_kind",
+            "recipient_address",
+            "recipient_name",
+            "sender_account",
+            "draft_id",
+        ),
+    ),
+    _operation(
+        "mail.prepare_new_send",
+        "Freeze the new-mail draft into an immutable mail.send action and show the user the exact "
+        "preview. Use it in the same turn as mail.compose_new with draft_id null, or later with "
+        "the draft id from recent_entities. This prepares only: it never approves and never sends.",
+        {"draft_id": _NULLABLE_SHORT_TEXT},
+        ("draft_id",),
+    ),
+    _operation(
+        "contact.list",
+        "List the user's contacts. Use this for 我有哪些联系人.",
+        {"include_retired": {"type": "boolean"}},
+        ("include_retired",),
+    ),
+    _operation(
+        "contact.create",
+        "Record one contact: a name and the address the user wrote for it. Use this when the user "
+        "tells you someone's address and asks you to remember it as a contact. The address must "
+        "appear in the user's own message; the runtime refuses one that does not.",
+        {
+            "display_name": {"type": "string", "minLength": 1, "maxLength": 120},
+            "email_address": {"type": "string", "minLength": 1, "maxLength": 320},
+        },
+        ("display_name", "email_address"),
+    ),
+    _operation(
+        "contact.edit",
+        "Change one contact's name and/or address, by a contact_id from recent_entities. Null "
+        "means 'leave unchanged'.",
+        {
+            "contact_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "display_name": {"type": ["string", "null"], "maxLength": 120},
+            "email_address": {"type": ["string", "null"], "maxLength": 320},
+        },
+        ("contact_id", "display_name", "email_address"),
+    ),
+    _operation(
+        "contact.retire",
+        "Stop using one contact, by a contact_id from recent_entities. Use this for 以后不要用这个"
+        "联系人了. It deletes nothing; there is no contact delete.",
+        {"contact_id": {"type": "string", "minLength": 1, "maxLength": 64}},
+        ("contact_id",),
     ),
     _operation(
         "system.capabilities",

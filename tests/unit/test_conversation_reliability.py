@@ -286,7 +286,9 @@ def test_the_snapshot_reports_configuration_not_prose() -> None:
 
     assert snapshot.area("mail_read") is not None
     assert snapshot.area("mail_read").state is CapabilityState.NOT_CONFIGURED
-    assert snapshot.area("mail_new_outbound_compose").state is CapabilityState.UNAVAILABLE
+    # New outbound compose is a real capability now; without configuration it is not usable.
+    assert snapshot.area("mail_new_outbound_compose").state is CapabilityState.NOT_CONFIGURED
+    assert snapshot.area("contacts").state is CapabilityState.AVAILABLE
     assert snapshot.area("ehall").state is CapabilityState.UNAVAILABLE
     assert all(area.name != "credentials" for area in snapshot.areas)
 

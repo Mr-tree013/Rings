@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Conversational new outbound mail and contacts (Phase 10E, ADR-0037).** A conversation can now
+  write a *new* letter and prepare it for the same exact review a reply already had: the model
+  writes the subject and body, the runtime resolves who it goes to, and the preview is rendered
+  from the immutable `mail.send` action. A recipient has exactly three allowed sources — an address
+  the user typed, one unambiguous stored contact, or the user's own configured mailbox for
+  "我自己" — and an address a model proposes is accepted only when the same normalized address
+  occurs in the raw human message, so a hallucinated recipient cannot reach a draft, an action or a
+  review. The first turn only prepares, the generic `可以` does not send, and only the existing
+  explicit phrase (`确认发送`, `发送`, `发吧`, `确认发出`, `send`, `confirm send`) settles the
+  review through the existing challenge/approval/execution boundary. Contacts are local structured
+  identity — a name, an address, a lifecycle, a canonical fingerprint — created idempotently and
+  never a `ConfirmedFact`; they grant no authority, and an unknown name, two contacts with one name
+  or two sendable mailboxes all produce a question instead of a guess.
+- Migration `0019_contacts_and_outbound_mail.sql`: a `contacts` table (bounded name and address,
+  normalized `email_key`, ACTIVE/RETIRED, SHA-256 fingerprint, one live exact contact), a
+  `new_mail_drafts` table (one recipient, subject, body, monotone version), and `mail_send_links`
+  rebuilt as a closed two-target variant so a prepared send snapshots either a reply draft or a
+  new-mail draft while keeping "one action per draft version" and "one Message-ID per action".
+- `MailSendPayload` gains a closed `kind` discriminator (`reply` | `new`) with one invariant: a new
+  letter never carries `In-Reply-To` or `References`. Historical payloads remain valid and parse as
+  replies; the schema version is unchanged because nothing an executor reads changed.
+- `pw integrity check` gains `contacts` and `outbound` sections: every contact fingerprint and
+  address key is re-derived, duplicate live contacts are reported, and every new-mail link is
+  checked against the draft version and the approved payload it claims.
+
 - **Weekly recurring schedules (Phase 10D, ADR-0036).** A weekly class is authoritative calendar
   state: `RecurringCalendarRule` is one weekday with a local start and end time and an explicit
   IANA timezone, occurrences are derived on demand (never materialized as `CalendarEvent` rows), and

@@ -23,6 +23,7 @@ from assistant.domain.mail_send import (
     MailSendLink,
     MailSendReconciliation,
 )
+from assistant.domain.new_mail_draft import NewMailDraftId
 
 
 class MailSendRepository(Protocol):
@@ -45,7 +46,13 @@ class MailSendRepository(Protocol):
     async def get_link_for_draft_version(
         self, draft_id: MailDraftId, draft_version: int
     ) -> MailSendLink | None:
-        """Return the send link for one exact draft version, or `None`."""
+        """Return the send link for one exact reply-draft version, or `None`."""
+        ...
+
+    async def get_link_for_new_draft_version(
+        self, draft_id: NewMailDraftId, draft_version: int
+    ) -> MailSendLink | None:
+        """Return the send link for one exact new-mail draft version, or `None`."""
         ...
 
     async def list_links(self, *, limit: int | None = 20) -> list[MailSendLink]:

@@ -169,6 +169,21 @@ class RuntimeFixture:
             default_timezone=timezone,
         ).create_weekly(title=title, weekday=weekday, start=start, end=end)
 
+    async def add_contact(
+        self,
+        *,
+        display_name: str = "张老师",
+        email_address: str = "zhang@example.edu",
+    ):
+        """One durable contact, created through the real application service."""
+        from assistant.application.contacts import ContactService
+        from assistant.store.contacts import SqliteContactRepository
+
+        contact, _ = await ContactService(
+            SqliteContactRepository(self.database), self.clock
+        ).create(display_name=display_name, email_address=email_address)
+        return contact
+
     # ------------------------------------------------------------------ services
 
     def backup_service(self) -> BackupService:
@@ -206,6 +221,9 @@ class RuntimeFixture:
             "confirmed_facts",
             "mobile_sessions",
             "recurring_calendar_rules",
+            "contacts",
+            "new_mail_drafts",
+            "mail_send_links",
         )
         with self.database.connect() as connection:
             return {

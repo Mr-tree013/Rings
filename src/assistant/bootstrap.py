@@ -55,6 +55,7 @@ from assistant.application.approval_service import ApprovalService
 from assistant.application.backup_service import MIGRATION_DIRECTORY, BackupService
 from assistant.application.calendar_service import CalendarService
 from assistant.application.case_service import CaseService
+from assistant.application.contacts import ContactService
 from assistant.application.conversation_capabilities import (
     ConversationCapabilityRegistry,
     ConversationHandlers,
@@ -99,6 +100,7 @@ from assistant.application.mail_threading import MailThreadLinker
 from assistant.application.manual_input_service import ManualInputService
 from assistant.application.mcp_facade import McpFacade
 from assistant.application.mobile_auth import MobileAuthService
+from assistant.application.new_mail_drafts import NewMailDraftService
 from assistant.application.observation_context import ObservationContextBuilder
 from assistant.application.observation_event_handler import (
     MANUAL_EVENT_TYPE,
@@ -111,6 +113,7 @@ from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.playbook_replay import PlaybookReplayRegistry
 from assistant.application.playbook_service import PlaybookService
+from assistant.application.recipient_resolution import RecipientResolver
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.retry import RetryPolicy
 from assistant.application.rolling_replan import RollingReplanRequester
@@ -149,6 +152,7 @@ from assistant.store.backup import SqliteRuntimeBackup
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
+from assistant.store.contacts import SqliteContactRepository
 from assistant.store.conversation_reviews import SqliteConversationReviewRepository
 from assistant.store.conversations import SqliteConversationRepository
 from assistant.store.db import Database
@@ -163,6 +167,7 @@ from assistant.store.mail_send import SqliteMailSendRepository
 from assistant.store.manual_inputs import SqliteManualInputRepository
 from assistant.store.migrations import apply_migrations, require_compatible_history
 from assistant.store.mobile_sessions import SqliteMobileSessionRepository
+from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
 from assistant.store.observation_analyses import SqliteObservationAnalysisRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.playbooks import SqlitePlaybookRepository
@@ -566,6 +571,7 @@ def mail_send_action_service(
         accounts=accounts,
         message_id_factory=new_rfc_message_id,
         date_header_factory=rfc2822_date,
+        new_drafts=new_mail_draft_repository(database),
     )
 
 
@@ -578,6 +584,41 @@ def mail_send_status_service(
         mail_send_repository(database),
         mail_draft_repository(database),
         clock,
+        new_drafts=new_mail_draft_repository(database),
+    )
+
+
+def contact_repository(database: Database) -> SqliteContactRepository:
+    """Durable local contacts (ADR-0037 §9)."""
+    return SqliteContactRepository(database)
+
+
+def contact_service(database: Database, clock: Clock) -> ContactService:
+    """Contacts a name may resolve to."""
+    return ContactService(contact_repository(database), clock)
+
+
+def new_mail_draft_repository(database: Database) -> SqliteNewMailDraftRepository:
+    """Durable new-mail drafts (ADR-0037 §17)."""
+    return SqliteNewMailDraftRepository(database)
+
+
+def new_mail_draft_service(database: Database, clock: Clock) -> NewMailDraftService:
+    """Writing and revising new-mail drafts. It cannot send anything."""
+    return NewMailDraftService(new_mail_draft_repository(database), clock)
+
+
+def recipient_resolver(
+    database: Database, config: AssistantConfig | None
+) -> RecipientResolver:
+    """The deterministic recipient and sender-account resolver (ADR-0037 §10-§14).
+
+    `config=None` means "this command did not need host configuration", so there are no accounts —
+    and the resolver then says so instead of guessing one.
+    """
+    return RecipientResolver(
+        contact_repository(database),
+        accounts=() if config is None else config.mail.accounts,
     )
 
 
@@ -1239,6 +1280,8 @@ def conversation_context_builder(
         mail_intelligence=mail_intelligence_repository(database),
         mail_drafts=mail_draft_repository(database),
         recurring=recurring_calendar_repository(database),
+        contacts=contact_repository(database),
+        new_mail_drafts=new_mail_draft_repository(database),
     )
 
 
@@ -1300,6 +1343,9 @@ def conversation_capabilities(
         commitments=commitment_repository(database),
         clock=clock,
         recurring=recurring_calendar_service(database, clock, config),
+        contacts=contact_service(database, clock),
+        recipients=recipient_resolver(database, config),
+        new_mail_drafts=new_mail_draft_service(database, clock),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         mail_sync=(
@@ -1370,6 +1416,8 @@ __all__ = [
     "close_model",
     "commitment_repository",
     "config_loader",
+    "contact_repository",
+    "contact_service",
     "conversation_capabilities",
     "conversation_context_builder",
     "conversation_external_review_service",
@@ -1412,6 +1460,8 @@ __all__ = [
     "mobile_web_service",
     "model_adapter",
     "model_api_key",
+    "new_mail_draft_repository",
+    "new_mail_draft_service",
     "observation_analysis_repository",
     "observation_context_builder",
     "observation_event_handler",
@@ -1421,6 +1471,7 @@ __all__ = [
     "playbook_repository",
     "playbook_service",
     "raw_mail_store",
+    "recipient_resolver",
     "recurring_calendar_repository",
     "recurring_calendar_service",
     "registered_action_executors",

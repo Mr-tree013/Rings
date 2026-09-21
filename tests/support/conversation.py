@@ -23,6 +23,7 @@ from typing import Any
 from assistant import bootstrap
 from assistant.adapters.model.fake import FakeModelAdapter
 from assistant.application.calendar_service import CalendarService
+from assistant.application.contacts import ContactService
 from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
 )
@@ -31,6 +32,7 @@ from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.planner_service import PlannerService
+from assistant.application.recipient_resolution import RecipientResolver
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import TaskService
 from assistant.domain.action import ActionRequest, ActionType
@@ -39,6 +41,7 @@ from assistant.domain.execution import ExecutionOutcome
 from assistant.domain.mail import MailMessage
 from assistant.store.actions import SqliteActionRepository
 from assistant.store.commitment import SqliteCommitmentRepository
+from assistant.store.contacts import SqliteContactRepository
 from assistant.store.conversation_reviews import SqliteConversationReviewRepository
 from assistant.store.conversations import SqliteConversationRepository
 from assistant.store.db import Database
@@ -46,6 +49,7 @@ from assistant.store.mail import SqliteMailRepository
 from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.migrations import apply_migrations
+from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
@@ -134,6 +138,38 @@ CONFIG_WITHOUT_MAIL = "\n".join(
         "",
     )
 )
+
+TWO_ACCOUNT_CONFIG = "\n".join(
+    (
+        "format_version = 1",
+        "",
+        "[planning]",
+        'timezone = "Asia/Shanghai"',
+        "",
+        "[model]",
+        'provider = "deepseek"',
+        'model = "deepseek-flash"',
+        'reasoning_effort = "low"',
+        "max_output_tokens = 4096",
+        "timeout_seconds = 120",
+        "",
+        MAIL_ACCOUNT,
+        "[[mail.accounts]]",
+        'id = "school"',
+        'host = "imap.example.edu"',
+        "port = 993",
+        'username = "school@example.edu"',
+        'mailbox = "INBOX"',
+        "enabled = true",
+        'smtp_host = "smtp.example.edu"',
+        "smtp_port = 465",
+        'smtp_security = "ssl"',
+        'smtp_username = "school@example.edu"',
+        'from_address = "school@example.edu"',
+        "",
+    )
+)
+"""Two send-ready accounts, for the "which one?" questions ADR-0037 §13-§14 require."""
 
 
 def write_config(tmp_path: Path, body: str = CONFIG) -> Path:
@@ -236,6 +272,10 @@ class ConversationHarness:
     calendar: CalendarService
     recurring: RecurringCalendarService
     recurring_rules: SqliteRecurringCalendarRepository
+    contact_service: ContactService
+    contacts: SqliteContactRepository
+    recipients: RecipientResolver
+    new_drafts: SqliteNewMailDraftRepository
     reviews: SqliteConversationReviewRepository
     actions: SqliteActionRepository
     mail: SqliteMailRepository
@@ -372,6 +412,10 @@ async def build_harness(
         calendar=bootstrap.calendar_service(database, clock, config),
         recurring=bootstrap.recurring_calendar_service(database, clock, config),
         recurring_rules=bootstrap.recurring_calendar_repository(database),
+        contact_service=bootstrap.contact_service(database, clock),
+        contacts=bootstrap.contact_repository(database),
+        recipients=bootstrap.recipient_resolver(database, config),
+        new_drafts=bootstrap.new_mail_draft_repository(database),
         reviews=bootstrap.conversation_review_repository(database),
         actions=bootstrap.action_repository(database),
         mail=bootstrap.mail_repository(database),
@@ -399,6 +443,7 @@ __all__ = [
     "CONFIG_WITHOUT_TIMEZONE",
     "MAIL_ACCOUNT",
     "NOW",
+    "TWO_ACCOUNT_CONFIG",
     "ConversationHarness",
     "ScriptedMailExecutor",
     "build_harness",

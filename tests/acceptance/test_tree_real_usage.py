@@ -203,7 +203,10 @@ def test_capability_answers_come_from_the_runtime(
     assert result.exit_code == 0, result.output
     assert "回复邮件" in result.output
     assert "确认发送" in result.output
-    assert "任意收件人的邮件" in result.output  # reply-only is stated
+    # Outbound compose is described truthfully, including what it still cannot do.
+    assert "新建邮件" in result.output
+    assert "联系人" in result.output
+    assert "附件、定时发送、自动发送、通讯录/网络查询收件人" in result.output
     assert "本版本未启用" not in result.output
     # Weekly recurring schedules are described truthfully, including what is not supported.
     assert "固定安排（每周重复）" in result.output

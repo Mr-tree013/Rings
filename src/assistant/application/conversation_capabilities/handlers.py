@@ -17,6 +17,7 @@ from typing import cast
 
 from assistant.application.calendar_service import CalendarService, CreateCalendarEvent
 from assistant.application.case_service import CaseService
+from assistant.application.contacts import ContactService
 from assistant.application.conversation_capabilities.introspection import (
     CapabilitySnapshot,
 )
@@ -35,11 +36,17 @@ from assistant.application.mail_send_actions import MailSendActionService
 from assistant.application.mail_send_reconciliation import MailSendReconciliationService
 from assistant.application.mail_send_status import MailDeliveryState, MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
+from assistant.application.new_mail_drafts import NewMailDraftService
 from assistant.application.planner_service import PlannerService
+from assistant.application.recipient_resolution import (
+    RecipientResolver,
+    RecipientSource,
+)
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.work_service import WorkService
 from assistant.domain.config import MailAccountConfig
+from assistant.domain.contact import Contact
 from assistant.domain.conversation_plan import (
     CalendarCreateArguments,
     CalendarListArguments,
@@ -47,11 +54,17 @@ from assistant.domain.conversation_plan import (
     CalendarRecurringEditArguments,
     CalendarRecurringListArguments,
     CalendarRecurringRetireArguments,
+    ContactCreateArguments,
+    ContactEditArguments,
+    ContactListArguments,
+    ContactRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     KnowledgeAskArguments,
     MailAccountsArguments,
+    MailComposeNewArguments,
     MailListArguments,
+    MailPrepareNewSendArguments,
     MailPrepareReplySendArguments,
     MailReconcileSendArguments,
     MailReplyDraftArguments,
@@ -77,8 +90,11 @@ from assistant.domain.conversation_plan import (
 )
 from assistant.domain.deadline import Deadline
 from assistant.domain.errors import (
+    ContactNotFound,
     ConversationCapabilityUnavailable,
+    InvalidContact,
     InvalidTimeInterval,
+    MailRecipientUnresolved,
     RecurringRuleNotFound,
 )
 from assistant.domain.grounded_answer import KnowledgeEvidence
@@ -86,6 +102,7 @@ from assistant.domain.knowledge import SourceSpanKind
 from assistant.domain.mail import MailMessage
 from assistant.domain.mail_analysis import MailAnalysis
 from assistant.domain.mail_draft import MailDraft
+from assistant.domain.new_mail_draft import NewMailDraft
 from assistant.domain.planning import (
     PlanProposalDetail,
     PlanProposalStatus,
@@ -123,6 +140,9 @@ MAIL_THREAD_LIMIT = 20
 RECURRING_LIST_LIMIT = 12
 """How many weekly commitments one listing may carry, matching the recent-entity bound."""
 
+CONTACT_LIST_LIMIT = 12
+"""How many contacts one listing may carry, matching the recent-entity bound."""
+
 
 class ConversationHandlers:
     """Executes one allowed operation against the existing application services."""
@@ -139,6 +159,9 @@ class ConversationHandlers:
         commitments: CommitmentRepository,
         clock: Clock,
         recurring: RecurringCalendarService | None = None,
+        contacts: ContactService | None = None,
+        recipients: RecipientResolver | None = None,
+        new_mail_drafts: NewMailDraftService | None = None,
         mail: MailRepository | None = None,
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_sync: MailSyncService | None = None,
@@ -161,6 +184,9 @@ class ConversationHandlers:
         self._commitments = commitments
         self._clock = clock
         self._recurring = recurring
+        self._contacts = contacts
+        self._recipients = recipients
+        self._new_mail_drafts = new_mail_drafts
         self._mail = mail
         self._mail_intelligence = mail_intelligence
         self._mail_sync = mail_sync
@@ -552,6 +578,148 @@ class ConversationHandlers:
             )
         return OperationResult(kind="mail_accounts", data={"accounts": accounts})
 
+    async def mail_compose_new(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Write, or revise, one new-mail draft. Nothing is prepared and nothing is sent here."""
+        asked = _expect(MailComposeNewArguments, arguments)
+        drafts = self._require_new_drafts()
+        resolver = self._require_recipients()
+        current = None if asked.draft_id is None else await self._require_new_draft(asked.draft_id)
+        # A revision that names neither a sender nor a recipient keeps both: the user asked to
+        # change the text, and re-deriving the rest would be the runtime editing on its own.
+        sender = (
+            None
+            if current is not None and asked.sender_account is None
+            else await resolver.resolve_sender(asked.sender_account)
+        )
+        if sender is not None:
+            account_id = sender.account_id
+        elif current is not None:
+            account_id = current.account_id
+        else:  # pragma: no cover - `resolve_sender` returns or raises for a new letter
+            raise ConversationCapabilityUnavailable("我还不知道从哪个邮箱发送")
+        kind = asked.recipient_kind
+        if kind is None:
+            if current is None:  # pragma: no cover - the arguments require a recipient
+                raise ConversationCapabilityUnavailable("我没有看到收件人")
+            to_address = current.to_address
+        else:
+            recipient = await resolver.resolve_recipient(
+                kind=RecipientSource(kind.value),
+                address=asked.recipient_address,
+                name=asked.recipient_name,
+                sender=sender,
+            )
+            to_address = recipient.address
+        if current is None:
+            draft, created = await drafts.compose(
+                account_id=account_id,
+                to_address=to_address,
+                subject=asked.subject,
+                body_text=asked.body,
+            )
+        else:
+            draft = await drafts.revise(
+                current,
+                account_id=account_id,
+                to_address=to_address,
+                subject=asked.subject,
+                body_text=asked.body,
+            )
+            created = False
+        return OperationResult(
+            kind="new_mail_draft",
+            ref=str(draft.id),
+            data=_new_mail_draft_payload(draft, created=created),
+        )
+
+    async def mail_prepare_new_send(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Freeze one new-mail draft version into an immutable `mail.send` action.
+
+        This prepares; it never approves and never executes (ADR-0034 §10, ADR-0037 §17).
+        """
+        asked = _expect(MailPrepareNewSendArguments, arguments)
+        sends = self._mail_sends
+        cases = self._cases
+        if sends is None or cases is None:
+            raise ConversationCapabilityUnavailable(
+                "sending needs a configured mail account and an outbound credential"
+            )
+        self._require_new_drafts()
+        draft = await self._require_new_draft(str(asked.draft_id))
+        case = await cases.create_case(f"New mail: {draft.subject}"[:120])
+        preparation = await sends.prepare_new_send(draft.id, case.id)
+        payload = preparation.payload
+        return OperationResult(
+            kind="mail_prepared",
+            ref=str(preparation.action.id),
+            data={
+                "action_id": str(preparation.action.id),
+                "case_id": str(case.id),
+                "draft_id": str(draft.id),
+                "draft_version": payload.draft_version,
+                "account_id": payload.account_id,
+                "from_address": payload.from_address,
+                "to_addresses": list(payload.to_addresses),
+                "subject": payload.subject,
+                "body_text": payload.body_text,
+                "in_reply_to_header": payload.in_reply_to_header,
+                "references": list(payload.references),
+                "rfc_message_id": payload.rfc_message_id,
+            },
+        )
+
+    async def contact_list(self, arguments: ConversationOperationArguments) -> OperationResult:
+        listed = _expect(ContactListArguments, arguments)
+        contacts = await self._require_contacts().list_contacts(
+            include_retired=listed.include_retired
+        )
+        return OperationResult(
+            kind="contacts",
+            data={
+                "contacts": [
+                    _contact_payload(contact) for contact in contacts[:CONTACT_LIST_LIMIT]
+                ],
+                "include_retired": listed.include_retired,
+            },
+        )
+
+    async def contact_create(self, arguments: ConversationOperationArguments) -> OperationResult:
+        created = _expect(ContactCreateArguments, arguments)
+        contact, was_created = await self._require_contacts().create(
+            display_name=created.display_name, email_address=created.email_address
+        )
+        return OperationResult(
+            kind="contact_created",
+            ref=str(contact.id),
+            data={**_contact_payload(contact), "created": was_created},
+        )
+
+    async def contact_edit(self, arguments: ConversationOperationArguments) -> OperationResult:
+        edited = _expect(ContactEditArguments, arguments)
+        contact = await self._require_contacts().edit(
+            edited.contact_id,
+            display_name=edited.display_name,
+            email_address=edited.email_address,
+        )
+        return OperationResult(
+            kind="contact_updated",
+            ref=str(contact.id),
+            data=_contact_payload(contact),
+        )
+
+    async def contact_retire(self, arguments: ConversationOperationArguments) -> OperationResult:
+        retired = _expect(ContactRetireArguments, arguments)
+        contact = await self._require_contacts().retire(retired.contact_id)
+        return OperationResult(
+            kind="contact_retired",
+            ref=str(contact.id),
+            data=_contact_payload(contact),
+        )
+
     async def system_capabilities(
         self, arguments: ConversationOperationArguments
     ) -> OperationResult:
@@ -674,6 +842,95 @@ class ConversationHandlers:
         if self._recurring is None:
             raise ConversationCapabilityUnavailable("这台主机还没有可用的固定安排存储")
         return self._recurring
+
+    def _require_contacts(self) -> ContactService:
+        if self._contacts is None:
+            raise ConversationCapabilityUnavailable("这台主机还没有可用的联系人存储")
+        return self._contacts
+
+    def _require_recipients(self) -> RecipientResolver:
+        if self._recipients is None:
+            raise ConversationCapabilityUnavailable("这台主机还不能解析收件人")
+        return self._recipients
+
+    def _require_new_drafts(self) -> NewMailDraftService:
+        if self._new_mail_drafts is None:
+            raise ConversationCapabilityUnavailable("这台主机还不能起草新邮件")
+        return self._new_mail_drafts
+
+    async def _require_new_draft(self, reference: str) -> NewMailDraft:
+        drafts = self._require_new_drafts()
+        draft = await drafts.get(reference)
+        if draft is None:
+            from assistant.domain.errors import NewMailDraftNotFound
+
+            raise NewMailDraftNotFound(reference)
+        return draft
+
+    async def preflight_new_mail(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A new letter needs an account to send from, and a recipient that resolves.
+
+        Every check here is read-only and runs before the first mutation of the turn, so an unknown
+        name, two contacts with one name, no send-ready account or an ambiguous sender leaves the
+        runtime exactly as it was (ADR-0037 §10-§14, §28).
+        """
+        if isinstance(arguments, MailComposeNewArguments):
+            resolver = self._recipients
+            drafts = self._new_mail_drafts
+            if resolver is None or drafts is None:
+                return "这台主机还没有配置可以发送邮件的邮箱"
+            if not resolver.send_ready:
+                return "当前没有可发送邮件的邮箱配置，所以我不能发新邮件"
+            current = None
+            if arguments.draft_id is not None:
+                current = await drafts.get(arguments.draft_id)
+                if current is None:
+                    return "找不到这份草稿"
+            try:
+                sender = await resolver.resolve_sender(arguments.sender_account)
+                if arguments.recipient_kind is not None:
+                    await resolver.resolve_recipient(
+                        kind=RecipientSource(arguments.recipient_kind.value),
+                        address=arguments.recipient_address,
+                        name=arguments.recipient_name,
+                        sender=sender,
+                    )
+                elif current is None:  # pragma: no cover - the arguments require a recipient
+                    return "我没有看到收件人"
+            except MailRecipientUnresolved as exc:
+                return str(exc)
+            return None
+        if isinstance(arguments, MailPrepareNewSendArguments):
+            drafts = self._new_mail_drafts
+            if drafts is None:
+                return "这台主机还不能起草新邮件"
+            if arguments.draft_id is None:
+                if ConversationOperationType.MAIL_COMPOSE_NEW in context.preceding:
+                    # This turn writes the draft first, so it does not exist yet — and that is fine.
+                    return None
+                return "我还没有写好这封邮件的草稿"
+            return None if await drafts.get(arguments.draft_id) is not None else "找不到这份草稿"
+        return None
+
+    async def preflight_contact(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A contact operation must name a contact that exists, before anything else runs."""
+        reference = _contact_reference(arguments)
+        if reference is None:
+            return None
+        contacts = self._contacts
+        if contacts is None:
+            return "这台主机还没有可用的联系人存储"
+        try:
+            await contacts.require_contact(reference)
+        except ContactNotFound:
+            return f"找不到这个联系人（{reference[:8]}）"
+        except InvalidContact as exc:
+            return str(exc)
+        return None
 
     async def _resolve_draft_for_prepare(
         self, asked: MailPrepareReplySendArguments
@@ -1074,6 +1331,40 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             handlers.mail_accounts,
         ),
         (
+            ConversationOperationType.MAIL_COMPOSE_NEW,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.mail_compose_new,
+            handlers.preflight_new_mail,
+        ),
+        (
+            ConversationOperationType.MAIL_PREPARE_NEW_SEND,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.mail_prepare_new_send,
+            handlers.preflight_new_mail,
+        ),
+        (
+            ConversationOperationType.CONTACT_LIST,
+            ConfirmationPolicy.READ,
+            handlers.contact_list,
+        ),
+        (
+            ConversationOperationType.CONTACT_CREATE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.contact_create,
+        ),
+        (
+            ConversationOperationType.CONTACT_EDIT,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.contact_edit,
+            handlers.preflight_contact,
+        ),
+        (
+            ConversationOperationType.CONTACT_RETIRE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.contact_retire,
+            handlers.preflight_contact,
+        ),
+        (
             ConversationOperationType.SYSTEM_CAPABILITIES,
             ConfirmationPolicy.READ,
             handlers.system_capabilities,
@@ -1132,6 +1423,41 @@ def _recurring_reference(arguments: ConversationOperationArguments) -> str | Non
     ):
         return arguments.rule_id
     return None
+
+
+def _contact_reference(arguments: ConversationOperationArguments) -> str | None:
+    """The contact an operation names, read through its own type."""
+    if isinstance(arguments, (ContactEditArguments, ContactRetireArguments)):
+        return arguments.contact_id
+    return None
+
+
+def _contact_payload(contact: Contact) -> dict[str, object]:
+    """One contact as data. Nothing derived, nothing about mail, no credential."""
+    return {
+        "id": str(contact.id),
+        "short_id": str(contact.id)[:8],
+        "display_name": contact.display_name,
+        "email_address": contact.email_address,
+        "status": contact.status.value,
+    }
+
+
+def _new_mail_draft_payload(
+    draft: NewMailDraft, *, created: bool
+) -> dict[str, object]:
+    """One new-mail draft as data: bounded metadata, and the content the preview will show."""
+    return {
+        "draft_id": str(draft.id),
+        "short_id": str(draft.id)[:8],
+        "account_id": draft.account_id,
+        "to_address": draft.to_address,
+        "subject": draft.subject,
+        "body": draft.body_text,
+        "version": draft.version,
+        "origin": draft.origin.value,
+        "created": created,
+    }
 
 
 def _recurring_payload(rule: RecurringCalendarRule) -> dict[str, object]:

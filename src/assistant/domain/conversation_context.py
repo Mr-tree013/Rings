@@ -42,6 +42,8 @@ class ConversationEntityKind(StrEnum):
     MAIL_MESSAGE = "mail_message"
     MAIL_THREAD = "mail_thread"
     MAIL_DRAFT = "mail_draft"
+    NEW_MAIL_DRAFT = "new_mail_draft"
+    CONTACT = "contact"
 
 
 @dataclass(frozen=True, slots=True)

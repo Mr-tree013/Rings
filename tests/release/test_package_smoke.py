@@ -159,9 +159,9 @@ def test_the_wheel_carries_the_migrations_and_the_static_assets(wheel: Path) -> 
     migrations = sorted(name for name in names if name.startswith("assistant/migrations/"))
     static = sorted(name for name in names if name.startswith("assistant/adapters/web/static/"))
 
-    assert len(migrations) == 18, migrations
+    assert len(migrations) == 19, migrations
     assert migrations[0].endswith("0001_initial.sql")
-    assert migrations[-1].endswith("0018_recurring_calendar_rules.sql")
+    assert migrations[-1].endswith("0019_contacts_and_outbound_mail.sql")
     assert {Path(name).name for name in static} == {
         "app.js",
         "approve.html",
@@ -182,9 +182,9 @@ def test_the_sdist_carries_the_migrations(wheel: Path, sdist: Path) -> None:
 
     migrations = sorted(name for name in names if "/migrations/0" in name and name.endswith(".sql"))
 
-    assert len(migrations) == 18, migrations
+    assert len(migrations) == 19, migrations
     assert any(
-        name.endswith("migrations/0018_recurring_calendar_rules.sql")
+        name.endswith("migrations/0019_contacts_and_outbound_mail.sql")
         for name in migrations
     )
 
@@ -332,6 +332,6 @@ def test_the_installed_package_finds_its_migrations_and_assets(installed: Path) 
     assert completed.returncode == 0, completed.stderr
     migrations, count, static = completed.stdout.strip().splitlines()
     assert Path(migrations) == Path(installed) / "assistant" / "migrations"
-    assert count == "18"
+    assert count == "19"
     assert Path(static) == Path(installed) / "assistant" / "adapters" / "web" / "static"
     assert Path(static).is_dir()

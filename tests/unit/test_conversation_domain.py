@@ -47,7 +47,7 @@ FORBIDDEN_OPERATION_PREFIXES = (
 
 
 def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
-    """Phase 10A's daily-local operations, Phase 10B's mail surface and Phase 10D's weekly rules."""
+    """10A's daily-local operations, 10B's mail, 10D's weekly rules and 10E's contacts."""
     expected = {
         "status.get",
         "task.list",
@@ -79,6 +79,12 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "mail.prepare_reply_send",
         "mail.reconcile_send",
         "mail.accounts",
+        "mail.compose_new",
+        "mail.prepare_new_send",
+        "contact.list",
+        "contact.create",
+        "contact.edit",
+        "contact.retire",
         "system.capabilities",
     }
 
@@ -101,9 +107,15 @@ def test_no_external_or_privileged_operation_exists() -> None:
         "mail.prepare_reply_send",
         "mail.reconcile_send",
         "mail.accounts",
+        "mail.compose_new",
+        "mail.prepare_new_send",
     }
     for member in ConversationOperationType:
-        if member.value in reviewed_mail or member.value == "system.capabilities":
+        if (
+            member.value in reviewed_mail
+            or member.value == "system.capabilities"
+            or member.value.startswith("contact.")
+        ):
             continue
         assert not member.value.startswith(FORBIDDEN_OPERATION_PREFIXES), member.value
 

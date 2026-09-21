@@ -86,6 +86,14 @@ class ConversationOperationType(StrEnum):
     MAIL_PREPARE_REPLY_SEND = "mail.prepare_reply_send"
     MAIL_RECONCILE_SEND = "mail.reconcile_send"
     MAIL_ACCOUNTS = "mail.accounts"
+    MAIL_COMPOSE_NEW = "mail.compose_new"
+    MAIL_PREPARE_NEW_SEND = "mail.prepare_new_send"
+
+    CONTACT_LIST = "contact.list"
+    CONTACT_CREATE = "contact.create"
+    CONTACT_EDIT = "contact.edit"
+    CONTACT_RETIRE = "contact.retire"
+
     SYSTEM_CAPABILITIES = "system.capabilities"
 
 
@@ -104,6 +112,7 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.MAIL_SHOW,
         ConversationOperationType.MAIL_THREAD,
         ConversationOperationType.MAIL_ACCOUNTS,
+        ConversationOperationType.CONTACT_LIST,
         ConversationOperationType.SYSTEM_CAPABILITIES,
     }
 )
@@ -136,6 +145,10 @@ _CLOCK_TEXT = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 
 MAX_RECURRING_TITLE_CHARS = 200
 """A weekly rule's title is bounded the same way the recurring-calendar domain bounds it."""
+
+MAX_CONTACT_NAME_CHARS = 120
+MAX_CONTACT_ADDRESS_CHARS = 320
+"""The same bounds the contact domain enforces, so a plan cannot propose an unstorable contact."""
 
 
 def _clock_text(value: str, field_name: str) -> str:
@@ -431,6 +444,181 @@ class SystemCapabilitiesArguments:
     operation_type: ConversationOperationType = field(
         default=ConversationOperationType.SYSTEM_CAPABILITIES, init=False
     )
+
+
+# ------------------------------------------------------------------ contact arguments
+
+
+@dataclass(frozen=True, slots=True)
+class ContactListArguments:
+    """The contacts a name may resolve to, retired ones only when asked for."""
+
+    include_retired: bool = False
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CONTACT_LIST, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ContactCreateArguments:
+    """One local name → address record."""
+
+    display_name: str
+    email_address: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CONTACT_CREATE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.display_name, "display_name")
+        _text(self.email_address, "email_address")
+        if len(self.display_name.strip()) > MAX_CONTACT_NAME_CHARS:
+            raise InvalidConversationPlan(
+                f"display_name is at most {MAX_CONTACT_NAME_CHARS} characters"
+            )
+        if len(self.email_address.strip()) > MAX_CONTACT_ADDRESS_CHARS:
+            raise InvalidConversationPlan(
+                f"email_address is at most {MAX_CONTACT_ADDRESS_CHARS} characters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ContactEditArguments:
+    """Change one contact's name and/or address; unset fields keep their current value."""
+
+    contact_id: str
+    display_name: str | None = None
+    email_address: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CONTACT_EDIT, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.contact_id, "contact_id")
+        if self.display_name is None and self.email_address is None:
+            raise InvalidConversationPlan("contact.edit needs at least one field to change")
+        if self.display_name is not None:
+            _text(self.display_name, "display_name")
+            if len(self.display_name.strip()) > MAX_CONTACT_NAME_CHARS:
+                raise InvalidConversationPlan(
+                    f"display_name is at most {MAX_CONTACT_NAME_CHARS} characters"
+                )
+        if self.email_address is not None:
+            _text(self.email_address, "email_address")
+            if len(self.email_address.strip()) > MAX_CONTACT_ADDRESS_CHARS:
+                raise InvalidConversationPlan(
+                    f"email_address is at most {MAX_CONTACT_ADDRESS_CHARS} characters"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class ContactRetireArguments:
+    """Stop using one contact. Nothing is deleted."""
+
+    contact_id: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CONTACT_RETIRE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.contact_id, "contact_id")
+
+
+# ----------------------------------------------------------------- new mail arguments
+
+
+class NewMailRecipientKind(StrEnum):
+    """The three allowed sources of a new letter's recipient (ADR-0037 §4).
+
+    There is deliberately no "guess" member and no address-book lookup: a recipient is an address
+    the human wrote, one unambiguous stored contact, or the sender's own configured account.
+    """
+
+    EXPLICIT_EMAIL = "explicit_email"
+    CONTACT = "contact"
+    SELF = "self"
+
+
+@dataclass(frozen=True, slots=True)
+class MailComposeNewArguments:
+    """Draft a *new* letter, or revise the one this conversation just drafted.
+
+    The model writes the subject and the body — that is prose, and prose is its job. It never
+    chooses who may be written to: the recipient is one of the three closed sources below, and the
+    runtime resolves it. `draft_id` is null when a new letter is being written and names an
+    existing draft when one is being revised; a revision may leave the recipient alone.
+    """
+
+    subject: str
+    body: str
+    recipient_kind: NewMailRecipientKind | None = None
+    recipient_address: str | None = None
+    recipient_name: str | None = None
+    sender_account: str | None = None
+    draft_id: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_COMPOSE_NEW, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.subject, "subject")
+        _text(self.body, "body")
+        if self.sender_account is not None:
+            _text(self.sender_account, "sender_account")
+        if self.draft_id is not None:
+            _text(self.draft_id, "draft_id")
+        if self.recipient_address is not None:
+            _text(self.recipient_address, "recipient_address")
+        if self.recipient_name is not None:
+            _text(self.recipient_name, "recipient_name")
+        if self.recipient_kind is None:
+            if self.recipient_address is not None or self.recipient_name is not None:
+                raise InvalidConversationPlan(
+                    "a recipient kind is required when an address or a name is given"
+                )
+            if self.draft_id is None:
+                raise InvalidConversationPlan(
+                    "a new letter needs a recipient: an explicit address, a contact, or self"
+                )
+            return
+        if self.recipient_kind is NewMailRecipientKind.EXPLICIT_EMAIL:
+            if self.recipient_address is None:
+                raise InvalidConversationPlan(
+                    "recipient_kind explicit_email needs recipient_address"
+                )
+            if self.recipient_name is not None:
+                raise InvalidConversationPlan(
+                    "recipient_kind explicit_email takes no recipient_name"
+                )
+        elif self.recipient_kind is NewMailRecipientKind.CONTACT:
+            if self.recipient_name is None:
+                raise InvalidConversationPlan("recipient_kind contact needs recipient_name")
+            if self.recipient_address is not None:
+                raise InvalidConversationPlan(
+                    "recipient_kind contact takes no recipient_address: the contact has it"
+                )
+        elif self.recipient_address is not None or self.recipient_name is not None:
+            raise InvalidConversationPlan(
+                "recipient_kind self takes neither an address nor a name"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class MailPrepareNewSendArguments:
+    """Freeze one new-mail draft version into an immutable, reviewable `mail.send` action.
+
+    `draft_id=None` means "the draft this same turn just wrote": the runtime binds the id the
+    compose operation returned, so the model never has to guess a freshly minted identity.
+    """
+
+    draft_id: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.MAIL_PREPARE_NEW_SEND, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.draft_id is not None:
+            _text(self.draft_id, "draft_id")
 
 
 # ---------------------------------------------------------------------------- write arguments
@@ -736,6 +924,12 @@ ConversationOperationArguments = (
     | MailPrepareReplySendArguments
     | MailReconcileSendArguments
     | MailAccountsArguments
+    | MailComposeNewArguments
+    | MailPrepareNewSendArguments
+    | ContactListArguments
+    | ContactCreateArguments
+    | ContactEditArguments
+    | ContactRetireArguments
     | SystemCapabilitiesArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
@@ -810,6 +1004,24 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.MAIL_PREPARE_REPLY_SEND: frozenset({"draft_id", "message_id"}),
     ConversationOperationType.MAIL_RECONCILE_SEND: frozenset({"action_id"}),
     ConversationOperationType.MAIL_ACCOUNTS: frozenset(),
+    ConversationOperationType.MAIL_COMPOSE_NEW: frozenset(
+        {
+            "subject",
+            "body",
+            "recipient_kind",
+            "recipient_address",
+            "recipient_name",
+            "sender_account",
+            "draft_id",
+        }
+    ),
+    ConversationOperationType.MAIL_PREPARE_NEW_SEND: frozenset({"draft_id"}),
+    ConversationOperationType.CONTACT_LIST: frozenset({"include_retired"}),
+    ConversationOperationType.CONTACT_CREATE: frozenset({"display_name", "email_address"}),
+    ConversationOperationType.CONTACT_EDIT: frozenset(
+        {"contact_id", "display_name", "email_address"}
+    ),
+    ConversationOperationType.CONTACT_RETIRE: frozenset({"contact_id"}),
     ConversationOperationType.SYSTEM_CAPABILITIES: frozenset(),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""
@@ -889,6 +1101,18 @@ def _weekday_value(value: object, field_name: str) -> int:
 
 def _optional_weekday_value(value: object, field_name: str) -> int | None:
     return None if value is None else _weekday_value(value, field_name)
+
+
+def _recipient_kind_value(value: object) -> NewMailRecipientKind | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidConversationPlan("recipient_kind must be a string or null")
+    try:
+        return NewMailRecipientKind(value)
+    except ValueError as exc:
+        allowed = ", ".join(member.value for member in NewMailRecipientKind)
+        raise InvalidConversationPlan(f"recipient_kind must be one of: {allowed}") from exc
 
 
 def _priority(value: object) -> TaskPriority:
@@ -1072,6 +1296,49 @@ def build_arguments(
         )
     if kind is ConversationOperationType.MAIL_ACCOUNTS:
         return MailAccountsArguments()
+    if kind is ConversationOperationType.MAIL_COMPOSE_NEW:
+        return MailComposeNewArguments(
+            subject=_strings(payload.get("subject"), "subject"),
+            body=_strings(payload.get("body"), "body"),
+            recipient_kind=_recipient_kind_value(payload.get("recipient_kind")),
+            recipient_address=_optional_strings(
+                payload.get("recipient_address"), "recipient_address"
+            ),
+            recipient_name=_optional_strings(
+                payload.get("recipient_name"), "recipient_name"
+            ),
+            sender_account=_optional_strings(
+                payload.get("sender_account"), "sender_account"
+            ),
+            draft_id=_optional_strings(payload.get("draft_id"), "draft_id"),
+        )
+    if kind is ConversationOperationType.MAIL_PREPARE_NEW_SEND:
+        return MailPrepareNewSendArguments(
+            draft_id=_optional_strings(payload.get("draft_id"), "draft_id")
+        )
+    if kind is ConversationOperationType.CONTACT_LIST:
+        return ContactListArguments(
+            include_retired=_boolean(
+                payload.get("include_retired"), "include_retired", default=False
+            )
+        )
+    if kind is ConversationOperationType.CONTACT_CREATE:
+        return ContactCreateArguments(
+            display_name=_strings(payload.get("display_name"), "display_name"),
+            email_address=_strings(payload.get("email_address"), "email_address"),
+        )
+    if kind is ConversationOperationType.CONTACT_EDIT:
+        return ContactEditArguments(
+            contact_id=_strings(payload.get("contact_id"), "contact_id"),
+            display_name=_optional_strings(payload.get("display_name"), "display_name"),
+            email_address=_optional_strings(
+                payload.get("email_address"), "email_address"
+            ),
+        )
+    if kind is ConversationOperationType.CONTACT_RETIRE:
+        return ContactRetireArguments(
+            contact_id=_strings(payload.get("contact_id"), "contact_id")
+        )
     if kind is ConversationOperationType.SYSTEM_CAPABILITIES:
         return SystemCapabilitiesArguments()
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
@@ -1207,13 +1474,19 @@ __all__ = [
     "CalendarRecurringEditArguments",
     "CalendarRecurringListArguments",
     "CalendarRecurringRetireArguments",
+    "ContactCreateArguments",
+    "ContactEditArguments",
+    "ContactListArguments",
+    "ContactRetireArguments",
     "ConversationOperationArguments",
     "ConversationOperationType",
     "ConversationPlan",
     "ConversationPlanMode",
     "KnowledgeAskArguments",
     "MailAccountsArguments",
+    "MailComposeNewArguments",
     "MailListArguments",
+    "MailPrepareNewSendArguments",
     "MailPrepareReplySendArguments",
     "MailReconcileSendArguments",
     "MailReplyDraftArguments",
@@ -1221,6 +1494,7 @@ __all__ = [
     "MailStatusArguments",
     "MailSyncArguments",
     "MailThreadArguments",
+    "NewMailRecipientKind",
     "NotificationListArguments",
     "NotificationReadArguments",
     "PlanApplyProposalArguments",

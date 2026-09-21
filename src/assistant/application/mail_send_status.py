@@ -30,14 +30,17 @@ from assistant.domain.errors import ActionRequestNotFound, MailSendNotReconcilab
 from assistant.domain.execution import ExecutionRun, ExecutionRunStatus
 from assistant.domain.mail_draft import MailDraft
 from assistant.domain.mail_send import (
+    MailSendKind,
     MailSendLink,
     MailSendPayload,
     MailSendReconciliation,
 )
+from assistant.domain.new_mail_draft import NewMailDraft
 from assistant.ports.action_repository import ActionRepository
 from assistant.ports.clock import Clock
 from assistant.ports.mail_draft_repository import MailDraftRepository
 from assistant.ports.mail_send_repository import MailSendRepository
+from assistant.ports.new_mail_draft_repository import NewMailDraftRepository
 
 
 class MailDeliveryState(StrEnum):
@@ -61,6 +64,7 @@ class MailSendStatus:
     draft: MailDraft | None
     state: MailDeliveryState
     approval_state: ApprovalState
+    new_draft: NewMailDraft | None = None
     approval: ApprovalRecord | None = None
     execution: ExecutionRun | None = None
     reconciliations: tuple[MailSendReconciliation, ...] = ()
@@ -72,13 +76,15 @@ class MailSendStatus:
         The action still sends exactly what it snapshotted; this only tells the user that the
         draft they are looking at is no longer the text behind the pending approval.
         """
-        if self.draft is None:
+        if self.current_draft_version is None:
             return False
-        return self.draft.version != self.link.draft_version
+        return self.current_draft_version != self.link.draft_version
 
     @property
     def current_draft_version(self) -> int | None:
         """The draft's version right now, or `None` when the draft is gone."""
+        if self.link.kind is MailSendKind.NEW:
+            return None if self.new_draft is None else self.new_draft.version
         return None if self.draft is None else self.draft.version
 
 
@@ -117,11 +123,14 @@ class MailSendStatusService:
         send: MailSendRepository,
         drafts: MailDraftRepository,
         clock: Clock,
+        *,
+        new_drafts: NewMailDraftRepository | None = None,
     ) -> None:
         self._actions = actions
         self._send = send
         self._drafts = drafts
         self._clock = clock
+        self._new_drafts = new_drafts
 
     async def status(self, action_id: ActionRequestId | str) -> MailSendStatus:
         """Return one prepared send with its delivery state.
@@ -176,13 +185,17 @@ class MailSendStatusService:
         payload = MailSendPayload.from_payload(action.payload)
         approval = await self._actions.latest_approval(action.id)
         run = await self._actions.latest_execution(action.id)
-        draft = await self._drafts.get_draft(link.draft_id)
+        draft = None if link.draft_id is None else await self._drafts.get_draft(link.draft_id)
+        new_draft = None
+        if link.new_draft_id is not None and self._new_drafts is not None:
+            new_draft = await self._new_drafts.get_draft(link.new_draft_id)
         now = self._clock.now()
         return MailSendStatus(
             action=action,
             payload=payload,
             link=link,
             draft=draft,
+            new_draft=new_draft,
             state=derive_delivery_state(
                 action=action, approval=approval, run=run, now=now
             ),

@@ -26,9 +26,17 @@ from uuid import UUID, uuid4
 from assistant.domain.errors import InvalidMailSend
 from assistant.domain.mail import MAX_ADDRESSES, MailAccountId, validate_account_id
 from assistant.domain.mail_draft import MailDraftId, mailbox_address
+from assistant.domain.new_mail_draft import NewMailDraftId
 
 MAIL_SEND_SCHEMA_VERSION = 1
-"""Bump when the payload shape changes in a way an executor must notice."""
+"""Bump when the payload shape changes in a way an executor must notice.
+
+Phase 10E added one *closed discriminator* (`kind`) without changing a single field SMTP reads:
+the transport's behaviour is identical for a new letter and for a reply, because reply headers were
+already optional and the executor simply omits what is absent. Historical payloads — written
+before the discriminator existed — therefore stay valid, parse as `reply`, and keep the version
+they were minted with. A change that *did* alter what leaves the machine would still be a bump.
+"""
 
 MAX_SEND_BODY_CHARS = 200_000
 MAX_SEND_SUBJECT_CHARS = 2000
@@ -41,6 +49,16 @@ _MESSAGE_ID_PATTERN = re.compile(r"^<[!-~]+@[!-~]+>$")
 def new_mail_send_reconciliation_id() -> UUID:
     """Generate a fresh reconciliation identity."""
     return uuid4()
+
+
+class MailSendKind(StrEnum):
+    """Which draft a prepared send was snapshotted from (ADR-0037 §7)."""
+
+    REPLY = "reply"
+    """A reply to a stored message. It may carry `In-Reply-To` and `References`."""
+
+    NEW = "new"
+    """A new letter. It never carries reply headers: there is nothing to reply to."""
 
 
 def validate_rfc_message_id(value: str) -> str:
@@ -76,6 +94,7 @@ class MailSendPayload:
     rfc_message_id: str
     date_header: str
     schema_version: int = MAIL_SEND_SCHEMA_VERSION
+    kind: MailSendKind = MailSendKind.REPLY
     in_reply_to_header: str | None = None
     references: tuple[str, ...] = ()
 
@@ -126,11 +145,18 @@ class MailSendPayload:
             if not reply_to or len(reply_to) > MAX_SEND_HEADER_CHARS:
                 raise InvalidMailSend("an In-Reply-To header must be a short non-blank id")
             object.__setattr__(self, "in_reply_to_header", reply_to)
+        if self.kind is MailSendKind.NEW and (
+            self.in_reply_to_header is not None or self.references
+        ):
+            # A new letter that claims to answer something is a lie in the headers, and the
+            # preview would show it. The closed variant is enforced here, not by convention.
+            raise InvalidMailSend("a new mail send must not carry reply headers")
 
     def to_payload(self) -> dict[str, object]:
         """The canonical JSON document stored in the approved `ActionRequest`."""
         return {
             "schema_version": self.schema_version,
+            "kind": self.kind.value,
             "draft_id": str(self.draft_id),
             "draft_version": self.draft_version,
             "account_id": self.account_id,
@@ -170,11 +196,16 @@ class MailSendPayload:
             "in_reply_to_header",
             "references",
         }
-        if set(payload) != expected:
+        legacy = expected
+        expected = expected | {"kind"}
+        # A payload written before the discriminator existed is a reply payload; anything else —
+        # a missing field, or a key this build does not know — is refused.
+        if set(payload) != expected and set(payload) != legacy:
             missing = sorted(expected - set(payload))
             extra = sorted(set(payload) - expected)
             raise InvalidMailSend(
-                f"a mail send payload has the wrong fields (missing {missing}, extra {extra})"
+                f"a mail send payload has the wrong fields "
+                f"(missing {missing}, extra {extra})"
             )
         version = payload["schema_version"]
         if not isinstance(version, int) or isinstance(version, bool):
@@ -193,6 +224,16 @@ class MailSendPayload:
         reply_to = payload["in_reply_to_header"]
         if reply_to is not None and not isinstance(reply_to, str):
             raise InvalidMailSend("in_reply_to_header must be a string or null")
+        raw_kind = payload.get("kind")
+        if raw_kind is None:
+            kind = MailSendKind.REPLY
+        elif isinstance(raw_kind, str):
+            try:
+                kind = MailSendKind(raw_kind)
+            except ValueError as exc:
+                raise InvalidMailSend(f"unknown mail send kind {raw_kind!r}") from exc
+        else:
+            raise InvalidMailSend("kind must be a string")
         return cls(
             draft_id=UUID(_text(payload, "draft_id")),
             draft_version=draft_version,
@@ -203,6 +244,7 @@ class MailSendPayload:
             body_text=_text(payload, "body_text"),
             rfc_message_id=_text(payload, "rfc_message_id"),
             date_header=_text(payload, "date_header"),
+            kind=kind,
             in_reply_to_header=reply_to,
             references=tuple(str(item) for item in references),
         )
@@ -217,15 +259,26 @@ def _text(payload: dict[str, object], key: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MailSendLink:
-    """The binding between one approved send action and the draft version it snapshotted."""
+    """The binding between one prepared send action and the draft version it snapshotted.
+
+    Exactly one of the two draft references is set: a reply draft keeps its source-message
+    invariant, and a new-mail draft keeps its own table. The link is what makes "one draft version,
+    one action" and "one Message-ID, one action" database facts for both kinds, which is why the
+    two converge here rather than in two parallel pipelines.
+    """
 
     action_id: UUID
-    draft_id: MailDraftId
     draft_version: int
     rfc_message_id: str
     created_at: datetime
+    draft_id: MailDraftId | None = None
+    new_draft_id: NewMailDraftId | None = None
 
     def __post_init__(self) -> None:
+        if (self.draft_id is None) == (self.new_draft_id is None):
+            raise InvalidMailSend(
+                "a send link names exactly one draft: a reply draft or a new-mail draft"
+            )
         if self.draft_version < 1:
             raise InvalidMailSend("a send link needs a positive draft version")
         object.__setattr__(
@@ -233,6 +286,54 @@ class MailSendLink:
         )
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise InvalidMailSend("created_at must be timezone-aware")
+
+    @property
+    def kind(self) -> MailSendKind:
+        """Which draft this action was snapshotted from."""
+        return MailSendKind.NEW if self.new_draft_id is not None else MailSendKind.REPLY
+
+    @property
+    def reply_draft_id(self) -> MailDraftId | None:
+        """The reply draft this action came from, or `None` for new mail."""
+        return self.draft_id
+
+    @classmethod
+    def for_reply(
+        cls,
+        *,
+        action_id: UUID,
+        draft_id: MailDraftId,
+        draft_version: int,
+        rfc_message_id: str,
+        created_at: datetime,
+    ) -> MailSendLink:
+        """One link to a reply draft version."""
+        return cls(
+            action_id=action_id,
+            draft_id=draft_id,
+            draft_version=draft_version,
+            rfc_message_id=rfc_message_id,
+            created_at=created_at,
+        )
+
+    @classmethod
+    def for_new_mail(
+        cls,
+        *,
+        action_id: UUID,
+        new_draft_id: NewMailDraftId,
+        draft_version: int,
+        rfc_message_id: str,
+        created_at: datetime,
+    ) -> MailSendLink:
+        """One link to a new-mail draft version."""
+        return cls(
+            action_id=action_id,
+            new_draft_id=new_draft_id,
+            draft_version=draft_version,
+            rfc_message_id=rfc_message_id,
+            created_at=created_at,
+        )
 
 
 class MailSendReconciliationResult(StrEnum):
@@ -279,6 +380,7 @@ class MailSendReconciliation:
 __all__ = [
     "MAIL_SEND_SCHEMA_VERSION",
     "MAX_SEND_BODY_CHARS",
+    "MailSendKind",
     "MailSendLink",
     "MailSendPayload",
     "MailSendReconciliation",

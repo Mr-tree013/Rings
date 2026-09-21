@@ -115,15 +115,25 @@ Tree > Added to your fixed arrangements:
        every Monday 10:00-12:00 · Computer Systems Fundamentals
        from 2026-09-21 until you remove it.
        A weekly proposal is ready (2 blocks, around that class). Apply it?
+You > send a hello email to myself
+Tree > The email that would be sent (this is exactly what would leave the machine):
+       Account: smail (me@example.edu) · To: me@example.edu
+       Subject: A quick hello
+       Body: Hi — this is a test message from Rings.
+       Send it? Reply "confirm send" and I will send it, or reply "cancel".
 ```
 
 Tree handles local daily work in natural language: tasks, calendar, work sessions, weekly planning
 and questions about your indexed sources. Fixed weekly arrangements are one weekday per rule, and
 only weekly: odd/even weeks, every-N-week and monthly recurrence are not recorded in this version.
 Saying "I have a class every Monday 10 to 12" is a statement, so Tree asks before it writes —
-only an explicit "note it down" is a write. External effects are never the model's to perform: for
-mail, Tree drafts, shows the **exact bytes** that would be sent, and only your explicit
-confirmation sends it — the `pw` approval chain is still the mechanism behind it.
+only an explicit "note it down" is a write. A new email can go to one of three kinds of recipient:
+an address you typed, a contact you recorded ("Zhang's address is zhang@example.edu, remember it
+as a contact" — then just say "email Zhang"), or your own configured mailbox ("send it to myself").
+When the address is not in your message, the name is unknown, or two contacts share a name, Tree
+asks instead of guessing. External effects are never the model's to perform: for mail, Tree drafts,
+shows the **exact bytes** that would be sent, and only your explicit confirmation sends it — the
+`pw` approval chain is still the mechanism behind it.
 
 When the model answers unusably, Tree repairs it **once** and executes nothing; when the terminal
 sends bytes it cannot decode, it says so and keeps the session open. "What can you do?" is answered

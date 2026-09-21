@@ -77,6 +77,16 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return _render_recurring_updated(data)
     if result.kind == "recurring_rule_retired":
         return _render_recurring_retired(data)
+    if result.kind == "new_mail_draft":
+        return _render_new_mail_draft(data)
+    if result.kind == "contacts":
+        return _render_contacts(data)
+    if result.kind == "contact_created":
+        return _render_contact_created(data)
+    if result.kind == "contact_updated":
+        return _render_contact_updated(data)
+    if result.kind == "contact_retired":
+        return _render_contact_retired(data)
     if result.kind == "event_created":
         starts = _moment(data.get("starts_at"), timezone)
         ends = _moment(data.get("ends_at"), timezone)
@@ -199,9 +209,21 @@ def render_capabilities(data: dict[str, Any]) -> str:
             f"· 邮件（已配置 {mail_read.get('enabled_accounts', 0)} 个启用账号）："
             "同步收信、列出和查看邮件、按会话查看"
         )
-        lines.append("· 回复邮件：只为已收到的邮件起草回复（不能新建任意收件人的邮件）")
+        lines.append("· 回复邮件：为已收到的邮件起草回复")
     else:
         lines.append("· 邮件：当前没有配置任何邮箱")
+    compose = areas.get("mail_new_outbound_compose") or {}
+    if state_of("mail_new_outbound_compose") == "available":
+        lines.append(
+            "· 新建邮件：写给明确的邮箱地址、已记录的联系人，或者你自己的已配置邮箱"
+            "（写给自己）"
+        )
+        lines.append(
+            "· 联系人：记录名字和邮箱地址（例如「张老师 → zhang@example.edu」），"
+            "之后可以按名字发信；联系人只是本地记录，不代表任何权限"
+        )
+    else:
+        lines.append("· 新建邮件：需要先配置可发信（SMTP）的邮箱账号")
     if state_of("mail_send_after_confirmation") == "available":
         lines.append(
             "· 发送邮件：先准备，再把将要发出的完整内容给你看；"
@@ -212,8 +234,9 @@ def render_capabilities(data: dict[str, Any]) -> str:
     lines.append("")
     if recurring.get("weekly_only"):
         lines.append("做不到的：单双周、每两周一次、每月或每年重复、节假日或考试周除外。")
-    lines.append("做不到的：新建一封任意收件人的邮件、提交校外系统的手续（eHall）、")
-    lines.append("创建审批或绕过确认执行外部动作。")
+    if compose.get("unsupported"):
+        lines.append("邮件做不到的：附件、定时发送、自动发送、通讯录/网络查询收件人。")
+    lines.append("做不到的：提交校外系统的手续（eHall）、创建审批或绕过确认执行外部动作。")
     return "\n".join(lines)
 
 
@@ -362,6 +385,19 @@ def render_interpretation_refused(reason: str) -> str:
 def render_preflight_refused(reason: str) -> str:
     """A plan could not be carried out in full, so none of it was applied (ADR-0035 §15-§16)."""
     return f"我没有执行任何操作：{reason}。你可以调整一下再说一次。"
+
+
+def render_unproven_address(address: str) -> str:
+    """A model named an address the human never wrote (ADR-0037 §11).
+
+    The refusal names the address so the user can see exactly what the model tried to use, and it
+    says what to do instead: write the address in the message.
+    """
+    return (
+        f"「{address}」没有出现在你刚才那句话里，所以我什么都没有做，也没有创建草稿。\n"
+        "请直接在消息里写出收件人的邮箱地址，例如「给 name@example.edu 发封邮件，"
+        "主题“测试”，内容“你好”」。"
+    )
 
 
 def render_mail_send_preview(payload: dict[str, object]) -> str:
@@ -694,6 +730,48 @@ def _render_recurring_retired(data: dict[str, Any]) -> str:
     )
 
 
+def _render_new_mail_draft(data: dict[str, Any]) -> str:
+    """One drafted letter, in the words the preview is about to repeat exactly."""
+    verb = "已写好草稿" if data.get("created", True) else "已更新草稿"
+    return (
+        f"{verb}（草稿版本 {data.get('version', 1)}）："
+        f"发给 {data.get('to_address', '')}，主题「{data.get('subject', '')}」。"
+    )
+
+
+def _contact_line(contact: dict[str, Any]) -> str:
+    state = "" if contact.get("status", "active") == "active" else f"（{contact.get('status')}）"
+    return f"{contact.get('display_name', '')} <{contact.get('email_address', '')}>{state}"
+
+
+def _render_contacts(data: dict[str, Any]) -> str:
+    contacts = data.get("contacts") or []
+    if not contacts:
+        return "现在还没有记录联系人。"
+    lines = [f"现在有 {len(contacts)} 个联系人："]
+    lines.extend(f"- {_contact_line(contact)}" for contact in contacts)
+    return "\n".join(lines)
+
+
+def _render_contact_created(data: dict[str, Any]) -> str:
+    line = _contact_line(data)
+    if not data.get("created", True):
+        return f"这个联系人已经存在，我没有重复添加：{line}"
+    return f"已记录联系人：\n{line}"
+
+
+def _render_contact_updated(data: dict[str, Any]) -> str:
+    return f"已更新联系人：\n{_contact_line(data)}"
+
+
+def _render_contact_retired(data: dict[str, Any]) -> str:
+    return (
+        f"以后不再用「{data.get('display_name', '')}」这个联系人了"
+        f"（原来的地址是 {data.get('email_address', '')}）。"
+        "已经发出去的邮件没有改动。"
+    )
+
+
 def _recurring_line(rule: dict[str, Any]) -> str:
     """One rule in one line: its weekday, its local hours and its title."""
     return f"{_weekly_phrase(rule)} · {rule.get('title', '')}"
@@ -882,6 +960,7 @@ __all__ = [
     "render_review_withdrawn",
     "render_send_result",
     "render_unknown_local",
+    "render_unproven_address",
     "render_unsupported",
     "render_unsupported_recurrence",
 ]

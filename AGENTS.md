@@ -840,6 +840,26 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
 - 对话层不写 SQL、不拥有第二套规则模型：handlers 只通过 `RecurringCalendarService` 访问；
   能力描述（`/help`、`system.capabilities`、模型上下文）继续同源于 registry + config。
 
+### 6.5 对话式新建邮件与联系人规则（Phase 10E，ADR-0037）
+
+- 新邮件与回复**收敛到同一条管道**：同一个 `ActionRequest("mail.send")`、同一张 `mail_send_links`、
+  同一个 executor、同一个 review/approval/execution/对账路径。绝不新增第二个 SMTP 通道。
+- 模型可以写 subject/body，**绝不**授权发送、绝不调用 SMTP、绝不创建 approval/execution。
+- 首轮只能准备：展示从 `ActionRequest` payload 渲染的精确预览；第二条明确的人类消息才可能发送。
+- 发送语汇沿用 ADR-0034：只有「确认发送 / 发送 / 发吧 / 确认发出 / send / confirm send」能结算；
+  「可以 / 好 / 嗯 / continue / ok」对本地计划有效，**永不**发送邮件。
+- 收件人只有三种来源：用户本条消息里出现的地址、唯一一个 ACTIVE `Contact`、「我自己」对应的已配置
+  send-ready 账号。模型提出的地址必须出现在用户原文中，否则第一次写入前拒绝（零草稿/零 action/零 review）。
+- 名字查不到、同名多个、可发信账号多个一律追问；「我自己」不看本地邮件数量，也不默认取第一个账号。
+- `Contact` 是本地结构化身份，不是 `ConfirmedFact`；只存 display_name/email_address/email_key/status/
+  fingerprint/时间戳，不存凭证、密码、token、邮件正文或对话文本。idempotent（同 fingerprint 一条）。
+- 回复草稿（`mail_drafts`）保持「必须有来源邮件」；新邮件草稿（`new_mail_drafts`）独立成表，二者在执行前收敛。
+- `MailSendPayload` 用闭合判别 `kind`（reply/new），new 不带回复头；历史 payload 保持有效。
+- 编辑已预览的草稿 → 旧 review STALE + 新 version + 新 fingerprint + 重新确认；
+  联系人地址变化**不会**改写已准备好的 action。
+- SMTP `UNKNOWN` 语义不变、永不盲重试；取消 review = 零 approval / 零 execution / 零 SMTP。
+- 本阶段不做附件、定时发送、自动发送、通讯录或网络查询收件人，也不把 eHall/fact/playbook 引入对话。
+
 ## 7. 版本管理
 
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。

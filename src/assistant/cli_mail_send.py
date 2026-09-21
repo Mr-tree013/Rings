@@ -119,7 +119,8 @@ def _print_preparation(preparation: MailSendPreparation) -> None:
     console.print(f"Action:      {preparation.action.id}")
     console.print(f"Case:        {preparation.action.case_id}")
     console.print(
-        f"Draft:       {preparation.link.draft_id} version {preparation.link.draft_version}"
+        f"Draft:       {preparation.link.draft_id or preparation.link.new_draft_id} "
+        f"version {preparation.link.draft_version}"
     )
     console.print(f"From:        {payload.from_address}")
     console.print(f"To:          {', '.join(payload.to_addresses)}")

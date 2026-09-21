@@ -241,13 +241,13 @@ def test_the_model_is_asked_exactly_once_per_turn() -> None:
     assert service.count("await self._interpreter.plan(") == 1
 
 
-def test_the_migration_set_is_pinned_through_the_recurring_calendar_migration() -> None:
+def test_the_migration_set_is_pinned_through_the_contacts_migration() -> None:
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0018_recurring_calendar_rules.sql"
-    assert len([name for name in names if name.startswith("0018")]) == 1
-    assert "0019" not in "".join(names)
+    assert names[-1] == "0019_contacts_and_outbound_mail.sql"
+    assert len([name for name in names if name.startswith("0019")]) == 1
+    assert "0020" not in "".join(names)
 
 
 # ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)
@@ -342,3 +342,98 @@ def test_weekly_rules_add_no_external_capability() -> None:
     assert "ApprovalService" not in handlers
     assert "EXTERNAL_WRITE" not in {member.value for member in ConfirmationPolicy}
     _ = build_phase_10a_registry  # the registry is built from the handlers, never by reflection
+
+
+# ------------------------------------------- contacts and new outbound mail (ADR-0037 §37)
+
+CONTACT_DOMAIN = ("domain/contact.py", "domain/new_mail_draft.py")
+RECIPIENT_APPLICATION = (
+    "application/recipient_resolution.py",
+    "application/contacts.py",
+    "application/new_mail_drafts.py",
+)
+
+
+def test_the_contact_domain_is_pure() -> None:
+    for relative in CONTACT_DOMAIN:
+        modules = _imported_modules(relative)
+        for prefix in FORBIDDEN_IN_DOMAIN:
+            offending = sorted(
+                module
+                for module in modules
+                if module == prefix or module.startswith(f"{prefix}.")
+            )
+            assert not offending, f"{relative} imports {offending}"
+
+
+def test_the_recipient_resolver_reaches_no_model_and_no_network() -> None:
+    """Resolution is deterministic: the human's words, the contacts and the configured accounts."""
+    forbidden = (
+        "assistant.ports.model",
+        "assistant.adapters",
+        "assistant.store",
+        "socket",
+        "httpx",
+        "urllib",
+    )
+    for relative in RECIPIENT_APPLICATION:
+        modules = _imported_modules(relative)
+        for prefix in forbidden:
+            offending = sorted(
+                module
+                for module in modules
+                if module == prefix or module.startswith(f"{prefix}.")
+            )
+            assert not offending, f"{relative} imports {offending}"
+
+
+def test_the_interpreter_cannot_reach_an_approval_or_an_executor() -> None:
+    """The model-facing path prepares; only the deterministic controller settles (ADR-0034)."""
+    for relative in MODEL_FACING_APPLICATION:
+        text = _read(relative)
+        for name in ("ApprovalService", "ActionExecutionService", "ActionExecutor"):
+            assert name not in text, f"{relative} names {name}"
+        modules = _imported_modules(relative)
+        assert "smtplib" not in modules, f"{relative} imports smtplib"
+        assert "assistant.adapters.mail.smtp" not in modules, relative
+
+
+def test_the_model_facing_vocabulary_cannot_express_mail_send() -> None:
+    from assistant.domain.action import ActionType
+    from assistant.domain.conversation_plan import ConversationOperationType
+
+    offered = {member.value for member in ConversationOperationType}
+    assert "mail.send" not in offered
+    assert not [value for value in offered if value.startswith("approval.")]
+    assert not [value for value in offered if value.startswith("action.")]
+    assert not [value for value in offered if value.startswith("execution.")]
+    assert ActionType("mail.send") == ActionType("mail.send")
+
+
+def test_new_mail_and_replies_converge_on_one_send_path() -> None:
+    """One action type, one link store, one executor — never a second SMTP pipeline."""
+    actions = _read("application/mail_send_actions.py")
+    assert actions.count('ActionType("mail.send")') == 1
+    assert "prepare_send" in actions and "prepare_new_send" in actions
+    execution = _read("application/action_execution.py")
+    executor_modules = [
+        path.name
+        for path in (SOURCE_ROOT / "adapters" / "mail").glob("*.py")
+        if "smtp" in path.name
+    ]
+    assert executor_modules == ["smtp.py"]
+    assert "smtplib" not in execution  # the application layer never talks to a server
+    adapters = sorted(
+        path.name for path in SOURCE_ROOT.rglob("*.py") if "smtp" in path.name
+    )
+    assert adapters == ["smtp.py"], adapters
+
+
+def test_no_generic_external_write_or_tool_capability_exists() -> None:
+    from assistant.application.conversation_capabilities import ConfirmationPolicy
+    from assistant.domain.conversation_plan import ConversationOperationType
+
+    assert "EXTERNAL_WRITE" not in {member.value for member in ConfirmationPolicy}
+    forbidden = ("shell.", "filesystem.", "browser.", "http.", "tool.", "ehall.", "fact.")
+    for member in ConversationOperationType:
+        assert not member.value.startswith(forbidden), member.value

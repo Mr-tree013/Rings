@@ -165,8 +165,30 @@ def build_capability_snapshot(
         ),
         CapabilityArea(
             "mail_new_outbound_compose",
-            CapabilityState.UNAVAILABLE,
-            {"reason": "reply-only in this build"},
+            state(
+                offered=ConversationOperationType.MAIL_COMPOSE_NEW in available,
+                configured=bool(sending_accounts),
+            ),
+            {
+                "recipients": ["explicit_email", "contact", "self"],
+                "exact_preview": True,
+                "explicit_phrase_required": True,
+                "configured_accounts": len(sending_accounts),
+                "unsupported": [
+                    "attachments",
+                    "scheduled mail",
+                    "automatic send",
+                    "address-book lookup",
+                ],
+            },
+        ),
+        CapabilityArea(
+            "contacts",
+            state(
+                offered=ConversationOperationType.CONTACT_CREATE in available,
+                configured=True,
+            ),
+            {"operations": 4, "grants_authority": False},
         ),
         CapabilityArea("ehall", CapabilityState.UNAVAILABLE, {"reason": "not conversational"}),
     )

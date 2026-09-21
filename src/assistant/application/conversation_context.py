@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from assistant.domain.contact import Contact, ContactStatus
 from assistant.domain.conversation import ConversationMessage, ConversationThreadId
 from assistant.domain.conversation_context import (
     MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -32,6 +33,7 @@ from assistant.domain.conversation_context import (
     ConversationRecentMessage,
 )
 from assistant.domain.deadline import Deadline
+from assistant.domain.new_mail_draft import NewMailDraft
 from assistant.domain.notification import NotificationStatus
 from assistant.domain.planning import PlanProposal, PlanProposalStatus
 from assistant.domain.recurring_calendar import (
@@ -42,10 +44,12 @@ from assistant.domain.recurring_calendar import (
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
+from assistant.ports.contact_repository import ContactRepository
 from assistant.ports.conversation_repository import ConversationRepository
 from assistant.ports.mail_draft_repository import MailDraftRepository
 from assistant.ports.mail_intelligence_repository import MailIntelligenceRepository
 from assistant.ports.mail_repository import MailRepository
+from assistant.ports.new_mail_draft_repository import NewMailDraftRepository
 from assistant.ports.planning_repository import PlanningRepository
 from assistant.ports.recurring_calendar_repository import RecurringCalendarRepository
 from assistant.ports.scheduler_repository import SchedulerRepository
@@ -80,6 +84,8 @@ class ConversationContextBuilder:
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_drafts: MailDraftRepository | None = None,
         recurring: RecurringCalendarRepository | None = None,
+        contacts: ContactRepository | None = None,
+        new_mail_drafts: NewMailDraftRepository | None = None,
         max_messages: int = MAX_CONTEXT_MESSAGES,
         max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
         max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -97,6 +103,8 @@ class ConversationContextBuilder:
         self._mail_intelligence = mail_intelligence
         self._mail_drafts = mail_drafts
         self._recurring = recurring
+        self._contacts = contacts
+        self._new_mail_drafts = new_mail_drafts
         self._max_messages = max_messages
         self._max_history_chars = max_history_chars
         self._max_entities = max_entities
@@ -132,6 +140,8 @@ class ConversationContextBuilder:
             *await self._recurring_entities(),
             *await self._notification_entities(),
             *await self._mail_entities(),
+            *await self._contact_entities(),
+            *await self._new_mail_draft_entities(),
         )
 
     async def _task_entities(self) -> tuple[ConversationEntityRef, ...]:
@@ -271,6 +281,45 @@ class ConversationContextBuilder:
                 )
         return tuple(entities)
 
+    async def _contact_entities(self) -> tuple[ConversationEntityRef, ...]:
+        """The contacts a name in the next message could mean, bounded and credential-free.
+
+        A follow-up like "把张老师邮箱改成 zhang2@example.edu" is possible because the short id is
+        here. A contact is not memory: only its name, address and lifecycle travel.
+        """
+        if self._contacts is None:
+            return ()
+        contacts = await self._contacts.list_contacts(status=ContactStatus.ACTIVE)
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.CONTACT,
+                id=str(contact.id)[:8],
+                label=contact.display_name,
+                detail=_contact_detail(contact),
+            )
+            for contact in contacts[-self._max_entities :]
+        )
+
+    async def _new_mail_draft_entities(self) -> tuple[ConversationEntityRef, ...]:
+        """New-mail drafts as bounded metadata — never a pile of bodies (ADR-0037 §27).
+
+        The subject is already short and the recipient is what a revision needs; the body stays
+        out, because a conversation that carried every draft's full text would be both expensive
+        and a worse place for it to live than the draft table.
+        """
+        if self._new_mail_drafts is None:
+            return ()
+        drafts = await self._new_mail_drafts.list_drafts(limit=self._max_entities)
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.NEW_MAIL_DRAFT,
+                id=str(draft.id)[:8],
+                label=draft.subject,
+                detail=_new_mail_draft_detail(draft),
+            )
+            for draft in drafts
+        )
+
 
 def _instant(value: datetime) -> str:
     """Render an instant as UTC ISO 8601 for the model to read."""
@@ -345,6 +394,26 @@ def _recurring_detail(rule: RecurringCalendarRule) -> str:
         f"starts_on={rule.starts_on.isoformat()} "
         f"ends_on={'-' if rule.ends_on is None else rule.ends_on.isoformat()} "
         f"status={rule.status.value}"
+    )
+
+
+def _contact_detail(contact: Contact) -> str:
+    """Everything a follow-up needs about one contact, and nothing else."""
+    return (
+        f"id={str(contact.id)[:8]} "
+        f"email={contact.email_address} "
+        f"status={contact.status.value}"
+    )
+
+
+def _new_mail_draft_detail(draft: NewMailDraft) -> str:
+    """Bounded draft metadata: identity, recipient, version — never the body."""
+    return (
+        f"id={str(draft.id)[:8]} "
+        f"account={draft.account_id} "
+        f"to={draft.to_address} "
+        f"version={draft.version} "
+        f"status=unsent"
     )
 
 

@@ -40,16 +40,19 @@ from assistant.domain.errors import (
     MailMessageNotFound,
     MailSendAlreadyPrepared,
     MailSendNotConfigured,
+    NewMailDraftNotFound,
 )
 from assistant.domain.mail import MailMessage, normalize_message_id
 from assistant.domain.mail_draft import MailDraft, MailDraftId
-from assistant.domain.mail_send import MailSendLink, MailSendPayload
+from assistant.domain.mail_send import MailSendKind, MailSendLink, MailSendPayload
+from assistant.domain.new_mail_draft import NewMailDraft, NewMailDraftId
 from assistant.ports.action_repository import ActionRepository
 from assistant.ports.case_repository import CaseRepository
 from assistant.ports.clock import Clock
 from assistant.ports.mail_draft_repository import MailDraftRepository
 from assistant.ports.mail_repository import MailRepository
 from assistant.ports.mail_send_repository import MailSendRepository
+from assistant.ports.new_mail_draft_repository import NewMailDraftRepository
 
 LOGGER = logging.getLogger("assistant.mail")
 
@@ -66,7 +69,8 @@ class MailSendPreparation:
     action: ActionRequest
     payload: MailSendPayload
     link: MailSendLink
-    draft: MailDraft
+    draft: MailDraft | None = None
+    new_draft: NewMailDraft | None = None
 
 
 class MailSendActionService:
@@ -84,6 +88,7 @@ class MailSendActionService:
         accounts: tuple[MailAccountConfig, ...] = (),
         message_id_factory: Callable[[str], str],
         date_header_factory: Callable[[datetime], str],
+        new_drafts: NewMailDraftRepository | None = None,
     ) -> None:
         self._drafts = drafts
         self._mail = mail
@@ -94,6 +99,7 @@ class MailSendActionService:
         self._accounts = {account.id: account for account in accounts}
         self._message_id_factory = message_id_factory
         self._date_header_factory = date_header_factory
+        self._new_drafts = new_drafts
 
     async def prepare_send(
         self,
@@ -142,7 +148,7 @@ class MailSendActionService:
             payload=payload.to_payload(),
             at=now,
         )
-        link = MailSendLink(
+        link = MailSendLink.for_reply(
             action_id=action.id,
             draft_id=draft.id,
             draft_version=draft.version,
@@ -159,7 +165,84 @@ class MailSendActionService:
             action=stored, payload=payload, link=link, draft=draft
         )
 
+    async def prepare_new_send(
+        self,
+        draft_id: NewMailDraftId | str,
+        case_id: CaseId | str,
+    ) -> MailSendPreparation:
+        """Prepare one exact send action for one new-mail draft version.
+
+        This is the same boundary as `prepare_send`, for the other draft table: the same
+        `ActionRequest("mail.send")`, the same link invariants, the same Message-ID minted before
+        approval, and the same "no model is consulted" rule. A new letter simply carries no reply
+        headers, and says so in the payload's `kind`.
+
+        Raises:
+            NewMailDraftNotFound: no such draft.
+            CaseNotFound: no such case.
+            CaseNotOpen: the case is already terminal.
+            MailSendNotConfigured: the draft's account has no usable outbound configuration.
+            MailSendAlreadyPrepared: this exact draft version already has a send action.
+        """
+        draft = await self._require_new_draft(draft_id)
+        case = await self._require_open_case(case_id)
+        account = self._require_smtp_account(draft.account_id)
+        existing = await self._send.get_link_for_new_draft_version(draft.id, draft.version)
+        if existing is not None:
+            raise MailSendAlreadyPrepared(draft.id, draft.version, existing.action_id)
+        now = self._clock.now()
+        from_address = account.from_address or ""
+        domain = from_address.partition("@")[2]
+        payload = MailSendPayload(
+            kind=MailSendKind.NEW,
+            draft_id=draft.id,
+            draft_version=draft.version,
+            account_id=draft.account_id,
+            from_address=from_address,
+            to_addresses=(draft.to_address,),
+            subject=draft.subject,
+            body_text=draft.body_text,
+            rfc_message_id=self._message_id_factory(domain),
+            date_header=self._date_header_factory(now),
+        )
+        action = ActionRequest.prepare(
+            case_id=case.id,
+            action_type=MAIL_SEND_ACTION_TYPE,
+            payload=payload.to_payload(),
+            at=now,
+        )
+        link = MailSendLink.for_new_mail(
+            action_id=action.id,
+            new_draft_id=draft.id,
+            draft_version=draft.version,
+            rfc_message_id=payload.rfc_message_id,
+            created_at=now,
+        )
+        stored = await self._send.add_action_with_link(action, link)
+        LOGGER.info(
+            "new mail send prepared account=%s draft_version=%d",
+            draft.account_id,
+            draft.version,
+        )
+        return MailSendPreparation(
+            action=stored, payload=payload, link=link, new_draft=draft
+        )
+
     # ------------------------------------------------------------------ internals
+
+    async def _require_new_draft(self, draft_id: NewMailDraftId | str) -> NewMailDraft:
+        drafts = self._new_drafts
+        if drafts is None:  # pragma: no cover - the composition root always supplies one
+            raise MailDraftNotFound(draft_id)
+        resolved = (
+            draft_id
+            if isinstance(draft_id, UUID)
+            else await drafts.resolve_draft_id(draft_id)
+        )
+        draft = await drafts.get_draft(resolved)
+        if draft is None:  # pragma: no cover - resolution just found it
+            raise NewMailDraftNotFound(draft_id)
+        return draft
 
     async def _require_draft(self, draft_id: MailDraftId | str) -> MailDraft:
         resolved = (

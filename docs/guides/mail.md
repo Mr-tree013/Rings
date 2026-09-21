@@ -15,6 +15,26 @@ You > 确认发送
 Tree > 已发送。
 ```
 
+A *new* letter works the same way, with three allowed kinds of recipient:
+
+```text
+You > 发个打招呼的邮件给我自己
+Tree > [the exact bytes, From and To both your configured address]
+       确认发送吗？
+You > 张老师邮箱是 zhang@example.edu，记成联系人
+Tree > 已记录联系人：
+       张老师 <zhang@example.edu>
+You > 给张老师发邮件，说我周五之前交报告
+Tree > [the exact bytes, To: zhang@example.edu]
+       确认发送吗？
+```
+
+The recipient is resolved, never invented: an address you typed yourself, one unambiguous stored
+contact, or your own configured mailbox for "我自己". An address the model proposes but you did not
+write is refused before any draft exists; an unknown name or two contacts with one name is a
+question; two sendable mailboxes is a question too. Contacts are local records — they are not
+facts, and they grant no permission to send anything.
+
 The conversation prepares the same `ActionRequest` this guide documents, shows you its exact
 payload, and settles it with one explicit phrase — "确认发送", not "可以". The `pw`
 commands below remain the advanced surface: they are how you debug, inspect, reconcile and operate

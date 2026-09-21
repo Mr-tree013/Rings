@@ -43,6 +43,7 @@ from assistant.application.conversation_recurring_intent import (
     declares_mutation,
     unsupported_recurrence,
 )
+from assistant.application.recipient_resolution import text_contains_address
 from assistant.domain.conversation import (
     CONFIRMATION_TTL_MINUTES,
     ConversationMessage,
@@ -59,10 +60,15 @@ from assistant.domain.conversation import (
 from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
     CalendarRecurringCreateWeeklyArguments,
+    ContactCreateArguments,
+    ContactEditArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     ConversationPlan,
     ConversationPlanMode,
+    MailComposeNewArguments,
+    MailPrepareNewSendArguments,
+    NewMailRecipientKind,
     PlannedOperation,
 )
 from assistant.domain.conversation_review import (
@@ -485,6 +491,26 @@ class ConversationService:
             if not declares_mutation(text):
                 return await self._hold_recurring_for_confirmation(thread, turn, recurring)
 
+        claimed = _unproven_addresses(plan, text)
+        if claimed:
+            # The one rule that makes "the model cannot invent a recipient" real: an address a
+            # model proposed is accepted only when the human wrote the same address themselves.
+            # Nothing has run at this point, and nothing will (ADR-0037 §11, §40).
+            for ordinal, operation in enumerate(plan.operations):
+                await self._store_operation(
+                    turn, ordinal, operation, status=ConversationOperationStatus.REJECTED
+                )
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_unproven_address(claimed[0]),
+                operation_types=tuple(
+                    operation.operation_type.value for operation in plan.operations
+                ),
+                error_code=ConversationErrorCode.MODEL_INVALID_OUTPUT,
+            )
+
         refusal = await self._preflight(plan)
         if refusal is not None:
             # Nothing has run yet, and nothing will: a plan that cannot be carried out in full
@@ -508,7 +534,13 @@ class ConversationService:
         operation_types: list[str] = []
         waiting: ConversationOperation | None = None
         offer_in_text = False
+        composed_draft: str | None = None
         for ordinal, planned in enumerate(plan.operations):
+            # The only result binding in this runtime: a prepare that names no draft means "the
+            # draft this same turn wrote", and the runtime — not the model — supplies the id it
+            # just minted. The stored operation carries it, so the fingerprint and any
+            # confirmation are bound to that exact draft (ADR-0037 §15, §29).
+            planned = _bind_new_mail_draft(planned, composed_draft)
             capability = self._capabilities.require(planned.operation_type)
             hint = _ACTIVITY_HINTS.get(planned.operation_type)
             if hint is not None and activity is not None:
@@ -545,7 +577,10 @@ class ConversationService:
                 results.append(outcome.result)
             if (
                 planned.operation_type
-                is ConversationOperationType.MAIL_PREPARE_REPLY_SEND
+                in (
+                    ConversationOperationType.MAIL_PREPARE_REPLY_SEND,
+                    ConversationOperationType.MAIL_PREPARE_NEW_SEND,
+                )
                 and outcome.result is not None
                 and outcome.operation is not None
             ):
@@ -558,7 +593,8 @@ class ConversationService:
                         part
                         for part in (
                             render.render_results(
-                                results[:-1], timezone=self._planning_timezone
+                                _without_compose_echo(results[:-1]),
+                                timezone=self._planning_timezone,
                             ),
                             render.render_mail_send_preview(prepared.payload),
                         )
@@ -571,6 +607,11 @@ class ConversationService:
                         text_out,
                         operation_types=tuple(operation_types),
                     )
+            if planned.operation_type is ConversationOperationType.MAIL_COMPOSE_NEW:
+                if outcome.result is not None and outcome.result.ref is not None:
+                    composed_draft = outcome.result.ref
+                # Writing a different letter invalidates the review that showed the old one.
+                await self._supersede_waiting_reviews(thread)
             if planned.operation_type is ConversationOperationType.MAIL_REPLY_DRAFT:
                 # A draft that moved on invalidates the review that was showing the old text.
                 await self._supersede_waiting_reviews(thread)
@@ -1112,6 +1153,57 @@ def _is_recurring_batch(pending: Sequence[ConversationOperation]) -> bool:
         is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY
         for operation in pending
     )
+
+
+def _unproven_addresses(plan: ConversationPlan, text: str) -> tuple[str, ...]:
+    """Addresses a model named that the human did not write in this very message.
+
+    Two operation families carry an address the model typed: recording a contact, and naming an
+    explicit recipient. Both are checked against the raw user message *before* the first mutation,
+    so a hallucinated address costs nothing and can never reach a draft or an action.
+    """
+    claimed: list[str] = []
+    for planned in plan.operations:
+        arguments = planned.arguments
+        if isinstance(arguments, (ContactCreateArguments, ContactEditArguments)):
+            address = arguments.email_address
+        elif (
+            isinstance(arguments, MailComposeNewArguments)
+            and arguments.recipient_kind is NewMailRecipientKind.EXPLICIT_EMAIL
+        ):
+            address = arguments.recipient_address
+        else:
+            continue
+        if address is not None and not text_contains_address(text, address):
+            claimed.append(address)
+    return tuple(claimed)
+
+
+def _bind_new_mail_draft(
+    planned: PlannedOperation, draft_reference: str | None
+) -> PlannedOperation:
+    """Bind a same-turn `mail.prepare_new_send` to the draft the turn just wrote."""
+    if (
+        draft_reference is None
+        or planned.operation_type is not ConversationOperationType.MAIL_PREPARE_NEW_SEND
+        or not isinstance(planned.arguments, MailPrepareNewSendArguments)
+        or planned.arguments.draft_id is not None
+    ):
+        return planned
+    return PlannedOperation(
+        operation_type=planned.operation_type,
+        arguments=MailPrepareNewSendArguments(draft_id=draft_reference),
+        note=planned.note,
+    )
+
+
+def _without_compose_echo(results: Sequence[OperationResult]) -> tuple[OperationResult, ...]:
+    """Drop the "draft written" line when the exact preview follows it.
+
+    The preview *is* the drafted content, so printing a summary of it above the preview would be
+    noise — and the user still sees exactly what would leave the machine.
+    """
+    return tuple(result for result in results if result.kind != "new_mail_draft")
 
 
 def _settlement_text(outcome: ConfirmationOutcome) -> str:
