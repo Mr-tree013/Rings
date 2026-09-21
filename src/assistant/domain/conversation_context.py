@@ -44,6 +44,8 @@ class ConversationEntityKind(StrEnum):
     MAIL_DRAFT = "mail_draft"
     NEW_MAIL_DRAFT = "new_mail_draft"
     CONTACT = "contact"
+    CONFIRMED_FACT = "confirmed_fact"
+    FACT_CANDIDATE = "fact_candidate"
 
 
 @dataclass(frozen=True, slots=True)

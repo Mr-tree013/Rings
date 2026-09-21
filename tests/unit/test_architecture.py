@@ -1608,6 +1608,15 @@ LEARNING_ALLOWED_MODULES = frozenset(
         *LEARNING_MODULES,
         # The composition root wires the service; nothing there promotes or proposes anything.
         "bootstrap.py",
+        # Phase 10F (ADR-0038): the conversation may propose facts and read them back, through the
+        # thin orchestration below and the bounded context/render/handler glue around it. None of
+        # these modules promotes a fact: `confirm_fact` is called in exactly one place, from the
+        # human's own explicit turn, and every one of them is checked separately below.
+        "application/conversational_facts.py",
+        "application/conversation_capabilities/handlers.py",
+        "application/conversation_context.py",
+        "application/conversation_render.py",
+        "application/conversation_service.py",
     }
 )
 
@@ -1657,10 +1666,10 @@ def _relative(path: Path) -> str:
 def test_only_the_learning_path_can_reach_a_fact_or_a_confirmation() -> None:
     """§16/§17: promoting, proposing and even reading a fact are one module's business.
 
-    The allow-list is two entries long — the learning modules themselves and the composition root
-    that wires them — because that is the entire Phase 7A surface: no model, no worker, no daemon
-    service, no web route and no action path may name `ConfirmedFact`, `FactCandidate` or a
-    confirmation call.
+    The allow-list is the learning modules, the composition root that wires them, and — since
+    Phase 10F — the conversation modules that propose and read facts on the user's behalf. It stays
+    closed: no worker, no daemon service, no web route, no action path and no adapter may name
+    `ConfirmedFact`, `FactCandidate`, `LearningService` or a confirmation call.
     """
     named = [
         f"{_relative(path)} names {name}"
@@ -1678,6 +1687,28 @@ def test_only_the_learning_path_can_reach_a_fact_or_a_confirmation() -> None:
 
     assert not named, named
     assert not imported, imported
+
+
+def test_only_one_conversation_module_can_promote_a_fact() -> None:
+    """Phase 10F: the conversation reaches facts through one orchestration, and confirms there.
+
+    `confirm_fact` may be named by the learning service (which defines it), the CLI fact commands,
+    and `ConversationalFactService` — the single place the conversation's deterministic
+    confirmation path calls. No handler, no interpreter and no renderer may promote a fact, so
+    "the model cannot confirm" is a property of the import graph rather than of a prompt.
+    """
+    allowed = {
+        "application/learning_service.py",
+        "application/conversational_facts.py",
+        "cli_facts.py",
+    }
+    offenders = [
+        _relative(path)
+        for path in _source_modules()
+        if _relative(path) not in allowed and "confirm_fact" in _identifiers(path)
+    ]
+
+    assert offenders == [], offenders
 
 
 def test_the_learning_application_path_reaches_no_store_no_model_and_nothing_executable() -> None:

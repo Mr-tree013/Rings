@@ -101,8 +101,8 @@ def test_the_public_documents_name_the_release_they_describe() -> None:
     for page in (README, README_EN):
         text = _read(page)
 
-        assert "1.0.0" in text, page.name
-        assert "docs/releases/1.0.0.md" in text, page.name
+        assert "1.1.0" in text, page.name
+        assert "docs/releases/1.1.0.md" in text, page.name
 
 
 def test_every_documented_command_exists_with_the_options_it_shows() -> None:

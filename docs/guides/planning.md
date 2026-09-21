@@ -21,6 +21,11 @@ A recurring rule is authoritative calendar state, not a scheduled job and not a 
 is stored once, its occurrences are derived for whatever range is asked about, and the planner
 treats them as busy time — so a plan block is never proposed on top of a class.
 
+`我今天有什么事？` returns a deterministic **today brief** — the day's events, weekly classes and
+planned blocks, plus overdue and due-soon tasks — computed in `[planning].timezone` and rendered by
+the runtime ([ADR-0039](../adr/0039-deterministic-today-brief.md),
+[conversation guide](conversation.md#today-in-one-answer)).
+
 ## Enable / configure
 
 Planning needs a timezone and at least one availability window:

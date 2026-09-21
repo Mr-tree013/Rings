@@ -15,8 +15,10 @@ from assistant import __version__
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
-VERSION = "1.0.0"
-"""The version this release publishes. A release candidate that is not 1.0.0 fails here."""
+"""The version this release publishes. A release candidate that is not 1.1.0 fails here."""
+
+VERSION = "1.1.0"
+"""The version this release publishes. A release candidate that is not 1.1.0 fails here."""
 
 
 def test_every_version_source_agrees() -> None:

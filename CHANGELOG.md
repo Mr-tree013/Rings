@@ -5,9 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-21
+
+The conversational release: everything 1.0.0 could do through `pw` is now reachable by saying what
+you want, and every external effect still ends in an exact payload, a human approval and one
+execution. See `docs/releases/1.1.0.md` for the full notes.
 
 ### Added
+
+- **Confirmed long-term facts (Phase 10F, ADR-0038).** `记住我的办公室在仙林` proposes a fact: the
+  runtime stores the existing `Correction` + `FactCandidate` pair and shows the exact value with the
+  sentence it came from. Nothing becomes a `ConfirmedFact` until the user's own explicit phrase —
+  `确认记住`, `记住`, `确认保存`, `确认记录` — and that confirmation is deterministic, bypassing
+  `ModelPort`. A plain statement ("我的办公室在仙林") creates nothing; a generic `可以`/`好`/`ok`
+  confirms nothing; `不要记`/`取消` refuses the proposal and keeps it as history. A correction is a
+  new proposal for the same key, so the existing supersession applies at the moment of
+  confirmation and the previous value stays. Facts are read back through `fact.show` and
+  `fact.list` (answered from confirmed rows only, never from the conversation), and only fact
+  *keys* enter the model context — never values. No new table, no second memory model: the latest
+  migration remains 0019.
+- **A deterministic today brief (Phase 10G, ADR-0039).** `我今天有什么事？` returns one read-only
+  summary of the user's own day in `[planning].timezone`: today's events, derived weekly classes and
+  applied plan blocks, overdue / due-today / due-soon / high-priority tasks, unread reminders, mail
+  that asks for a reply (metadata only), prepared-but-unsent mail, pending proposals and fact
+  reviews, and unresolved external outcomes — labelled unknown, never failed. Every section is
+  bounded and says how many items it dropped; nothing is approved, executed, retried or stored, and
+  the service has no `ModelPort` dependency. Without a planning timezone, "today" is a question
+  rather than a guess.
+- Capability metadata now describes both truthfully: `你能做什么` and `/help` list confirmed facts
+  and the today brief, and still name what is unsupported (automatic fact autofill, autonomous
+  memory, conversational eHall, attachments, scheduled mail, complex recurrence).
 
 - **Conversational new outbound mail and contacts (Phase 10E, ADR-0037).** A conversation can now
   write a *new* letter and prepare it for the same exact review a reply already had: the model

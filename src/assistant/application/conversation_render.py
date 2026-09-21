@@ -21,6 +21,7 @@ from assistant.application.conversation_capabilities.registry import OperationRe
 from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.recurring_calendar import weekday_label
 from assistant.domain.task import TaskPriority
+from assistant.ports.learning_repository import FactConfirmation
 
 CONFIRMATION_OFFER = (
     "要应用这个计划吗？回复「可以」我就写进计划，或回复「取消」。"
@@ -87,6 +88,16 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return _render_contact_updated(data)
     if result.kind == "contact_retired":
         return _render_contact_retired(data)
+    if result.kind == "facts":
+        return _render_facts(data)
+    if result.kind == "fact":
+        return _render_fact(data)
+    if result.kind == "fact_absent":
+        return _render_fact_absent(data)
+    if result.kind == "fact_proposed":
+        return render_fact_proposed(data)
+    if result.kind == "today_brief":
+        return _render_today_brief(data, timezone)
     if result.kind == "event_created":
         starts = _moment(data.get("starts_at"), timezone)
         ends = _moment(data.get("ends_at"), timezone)
@@ -224,6 +235,21 @@ def render_capabilities(data: dict[str, Any]) -> str:
         )
     else:
         lines.append("· 新建邮件：需要先配置可发信（SMTP）的邮箱账号")
+    facts = areas.get("facts") or {}
+    if state_of("facts") == "available":
+        lines.append(
+            "· 长期信息：可以说「记住…」，我会先给你看要保存的内容，"
+            "只有你明确说「确认记住」才真正保存；也可以问「你记得我的…吗」"
+        )
+    else:
+        lines.append("· 长期信息：这个版本还没有长期信息功能")
+    if state_of("today_brief") == "available":
+        lines.append(
+            "· 今日概览：说「我今天有什么事？」，我按你配置的时区给出今天的安排、"
+            "任务和需要处理的事（只读，不会改动任何东西）"
+        )
+    else:
+        lines.append("· 今日概览：需要先在配置里设置 [planning].timezone")
     if state_of("mail_send_after_confirmation") == "available":
         lines.append(
             "· 发送邮件：先准备，再把将要发出的完整内容给你看；"
@@ -236,6 +262,8 @@ def render_capabilities(data: dict[str, Any]) -> str:
         lines.append("做不到的：单双周、每两周一次、每月或每年重复、节假日或考试周除外。")
     if compose.get("unsupported"):
         lines.append("邮件做不到的：附件、定时发送、自动发送、通讯录/网络查询收件人。")
+    if facts.get("unsupported"):
+        lines.append("长期信息做不到的：自动填表/自动写邮件、自动记住聊天内容。")
     lines.append("做不到的：提交校外系统的手续（eHall）、创建审批或绕过确认执行外部动作。")
     return "\n".join(lines)
 
@@ -401,6 +429,175 @@ def render_unproven_address(address: str) -> str:
 
 
 def render_mail_send_preview(payload: dict[str, object]) -> str:
+    return _render_mail_send_preview(payload)
+
+
+def render_fact_proposed(data: dict[str, Any]) -> str:
+    """The exact long-term fact a person is being asked to confirm (ADR-0038 §7).
+
+    Rendered from the stored candidate plus the sentence it came from: no candidate id, no
+    fingerprint, no database field, and no prose the model wrote afterwards.
+    """
+    lines = [
+        "我准备记录这条长期信息：",
+        f"- {data.get('key', '')}：{data.get('value', '')}",
+    ]
+    correction = data.get("correction_text")
+    if correction:
+        lines.append(f"（来自你的话：「{correction}」）")
+    lines += [
+        "",
+        "如果要长期保存，请明确说「确认记住」；说「不要记」我就不保存。",
+        "「可以」不会保存这条信息。",
+    ]
+    return "\n".join(lines)
+
+
+def render_fact_pending_notice(reviews: Sequence[Any]) -> str:
+    """A fact proposal that survived a restart, shown again before anything is decided."""
+    lines = ["还有长期信息在等你确认："]
+    lines.extend(_fact_review_line(review) for review in reviews)
+    lines.append("确认请回复「确认记住」，不保存请回复「不要记」。")
+    return "\n".join(lines)
+
+
+def render_fact_reviews_ambiguous(reviews: Sequence[Any]) -> str:
+    """More than one pending fact: the runtime asks which, and never guesses."""
+    lines = ["有几条长期信息等待确认，请告诉我确认哪一条（回复「确认记住 键名」）："]
+    lines.extend(_fact_review_line(review) for review in reviews)
+    return "\n".join(lines)
+
+
+def render_fact_unknown_key(key: str, reviews: Sequence[Any]) -> str:
+    """A named key that is not waiting: say so, and name what is."""
+    waiting = "、".join(review.fact_key for review in reviews)
+    return f"没有等待确认的「{key}」这条长期信息。等待确认的是：{waiting}。"
+
+
+def render_fact_review_cancelled(review: Any) -> str:
+    """The pending proposal is refused, and kept only as an audit record."""
+    return (
+        f"好，这条长期信息没有保存（{review.fact_key}：{review.candidate.value}）。\n"
+        "如果你以后想保存，可以再说一次。"
+    )
+
+
+def render_fact_confirmed(
+    confirmation: FactConfirmation, *, correction_text: str | None = None
+) -> str:
+    """One confirmed fact, from the row that was just written."""
+    lines = [
+        "已记住：",
+        f"- {confirmation.fact.fact_key}：{confirmation.fact.value}",
+    ]
+    if correction_text:
+        lines.append(f"（来自你的话：「{correction_text}」）")
+    if confirmation.superseded is not None:
+        lines.append(
+            f"（原来的值「{confirmation.superseded.value}」已作为历史保留，没有删除。）"
+        )
+    return "\n".join(lines)
+
+
+def render_fact_failed(message: str) -> str:
+    """A confirmation that could not be carried out, in the user's words."""
+    return f"这条长期信息没有保存：{message}。已经确认过的内容没有改动。"
+
+
+def _fact_review_line(review: Any) -> str:
+    """One pending proposal, as the key and value the user is deciding about."""
+    return f"- {review.fact_key}：{review.candidate.value}"
+
+
+def _render_facts(data: dict[str, Any]) -> str:
+    facts = data.get("facts") or []
+    if not facts:
+        return "我目前没有确认过任何长期信息。"
+    lines = [f"我确认过的长期信息（{len(facts)} 条）："]
+    lines.extend(
+        f"- {fact.get('key', '')}：{fact.get('value', '')}" for fact in facts
+    )
+    return "\n".join(lines)
+
+
+def _render_fact(data: dict[str, Any]) -> str:
+    fact = data.get("fact") or {}
+    return f"{fact.get('key', '')}：{fact.get('value', '')}"
+
+
+def _render_today_brief(data: dict[str, Any], timezone: str | None) -> str:
+    """The user's own today, in sections that only appear when they have something in them.
+
+    Everything here is already bounded by the service, so the renderer never truncates: a section
+    that dropped items says so in words instead ("另有 N 项").
+    """
+    if data.get("empty"):
+        return f"今天（{data.get('local_date', '')}）暂时没有安排、任务或需要处理的事。"
+    overflow = data.get("overflow") or {}
+    lines = [f"今天（{data.get('local_date', '')}，{data.get('timezone', '')}）："]
+    sections = (
+        ("安排", "schedule", "schedule"),
+        ("任务", "tasks", "tasks"),
+        ("需要处理", "attention", "attention"),
+        ("等待确认", "waiting", "waiting"),
+        ("需要检查", "checks", "checks"),
+    )
+    for heading, key, overflow_key in sections:
+        entries = data.get(key) or []
+        if not entries:
+            continue
+        lines.append("")
+        lines.append(heading)
+        lines.extend(_brief_line(entry, timezone) for entry in entries)
+        extra = int(overflow.get(overflow_key) or 0)
+        if extra:
+            lines.append(f"- 另有 {extra} 项")
+    return "\n".join(lines)
+
+
+def _brief_line(entry: dict[str, Any], timezone: str | None) -> str:
+    """One brief line: a time range when it has one, then the label, then any detail."""
+    kind = entry.get("kind")
+    label = str(entry.get("label", ""))
+    starts = entry.get("starts_at")
+    ends = entry.get("ends_at")
+    if kind in ("calendar_event", "recurring", "plan_block") and starts and ends:
+        suffix = "（每周）" if kind == "recurring" else ""
+        return (
+            f"- {_clock_span(starts, ends, timezone)} {label}{suffix}"
+        )
+    detail = entry.get("detail")
+    if kind == "mail_requires_reply" and detail:
+        return f"- 邮件：{detail} —「{label}」需要回复"
+    if kind == "task" and detail:
+        return f"- {label}（{detail}）"
+    if kind == "notification":
+        return f"- 提醒：{label}"
+    return f"- {label}"
+
+
+def _clock_span(starts: object, ends: object, timezone: str | None) -> str:
+    """One clock range for instants that share a day, in the brief's own timezone."""
+    zone = _zone(timezone)
+    try:
+        local_start = datetime.fromisoformat(str(starts)).astimezone(zone)
+        local_end = datetime.fromisoformat(str(ends)).astimezone(zone)
+    except ValueError:  # pragma: no cover - the handler always sends ISO instants
+        return str(starts)
+    return (
+        f"{local_start.strftime('%H:%M')}–{local_end.strftime('%H:%M')}"
+    )
+
+
+def _render_fact_absent(data: dict[str, Any]) -> str:
+    known = data.get("known_keys") or []
+    lines = [f"我目前没有确认过「{data.get('key', '')}」这条长期信息。"]
+    if known:
+        lines.append(f"我确认过的有：{'、'.join(str(key) for key in known)}。")
+    return "\n".join(lines)
+
+
+def _render_mail_send_preview(payload: dict[str, object]) -> str:
     """The exact bytes that would leave the machine, from the immutable action payload.
 
     This is derived from the stored `ActionRequest` payload and from nothing else — not from the
@@ -945,6 +1142,13 @@ __all__ = [
     "render_confirmation_request",
     "render_empty_turn",
     "render_error",
+    "render_fact_confirmed",
+    "render_fact_failed",
+    "render_fact_pending_notice",
+    "render_fact_proposed",
+    "render_fact_review_cancelled",
+    "render_fact_reviews_ambiguous",
+    "render_fact_unknown_key",
     "render_failure",
     "render_interpretation_refused",
     "render_mail_send_preview",

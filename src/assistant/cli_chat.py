@@ -70,6 +70,10 @@ HELP_HEADER = """\
   · 张老师邮箱是 zhang@example.edu，记成联系人。
   · 给张老师发邮件，说我周五之前交报告。
   · 我有哪些联系人？
+  · 记住我的办公室在仙林。
+  · 确认记住
+  · 你记得我的办公室在哪里吗？
+  · 我今天有什么事？
   · 确认发送
   · 不要发
   · 帮我查一下刚才那封邮件有没有发出去。
@@ -178,6 +182,11 @@ async def _session(
         if pending is not None:
             # A reviewed send survives a restart; it is re-shown, never re-executed (ADR-0034 §17).
             console.print(f"[bold]Tree >[/bold] {pending}")
+        waiting_fact = await service.pending_fact_review()
+        if waiting_fact is not None:
+            # A fact proposal survives a restart for the same reason: the row *is* the review, and
+            # showing it again is not confirming it (ADR-0038 §13).
+            console.print(f"[bold]Tree >[/bold] {waiting_fact}")
         while True:
             text, should_exit = _read(reader, input_fn, debug)
             if should_exit:

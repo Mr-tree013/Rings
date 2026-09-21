@@ -190,6 +190,33 @@ def build_capability_snapshot(
             ),
             {"operations": 4, "grants_authority": False},
         ),
+        CapabilityArea(
+            "facts",
+            state(
+                offered=ConversationOperationType.FACT_PROPOSE in available,
+                configured=True,
+            ),
+            {
+                "operations": 3,
+                "explicit_confirmation_required": True,
+                "confirmation_bypasses_model": True,
+                "autofill": False,
+                "unsupported": ["automatic fact autofill", "autonomous memory"],
+            },
+        ),
+        CapabilityArea(
+            "today_brief",
+            state(
+                offered=ConversationOperationType.BRIEF_TODAY in available,
+                configured=planning is not None,
+            ),
+            {
+                "operations": 1,
+                "deterministic": True,
+                "includes_recurring": True,
+                "model_writes_nothing": True,
+            },
+        ),
         CapabilityArea("ehall", CapabilityState.UNAVAILABLE, {"reason": "not conversational"}),
     )
     return CapabilitySnapshot(

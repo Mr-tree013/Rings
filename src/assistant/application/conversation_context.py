@@ -33,6 +33,7 @@ from assistant.domain.conversation_context import (
     ConversationRecentMessage,
 )
 from assistant.domain.deadline import Deadline
+from assistant.domain.fact import FactCandidateStatus
 from assistant.domain.new_mail_draft import NewMailDraft
 from assistant.domain.notification import NotificationStatus
 from assistant.domain.planning import PlanProposal, PlanProposalStatus
@@ -46,6 +47,7 @@ from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
 from assistant.ports.contact_repository import ContactRepository
 from assistant.ports.conversation_repository import ConversationRepository
+from assistant.ports.learning_repository import LearningRepository
 from assistant.ports.mail_draft_repository import MailDraftRepository
 from assistant.ports.mail_intelligence_repository import MailIntelligenceRepository
 from assistant.ports.mail_repository import MailRepository
@@ -86,6 +88,7 @@ class ConversationContextBuilder:
         recurring: RecurringCalendarRepository | None = None,
         contacts: ContactRepository | None = None,
         new_mail_drafts: NewMailDraftRepository | None = None,
+        learning: LearningRepository | None = None,
         max_messages: int = MAX_CONTEXT_MESSAGES,
         max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
         max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -105,6 +108,7 @@ class ConversationContextBuilder:
         self._recurring = recurring
         self._contacts = contacts
         self._new_mail_drafts = new_mail_drafts
+        self._learning = learning
         self._max_messages = max_messages
         self._max_history_chars = max_history_chars
         self._max_entities = max_entities
@@ -142,6 +146,7 @@ class ConversationContextBuilder:
             *await self._mail_entities(),
             *await self._contact_entities(),
             *await self._new_mail_draft_entities(),
+            *await self._fact_entities(now),
         )
 
     async def _task_entities(self) -> tuple[ConversationEntityRef, ...]:
@@ -319,6 +324,42 @@ class ConversationContextBuilder:
             )
             for draft in drafts
         )
+
+    async def _fact_entities(
+        self, now: datetime
+    ) -> tuple[ConversationEntityRef, ...]:
+        """Fact *keys*, never fact values (ADR-0038 §12).
+
+        A key is enough for the model to route "你记得我的办公室在哪里吗" to `fact.show`, and the
+        runtime renders the value from the confirmed row. Keeping the values out of every prompt is
+        what stops a model from stating a personal fact from memory — it has none to state.
+        """
+        if self._learning is None:
+            return ()
+        entities: list[ConversationEntityRef] = []
+        active = await self._learning.list_active_facts(now=now, limit=self._max_entities)
+        for fact in active:
+            entities.append(
+                ConversationEntityRef(
+                    kind=ConversationEntityKind.CONFIRMED_FACT,
+                    id=str(fact.id)[:8],
+                    label=fact.fact_key,
+                    detail=f"key={fact.fact_key} status=confirmed",
+                )
+            )
+        candidates = await self._learning.list_candidates(
+            statuses=(FactCandidateStatus.PENDING,), limit=self._max_entities
+        )
+        for candidate in candidates:
+            entities.append(
+                ConversationEntityRef(
+                    kind=ConversationEntityKind.FACT_CANDIDATE,
+                    id=str(candidate.id)[:8],
+                    label=candidate.fact_key,
+                    detail=f"key={candidate.fact_key} status=pending",
+                )
+            )
+        return tuple(entities)
 
 
 def _instant(value: datetime) -> str:

@@ -94,6 +94,12 @@ class ConversationOperationType(StrEnum):
     CONTACT_EDIT = "contact.edit"
     CONTACT_RETIRE = "contact.retire"
 
+    FACT_LIST = "fact.list"
+    FACT_SHOW = "fact.show"
+    FACT_PROPOSE = "fact.propose"
+
+    BRIEF_TODAY = "brief.today"
+
     SYSTEM_CAPABILITIES = "system.capabilities"
 
 
@@ -113,6 +119,9 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.MAIL_THREAD,
         ConversationOperationType.MAIL_ACCOUNTS,
         ConversationOperationType.CONTACT_LIST,
+        ConversationOperationType.FACT_LIST,
+        ConversationOperationType.FACT_SHOW,
+        ConversationOperationType.BRIEF_TODAY,
         ConversationOperationType.SYSTEM_CAPABILITIES,
     }
 )
@@ -446,6 +455,15 @@ class SystemCapabilitiesArguments:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class BriefTodayArguments:
+    """The user's own today, in the configured planning timezone."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.BRIEF_TODAY, init=False
+    )
+
+
 # ------------------------------------------------------------------ contact arguments
 
 
@@ -537,6 +555,52 @@ class NewMailRecipientKind(StrEnum):
     EXPLICIT_EMAIL = "explicit_email"
     CONTACT = "contact"
     SELF = "self"
+
+
+# ------------------------------------------------------------------- fact arguments
+
+
+@dataclass(frozen=True, slots=True)
+class FactListArguments:
+    """The long-term facts a person has confirmed."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.FACT_LIST, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FactShowArguments:
+    """One confirmed fact, by the key it is stored under."""
+
+    key: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.FACT_SHOW, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.key, "key")
+
+
+@dataclass(frozen=True, slots=True)
+class FactProposeArguments:
+    """Propose one long-term fact: a key, a value, and the sentence that justifies it.
+
+    Proposing is not remembering. The candidate this produces is reviewed and shown, and only an
+    explicit human confirmation (never a model, never a generic "可以") can make it true (ADR-0038).
+    """
+
+    key: str
+    value: str
+    correction_text: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.FACT_PROPOSE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.key, "key")
+        _text(self.value, "value")
+        _text(self.correction_text, "correction_text")
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +994,10 @@ ConversationOperationArguments = (
     | ContactCreateArguments
     | ContactEditArguments
     | ContactRetireArguments
+    | FactListArguments
+    | FactShowArguments
+    | FactProposeArguments
+    | BriefTodayArguments
     | SystemCapabilitiesArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
@@ -1022,6 +1090,10 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
         {"contact_id", "display_name", "email_address"}
     ),
     ConversationOperationType.CONTACT_RETIRE: frozenset({"contact_id"}),
+    ConversationOperationType.FACT_LIST: frozenset(),
+    ConversationOperationType.FACT_SHOW: frozenset({"key"}),
+    ConversationOperationType.FACT_PROPOSE: frozenset({"key", "value", "correction_text"}),
+    ConversationOperationType.BRIEF_TODAY: frozenset(),
     ConversationOperationType.SYSTEM_CAPABILITIES: frozenset(),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""
@@ -1339,6 +1411,18 @@ def build_arguments(
         return ContactRetireArguments(
             contact_id=_strings(payload.get("contact_id"), "contact_id")
         )
+    if kind is ConversationOperationType.FACT_LIST:
+        return FactListArguments()
+    if kind is ConversationOperationType.FACT_SHOW:
+        return FactShowArguments(key=_strings(payload.get("key"), "key"))
+    if kind is ConversationOperationType.FACT_PROPOSE:
+        return FactProposeArguments(
+            key=_strings(payload.get("key"), "key"),
+            value=_strings(payload.get("value"), "value"),
+            correction_text=_strings(payload.get("correction_text"), "correction_text"),
+        )
+    if kind is ConversationOperationType.BRIEF_TODAY:
+        return BriefTodayArguments()
     if kind is ConversationOperationType.SYSTEM_CAPABILITIES:
         return SystemCapabilitiesArguments()
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
@@ -1408,7 +1492,9 @@ def requires_planning_timezone(
         # Listing, renaming and retiring a stored rule carry no civil time of their own: the rule
         # already knows its zone.
         return False
-    return False
+    # "Today" is a civil day: it only means something in a named timezone, and the host's is not
+    # the user's (ADR-0039 §2).
+    return operation_type is ConversationOperationType.BRIEF_TODAY
 
 
 @dataclass(frozen=True, slots=True)
@@ -1468,6 +1554,7 @@ __all__ = [
     "MAX_OPERATION_TEXT_CHARS",
     "MAX_RECURRING_TITLE_CHARS",
     "READ_OPERATIONS",
+    "BriefTodayArguments",
     "CalendarCreateArguments",
     "CalendarListArguments",
     "CalendarRecurringCreateWeeklyArguments",
@@ -1482,6 +1569,9 @@ __all__ = [
     "ConversationOperationType",
     "ConversationPlan",
     "ConversationPlanMode",
+    "FactListArguments",
+    "FactProposeArguments",
+    "FactShowArguments",
     "KnowledgeAskArguments",
     "MailAccountsArguments",
     "MailComposeNewArguments",

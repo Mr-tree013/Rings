@@ -69,6 +69,10 @@ same source.
 张老师邮箱是 zhang@example.edu，记成联系人
 给张老师发邮件，说我周五之前交报告
 我有哪些联系人？
+我今天有什么事？
+记住我的办公室在仙林。
+确认记住
+你记得我的办公室在哪里吗？
 ```
 
 Each of those becomes one or more typed operations. A turn proposes at most five, in order, and
@@ -258,6 +262,68 @@ Tree > 当前配置了 1 个邮箱：
 
 The first line answers the question that was asked — which accounts exist — and the last line is a
 separate fact about content. They are never merged.
+
+## Long-term facts: proposed in a conversation, confirmed by you
+
+A conversation is not memory. Saying something is not asking Tree to remember it forever, and Tree
+never decides on its own that a passing remark is a permanent fact about you.
+
+```text
+You > 记住我的办公室在仙林
+Tree > 我准备记录这条长期信息：
+       - profile.office：仙林
+       （来自你的话：「记住我的办公室在仙林」）
+       如果要长期保存，请明确说「确认记住」；说「不要记」我就不保存。
+       「可以」不会保存这条信息。
+You > 可以
+Tree > 要保存这条长期信息，请回复「确认记住」。
+You > 确认记住
+Tree > 已记住：
+       - profile.office：仙林
+       （来自你的话：「记住我的办公室在仙林」）
+You > 你记得我的办公室在哪里吗？
+Tree > profile.office：仙林
+```
+
+Four properties are worth knowing:
+
+* **a statement is not a request.** `我的办公室在仙林` creates nothing; Tree may offer to remember
+  it, and you decide;
+* **the second confirmation is explicit.** `确认记住` / `记住` / `确认保存` / `确认记录` save it;
+  `可以`, `好`, `嗯`, `继续` and `ok` do not. Cancelling is `不要记` / `别记` / `取消`;
+* **the confirmation never touches the model.** It is parsed by code from your own message, exactly
+  like `确认发送`, and it is a local write: no `ActionRequest`, no approval, no execution;
+* **only confirmed facts are answers.** A question about a personal fact is answered from
+  `confirmed_facts` (or with an honest "I have not confirmed that"), never from this conversation,
+  from a contact, or from what a model happens to know.
+
+A correction (`不是仙林，是鼓楼`) is a new proposal for the same key. The old value stays confirmed
+until you confirm the new one, and then it is superseded rather than deleted — the history of what
+you believed stays readable.
+
+## Today, in one answer
+
+```text
+You > 我今天有什么事？
+Tree > 今天（2026-09-21，Asia/Shanghai）：
+       安排
+       - 10:00–12:00 计算机系统基础课（每周）
+       - 19:00–21:00 写 SE 实验报告
+       任务
+       - 交软件工程报告（10-09 截止）
+       需要处理
+       - 邮件：teacher@example.edu —「SE 实验三」需要回复
+       等待确认
+       - 1 条长期信息等待确认
+```
+
+The brief is deterministic and read-only: it is assembled from your own local state in
+`[planning].timezone`, never from the conversation and never by the model. It shows at most ten
+schedule entries, ten tasks, five mail items, five reminders and five waiting items, and says how
+many it left out. Mail appears as sender/subject/reply-needed metadata only — never a body. A
+prepared letter is shown as *waiting for your confirmation* and is not sent; a proposal is not
+applied; a fact is not confirmed; and an external outcome nobody can prove is reported as
+*uncertain* with an explicit "I will not retry automatically".
 
 ## What it will not do
 

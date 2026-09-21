@@ -182,6 +182,51 @@ mail_send_links（closed variant：draft_id 或 new_draft_id，二者恰有其�
 - SMTP `UNKNOWN` 语义不变、永不自动重试；对账仍按 payload 中的稳定 Message-ID；
 - 本阶段不支持附件、定时发送、自动发送、通讯录/网络查询；对话能力集仍无 `mail.send` / `approval.*` / `action.*` / `execution.*`。
 
+### 4.5 对话式长期事实确认（Phase 10F，ADR-0038）
+
+对话历史**不是**长期记忆；只有 `ConfirmedFact` 才是。模型可以*提议*，绝不能*确认*：
+
+```text
+fact.propose（key / value / 用户原话）
+      ↓  复用既有 Correction + FactCandidate(PENDING)（无新表、无新 migration）
+      运行时展示精确预览：「我准备记录这条长期信息：profile.office：仙林」
+      ↓  用户用明确短语回复（确认记住 / 记住 / 确认保存 / 确认记录）
+ConversationService 确定性解析（无 ModelPort）→ LearningService.confirm_fact
+      ↓
+ConfirmedFact（同 key 旧值 superseded，历史保留）
+```
+
+硬性约束：
+
+- 普通陈述（「我的办公室在仙林」）不创建任何候选；只有显式「记住 / 以后记得 / 保存为长期信息」才提议；
+- 泛泛的「可以 / 好 / 嗯 / continue / ok」**不能**确认长期信息；「不要记 / 别记 / 取消」把待确认候选置为 rejected（保留审计）；
+- 最终确认是本地知识写入：不产生 `ActionRequest` / `Approval` / `ExecutionRun`，且不经过模型；
+- 模型能力集只有 `fact.list` / `fact.show` / `fact.propose`，不存在 `fact.confirm` / `fact.delete` / `memory.*`；
+- 事实查询只依据 `confirmed_facts`（提案不算知识，联系人不是事实，对话历史不作证据）；
+- 只有 fact key 进入模型上下文，**值不进**：值由运行时从已确认行渲染；
+- pending candidate 本身就是可持久化的待确认状态，因此重启后仍可重新展示，且永不自动确认；
+- `ConfirmedFact` 在本阶段不自动填入邮件收件人、邮件正文、表单或任何外部动作。
+
+### 4.6 今日概览 Today Brief（Phase 10G，ADR-0039）
+
+「我今天有什么事？」是一个**只读、确定性**的聚合，没有 ModelPort、没有写操作、没有快照：
+
+```text
+Clock + [planning].timezone ──► 用户自己的 [00:00, 24:00)
+        ├── 安排：当天 CalendarEvent + 派生 RecurringCalendarOccurrence + 已应用 PlanBlock
+        ├── 任务：逾期 / 今天截止 / 临近截止 / 高优先级（有界）
+        ├── 需要处理：未读提醒、需要回复的邮件（只显示发件人/主题/时间元数据）
+        ├── 等待确认：已准备未发送的邮件、待应用提案、待确认固定安排、待确认长期信息
+        └── 需要检查：仍未确定的外部执行结果（标注 unknown，绝不称为失败、绝不自动重试）
+```
+
+硬性约束：
+
+- “今天”由 `[planning].timezone` 决定；缺失时提问，绝不使用宿主机时区；
+- 每节有上限（安排/任务 ≤ 10、邮件 ≤ 5、提醒 ≤ 5、等待/检查 ≤ 5），超出时显示「另有 N 项」；
+- 邮件只出现元数据，绝不出现正文；
+- 概览不执行、不批准、不重试、不确认任何东西，也不产生任何持久化快照（无 migration、无 integrity 新 section）。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）
@@ -538,3 +583,5 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0035 A conversation reliability boundary
 - ADR-0036 Weekly recurring calendar rules
 - ADR-0037 Conversational outbound mail and deterministic recipient resolution
+- ADR-0038 Conversational fact confirmation
+- ADR-0039 Deterministic today brief

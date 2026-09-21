@@ -16,6 +16,31 @@ blueprint that never executes.
 
 ## Personal facts
 
+### From a conversation
+
+The same lifecycle is reachable by talking, with one extra rule: the conversation may only
+*propose*, and the confirmation is your own explicit phrase, parsed by code (ADR-0038).
+
+```text
+You > 记住我的办公室在仙林
+Tree > 我准备记录这条长期信息：
+       - profile.office：仙林
+       （来自你的话：「记住我的办公室在仙林」）
+       如果要长期保存，请明确说「确认记住」；说「不要记」我就不保存。
+You > 确认记住
+Tree > 已记住：
+       - profile.office：仙林
+```
+
+* a plain statement (`我的办公室在仙林`) creates no candidate at all;
+* `可以` / `好` / `ok` never confirm a long-term fact, and neither does a model: there is no
+  `fact.confirm` operation in the vocabulary, and the confirmation path holds no provider;
+* `不要记` / `别记` / `取消` resolves the pending candidate as rejected, keeping it as history;
+* a pending proposal survives a conversation restart, and the session shows it again without ever
+  confirming it;
+* `你记得我的办公室在哪里吗？` and `我有哪些长期信息？` read *confirmed* rows only; a proposal is not
+  knowledge, and a contact is not a fact.
+
 ### Common workflow
 
 ```bash
@@ -124,8 +149,15 @@ pw playbooks --all
 - `PlaybookCandidateNotTested` means there is no passing dry run under the current contract version.
 - Promotion never takes `--force` or `--skip-test`, and no automatic promotion exists.
 - There is no fact editing in place: a new value is a new candidate that supersedes the old fact.
+- A conversation can only propose a fact; saving one always needs your own `确认记住` (or the
+  equivalent `pw fact candidate confirm`).
+- Confirmed facts fill no form, no mail recipient and no mail body in this version: nothing reads a
+  fact into an outbound surface.
+- Only fact keys travel in a conversation's context, never values; the value is rendered from the
+  confirmed row when you ask about it.
 
 ## Implementation notes
 
 - Human-confirmed personal facts: [ADR-0027](../adr/0027-human-confirmed-personal-facts.md)
+- Conversational fact confirmation: [ADR-0038](../adr/0038-conversational-fact-confirmation.md)
 - Reviewed non-executing playbooks: [ADR-0028](../adr/0028-reviewed-playbooks.md)

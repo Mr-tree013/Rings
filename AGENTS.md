@@ -860,6 +860,33 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
 - SMTP `UNKNOWN` 语义不变、永不盲重试；取消 review = 零 approval / 零 execution / 零 SMTP。
 - 本阶段不做附件、定时发送、自动发送、通讯录或网络查询收件人，也不把 eHall/fact/playbook 引入对话。
 
+### 6.6 对话式长期事实规则（Phase 10F，ADR-0038）
+
+- 对话历史不是长期记忆：普通陈述（「我的办公室在仙林」）**绝不**自动创建或确认 `ConfirmedFact`。
+- 只有显式 remember/correction 意图（记住 / 以后记得 / 保存为长期信息 / 纠正）才允许 `fact.propose`；
+  提案复用既有 `Correction` + `FactCandidate(PENDING)`，不新增表、不新增 migration、不做第二套事实模型。
+- 长期事实必须由**第二条明确的人类消息**确认；确认语汇仅有「确认记住 / 记住 / 确认保存 / 确认记录」，
+  「可以 / 好 / 嗯 / continue / ok / yes」一律不够；取消语汇为「不要记 / 别记 / 取消」。
+- 最终确认是确定性路径：由 `ConversationService` 从用户原话解析，**不经过 ModelPort**，
+  且是本地知识写入（无 `ActionRequest` / `Approval` / `ExecutionRun`）。
+- 模型能力集只有 `fact.list` / `fact.show` / `fact.propose`；不存在 `fact.confirm` / `fact.delete` /
+  `memory.write` / `memory.store`。确认只能由人的原话触发。
+- 预览必须来自持久化的 candidate（key + value + 用户原话），不得展示 candidate UUID / fingerprint / 数据库字段。
+- 只有 fact key 进入模型上下文，**fact value 不进**：值由运行时从 confirmed 行渲染；问题只依据 `ConfirmedFact` 回答。
+- pending candidate 就是 durable review：重启后重新展示、永不自动确认；`ConfirmedFact` 仍不自动填邮件/表单/外部动作。
+- `Contact` 与 `Fact` 是两类记录，互不生成；建立联系人不得产生 fact，反之亦然。
+
+### 6.7 今日概览规则（Phase 10G，ADR-0039）
+
+- `brief.today` 是 READ：`TodayBriefService` 无 ModelPort、不写任何 repository、不发 SQL、不存快照。
+- “今天”由 `[planning].timezone` 的本地日期决定；缺失时提问，绝不使用宿主机时区。
+- 只聚合既有真实状态：当天事件 / 派生每周 occurrence / 已应用 PlanBlock、逾期与今天截止的任务、
+  未读提醒、需要回复的邮件（仅元数据）、已准备未发送的邮件、待应用提案、待确认的固定安排与长期信息、
+  以及仍未确定的外部执行结果（标注 unknown，绝不称失败、绝不自动重试）。
+- 每节必须有界（安排/任务 ≤ 10、邮件 ≤ 5、提醒 ≤ 5、等待/检查 ≤ 5），超出显示「另有 N 项」；
+  邮件正文绝不出现。
+- 概览不得执行、批准、重试或确认任何东西；能力描述继续同源于 registry + config。
+
 ## 7. 版本管理
 
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。

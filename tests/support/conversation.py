@@ -28,6 +28,8 @@ from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
 )
 from assistant.application.conversation_service import ConversationService
+from assistant.application.conversational_facts import ConversationalFactService
+from assistant.application.learning_service import LearningService
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
@@ -35,6 +37,7 @@ from assistant.application.planner_service import PlannerService
 from assistant.application.recipient_resolution import RecipientResolver
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import TaskService
+from assistant.application.today_brief import TodayBriefService
 from assistant.domain.action import ActionRequest, ActionType
 from assistant.domain.config import AssistantConfig
 from assistant.domain.execution import ExecutionOutcome
@@ -276,6 +279,9 @@ class ConversationHarness:
     contacts: SqliteContactRepository
     recipients: RecipientResolver
     new_drafts: SqliteNewMailDraftRepository
+    facts: ConversationalFactService
+    learning: LearningService
+    today_brief: TodayBriefService
     reviews: SqliteConversationReviewRepository
     actions: SqliteActionRepository
     mail: SqliteMailRepository
@@ -353,10 +359,9 @@ class ConversationHarness:
         await self.intelligence.persist_analysis(
             MailAnalysis(
                 message_id=message.id,
-                account_id=message.account_id,
                 analyzer_version=1,
                 input_fingerprint="f" * 64,
-                category=MailCategory.REQUEST,
+                category=MailCategory.ACTIONABLE_NOTICE,
                 requires_reply=requires_reply,
                 summary="老师要求周五之前提交实验报告。",
                 created_at=now,
@@ -416,6 +421,9 @@ async def build_harness(
         contacts=bootstrap.contact_repository(database),
         recipients=bootstrap.recipient_resolver(database, config),
         new_drafts=bootstrap.new_mail_draft_repository(database),
+        facts=bootstrap.conversational_fact_service(database, clock),
+        learning=bootstrap.learning_service(clock, database),
+        today_brief=bootstrap.today_brief_service(database, clock, config),
         reviews=bootstrap.conversation_review_repository(database),
         actions=bootstrap.action_repository(database),
         mail=bootstrap.mail_repository(database),

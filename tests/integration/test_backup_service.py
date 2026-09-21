@@ -453,6 +453,86 @@ async def test_contacts_and_unsent_new_mail_survive_a_restore(
     _ = preparation.action.id
 
 
+async def test_facts_survive_a_restore_and_the_brief_recomputes(
+    runtime: RuntimeFixture, tmp_path: Path
+) -> None:
+    """Facts are SQLite authority and the brief is derived, never stored.
+
+    ADR-0038 adds no table, so nothing about the archive changes; ADR-0039 stores no snapshot, so
+    the restored runtime recomputes today's brief from the restored rows.
+    """
+    import sqlite3
+
+    from assistant.application.calendar_service import CreateCalendarEvent
+    from assistant.application.contacts import ContactService
+    from assistant.application.conversational_facts import ConversationalFactService
+    from assistant.application.learning_service import LearningService
+    from assistant.application.today_brief import TodayBriefService
+    from assistant.domain.config import PlanningConfig
+    from assistant.store.commitment import SqliteCommitmentRepository
+    from assistant.store.conversation_reviews import SqliteConversationReviewRepository
+    from assistant.store.conversations import SqliteConversationRepository
+    from assistant.store.db import Database
+    from assistant.store.learning import SqliteLearningRepository
+    from assistant.store.planning import SqlitePlanningRepository
+    from assistant.store.scheduler import SqliteSchedulerRepository
+
+    await _seeded(runtime)
+    learning = LearningService(SqliteLearningRepository(runtime.database), runtime.clock)
+    facts = ConversationalFactService(learning)
+    confirmed = await facts.propose(
+        key="profile.office", value="仙林校区", correction_text="记住我的办公室在仙林"
+    )
+    await facts.confirm(confirmed.candidate.id)
+    await facts.propose(
+        key="profile.major", value="计算机科学", correction_text="记住我的专业是计算机科学"
+    )
+    service = runtime.backup_service()
+    archive = service.create(tmp_path / "backup.gab")
+    destination = tmp_path / "recovered"
+
+    result = service.restore(archive.path, destination)
+
+    assert result.integrity_ok is True
+    recovered = Database.at(destination / "assistant.db")
+    restored_learning = LearningService(SqliteLearningRepository(recovered), runtime.clock)
+    restored_facts = ConversationalFactService(restored_learning)
+
+    assert [fact.value for fact in await restored_facts.list_facts()] == ["仙林校区"]
+    assert [item.fact_key for item in await restored_facts.pending()] == ["profile.major"]
+    with recovered.connect() as connection:
+        connection.row_factory = sqlite3.Row
+        assert connection.execute("SELECT count(*) AS total FROM approvals").fetchone()[
+            "total"
+        ] == 0
+        assert connection.execute(
+            "SELECT count(*) AS total FROM execution_runs"
+        ).fetchone()["total"] == 0
+        stored = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    # No derived brief is stored anywhere: the restored runtime recomputes it from real rows.
+    assert not [name for name in stored if "brief" in name]
+
+    brief = await TodayBriefService(
+        commitments=SqliteCommitmentRepository(recovered),
+        planning=SqlitePlanningRepository(recovered),
+        scheduler=SqliteSchedulerRepository(recovered),
+        conversations=SqliteConversationRepository(recovered),
+        facts=restored_facts,
+        recurring=None,
+        clock=runtime.clock,
+        planning_timezone="Asia/Shanghai",
+    ).build()
+
+    assert brief.local_date.isoformat() == "2026-09-25"
+    assert "1 条长期信息等待确认" in " ".join(entry.label for entry in brief.waiting)
+    _ = (ContactService, CreateCalendarEvent, PlanningConfig, SqliteConversationReviewRepository)
+
+
 async def test_a_restore_invalidates_live_capabilities_but_keeps_history(
     runtime: RuntimeFixture, tmp_path: Path
 ) -> None:

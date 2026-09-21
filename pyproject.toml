@@ -1,6 +1,6 @@
 [project]
 name = "growing-assistant"
-version = "1.0.0"
+version = "1.1.0"
 description = "A personal assistant that grows: mail, personal knowledge, eHall errands and mobile approval in one auditable loop."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -78,12 +78,16 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/assistant/application/conversation_service.py" = ["RUF001"]
 # The deterministic recipient resolver answers in Chinese when it has to ask a question.
 "src/assistant/application/recipient_resolution.py" = ["RUF001"]
+"src/assistant/application/conversational_facts.py" = ["RUF001"]
+"src/assistant/application/today_brief.py" = ["RUF001"]
 "src/assistant/application/contacts.py" = ["RUF001"]
 "src/assistant/domain/conversation_review.py" = ["RUF001"]
 "src/assistant/cli_chat.py" = ["RUF001"]
 # The conversation tests speak the same Chinese the conversation surface answers in.
 "tests/integration/test_conversation_mail.py" = ["RUF001"]
 "tests/integration/test_conversation_recurring.py" = ["RUF001"]
+"tests/integration/test_conversation_facts.py" = ["RUF001"]
+"tests/integration/test_today_brief.py" = ["RUF001"]
 "tests/integration/test_conversation_outbound_mail.py" = ["RUF001"]
 "tests/integration/test_new_mail_send.py" = ["RUF001"]
 "tests/integration/test_conversation_runtime.py" = ["RUF001"]
@@ -91,9 +95,11 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/unit/test_cli_chat_mail.py" = ["RUF001"]
 "tests/acceptance/test_tree_real_usage.py" = ["RUF001"]
 "tests/acceptance/test_tree_new_mail.py" = ["RUF001"]
+"tests/acceptance/test_v1_1_conversation.py" = ["RUF001", "RUF003"]
 "tests/unit/test_conversation_domain.py" = ["RUF001"]
 "tests/unit/test_conversation_recurring_intent.py" = ["RUF001"]
 "tests/unit/test_recipient_resolution.py" = ["RUF001"]
+"tests/unit/test_conversational_facts.py" = ["RUF001"]
 "tests/unit/test_conversation_reliability.py" = ["RUF001"]
 
 [tool.mypy]

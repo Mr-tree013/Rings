@@ -434,6 +434,70 @@ def test_no_generic_external_write_or_tool_capability_exists() -> None:
     from assistant.domain.conversation_plan import ConversationOperationType
 
     assert "EXTERNAL_WRITE" not in {member.value for member in ConfirmationPolicy}
-    forbidden = ("shell.", "filesystem.", "browser.", "http.", "tool.", "ehall.", "fact.")
+    forbidden = ("shell.", "filesystem.", "browser.", "http.", "tool.", "ehall.", "memory.")
     for member in ConversationOperationType:
         assert not member.value.startswith(forbidden), member.value
+    # Phase 10F (ADR-0038) adds exactly three fact operations, and no way to confirm one.
+    fact_operations = {
+        member.value for member in ConversationOperationType if member.value.startswith("fact.")
+    }
+    assert fact_operations == {"fact.list", "fact.show", "fact.propose"}
+
+
+# --------------------------------------- facts and the today brief (ADR-0038, ADR-0039)
+
+FACT_CONVERSATION_MODULES = (
+    "application/conversational_facts.py",
+    "application/conversation_context.py",
+    "application/conversation_service.py",
+    "application/conversation_capabilities/handlers.py",
+)
+
+
+def test_the_fact_confirmation_path_has_no_model_dependency() -> None:
+    """The words that confirm a fact are parsed by code, and nothing in that path holds a model."""
+    intent = _read("application/conversational_facts.py")
+    assert "fact_confirmation_intent" in intent
+    assert "ModelPort" in intent  # named only in prose, as the thing it deliberately does not have
+    modules = _imported_modules("application/conversational_facts.py")
+    assert not [module for module in modules if module.startswith("assistant.ports.model")]
+    assert not [
+        module
+        for module in modules
+        if module.startswith("assistant.application.structured_model")
+    ]
+
+
+def test_the_conversation_reaches_facts_only_through_the_learning_service() -> None:
+    """No SQL, no fact table and no second memory model inside the conversation path."""
+    for relative in FACT_CONVERSATION_MODULES:
+        modules = _imported_modules(relative)
+        assert not [
+            module for module in modules if module.startswith("assistant.store")
+        ], relative
+        text = _read(relative)
+        assert "confirmed_facts" not in text, relative
+        assert "fact_candidates" not in text, relative
+    orchestration = _read("application/conversational_facts.py")
+    assert "LearningService" in orchestration
+    assert "vector" not in orchestration.lower()
+
+
+def test_the_today_brief_has_no_model_dependency_and_cannot_mutate() -> None:
+    """One deterministic read: no provider, no store, no write anywhere in the module."""
+    relative = "application/today_brief.py"
+    text = _read(relative)
+    modules = _imported_modules(relative)
+    assert not [module for module in modules if module.startswith("assistant.store")]
+    assert not [module for module in modules if module.startswith("assistant.ports.model")]
+    for mutation in (
+        "add_",
+        "create_",
+        "update_",
+        "cancel_",
+        "apply_",
+        "confirm_",
+        "reject_",
+        "execute",
+    ):
+        assert f"await self._{mutation}" not in text, mutation

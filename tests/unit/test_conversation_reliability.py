@@ -372,5 +372,11 @@ def test_no_generic_tool_or_shell_capability_was_added() -> None:
     from assistant.domain.conversation_plan import ConversationOperationType
 
     for member in ConversationOperationType:
-        for forbidden in ("tool", "shell", "http.", "filesystem", "browser", "ehall", "fact."):
+        for forbidden in ("tool", "shell", "http.", "filesystem", "browser", "ehall", "memory."):
             assert forbidden not in member.value, member.value
+    # Phase 10F adds three narrow fact reads/proposals and, deliberately, no way to confirm one:
+    # the final confirmation is a deterministic response to the human's own turn (ADR-0038).
+    fact_operations = {
+        member.value for member in ConversationOperationType if member.value.startswith("fact.")
+    }
+    assert fact_operations == {"fact.list", "fact.show", "fact.propose"}

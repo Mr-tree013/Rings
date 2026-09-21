@@ -70,6 +70,7 @@ from assistant.application.conversation_external_review import (
 )
 from assistant.application.conversation_interpreter import ConversationInterpreterService
 from assistant.application.conversation_service import ConversationService
+from assistant.application.conversational_facts import ConversationalFactService
 from assistant.application.ehall_certificate import EHallCertificateService
 from assistant.application.event_inbox import EventInbox
 from assistant.application.event_worker import EventWorker
@@ -121,6 +122,7 @@ from assistant.application.scheduler_service import SchedulerService
 from assistant.application.storage_catalog import StorageCatalogService
 from assistant.application.structured_model import StructuredModel
 from assistant.application.task_service import TaskService
+from assistant.application.today_brief import TodayBriefService
 from assistant.application.web_watch import WebWatchService
 from assistant.application.work_service import WorkService
 from assistant.domain.action import ActionType
@@ -223,8 +225,10 @@ def learning_repository(database: Database) -> SqliteLearningRepository:
 def learning_service(clock: Clock, database: Database) -> LearningService:
     """Personal facts a human proposed and confirmed.
 
-    Nothing composes this service except the explicit `pw fact` commands: no worker, no daemon
-    service and no web route reaches it, which is what keeps promotion a human act.
+    Composed by the explicit `pw fact` commands and, since Phase 10F, by the conversation's own
+    fact orchestration — where the model may still only *propose*, and the promotion itself is a
+    deterministic response to the human's own words. No worker, no daemon service and no web route
+    reaches it, which is what keeps promotion a human act.
     """
     return LearningService(learning_repository(database), clock)
 
@@ -591,6 +595,36 @@ def mail_send_status_service(
 def contact_repository(database: Database) -> SqliteContactRepository:
     """Durable local contacts (ADR-0037 §9)."""
     return SqliteContactRepository(database)
+
+
+def conversational_fact_service(
+    database: Database, clock: Clock
+) -> ConversationalFactService:
+    """Fact proposals a conversation may make, over the existing learning service (ADR-0038)."""
+    return ConversationalFactService(learning_service(clock, database))
+
+
+def today_brief_service(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> TodayBriefService:
+    """The deterministic today brief over existing local state (ADR-0039).
+
+    `config=None` means "this command did not need host configuration", so there is no planning
+    timezone — and the service then refuses to guess which day "today" is.
+    """
+    return TodayBriefService(
+        commitments=commitment_repository(database),
+        planning=planning_repository(database),
+        scheduler=scheduler_repository(database),
+        conversations=conversation_repository(database),
+        mail=mail_repository(database),
+        mail_intelligence=mail_intelligence_repository(database),
+        sends=mail_send_status_service(clock, database),
+        recurring=recurring_calendar_service(database, clock, config),
+        facts=conversational_fact_service(database, clock),
+        clock=clock,
+        planning_timezone=_planning_timezone_of(config),
+    )
 
 
 def contact_service(database: Database, clock: Clock) -> ContactService:
@@ -1282,6 +1316,7 @@ def conversation_context_builder(
         recurring=recurring_calendar_repository(database),
         contacts=contact_repository(database),
         new_mail_drafts=new_mail_draft_repository(database),
+        learning=learning_repository(database),
     )
 
 
@@ -1346,6 +1381,8 @@ def conversation_capabilities(
         contacts=contact_service(database, clock),
         recipients=recipient_resolver(database, config),
         new_mail_drafts=new_mail_draft_service(database, clock),
+        facts=conversational_fact_service(database, clock),
+        today=today_brief_service(database, clock, config),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         mail_sync=(
@@ -1395,6 +1432,7 @@ def conversation_service(
         external=conversation_external_review_service(
             database, clock, config, executors=executors
         ),
+        facts=conversational_fact_service(database, clock),
     )
 
 
@@ -1425,6 +1463,7 @@ __all__ = [
     "conversation_repository",
     "conversation_review_repository",
     "conversation_service",
+    "conversational_fact_service",
     "ehall_certificate_executor",
     "ehall_certificate_gateway",
     "ehall_certificate_service",
@@ -1488,6 +1527,7 @@ __all__ = [
     "sync_service",
     "system_clock",
     "task_service",
+    "today_brief_service",
     "web_snapshot_store",
     "web_source",
     "web_watch_repository",

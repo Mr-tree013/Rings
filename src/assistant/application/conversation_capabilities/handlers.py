@@ -30,6 +30,7 @@ from assistant.application.conversation_capabilities.registry import (
     PreflightCheck,
     PreflightContext,
 )
+from assistant.application.conversational_facts import ConversationalFactService
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_actions import MailSendActionService
@@ -44,10 +45,12 @@ from assistant.application.recipient_resolution import (
 )
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import CreateTask, EditTask, TaskService
+from assistant.application.today_brief import BriefEntry, TodayBrief, TodayBriefService
 from assistant.application.work_service import WorkService
 from assistant.domain.config import MailAccountConfig
 from assistant.domain.contact import Contact
 from assistant.domain.conversation_plan import (
+    BriefTodayArguments,
     CalendarCreateArguments,
     CalendarListArguments,
     CalendarRecurringCreateWeeklyArguments,
@@ -60,6 +63,9 @@ from assistant.domain.conversation_plan import (
     ContactRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
+    FactListArguments,
+    FactProposeArguments,
+    FactShowArguments,
     KnowledgeAskArguments,
     MailAccountsArguments,
     MailComposeNewArguments,
@@ -92,10 +98,19 @@ from assistant.domain.deadline import Deadline
 from assistant.domain.errors import (
     ContactNotFound,
     ConversationCapabilityUnavailable,
+    DomainError,
+    ForbiddenFactKey,
     InvalidContact,
+    InvalidFactKey,
     InvalidTimeInterval,
     MailRecipientUnresolved,
     RecurringRuleNotFound,
+)
+from assistant.domain.fact import (
+    ConfirmedFact,
+    FactCandidate,
+    validate_fact_key,
+    validate_fact_value,
 )
 from assistant.domain.grounded_answer import KnowledgeEvidence
 from assistant.domain.knowledge import SourceSpanKind
@@ -143,6 +158,9 @@ RECURRING_LIST_LIMIT = 12
 CONTACT_LIST_LIMIT = 12
 """How many contacts one listing may carry, matching the recent-entity bound."""
 
+FACT_LIST_LIMIT = 12
+"""How many long-term facts one listing may carry, matching the recent-entity bound."""
+
 
 class ConversationHandlers:
     """Executes one allowed operation against the existing application services."""
@@ -162,6 +180,8 @@ class ConversationHandlers:
         contacts: ContactService | None = None,
         recipients: RecipientResolver | None = None,
         new_mail_drafts: NewMailDraftService | None = None,
+        facts: ConversationalFactService | None = None,
+        today: TodayBriefService | None = None,
         mail: MailRepository | None = None,
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_sync: MailSyncService | None = None,
@@ -187,6 +207,8 @@ class ConversationHandlers:
         self._contacts = contacts
         self._recipients = recipients
         self._new_mail_drafts = new_mail_drafts
+        self._facts = facts
+        self._today = today
         self._mail = mail
         self._mail_intelligence = mail_intelligence
         self._mail_sync = mail_sync
@@ -720,6 +742,64 @@ class ConversationHandlers:
             data=_contact_payload(contact),
         )
 
+    async def fact_list(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """The long-term facts a person has confirmed — keys, values and nothing else."""
+        _expect(FactListArguments, arguments)
+        overviews = await self._require_facts().fact_overviews(limit=FACT_LIST_LIMIT)
+        now = self._clock.now()
+        return OperationResult(
+            kind="facts",
+            data={"facts": [_fact_payload(item.fact, now=now) for item in overviews]},
+        )
+
+    async def fact_show(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """One confirmed fact by key, or the honest answer that nothing is confirmed for it."""
+        asked = _expect(FactShowArguments, arguments)
+        facts = self._require_facts()
+        fact = await facts.show(asked.key)
+        if fact is not None:
+            return OperationResult(
+                kind="fact",
+                ref=str(fact.id),
+                data={"fact": _fact_payload(fact, now=self._clock.now())},
+            )
+        # A false negative would be worse than a plain answer, so the reply names what *is*
+        # confirmed (bounded), in case the model guessed a different key for the same question.
+        known = await facts.list_facts(limit=FACT_LIST_LIMIT)
+        return OperationResult(
+            kind="fact_absent",
+            data={
+                "key": asked.key,
+                "known_keys": [item.fact_key for item in known],
+            },
+        )
+
+    async def fact_propose(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """Store a reviewable fact proposal. It is never confirmed here (ADR-0038 §4-§5)."""
+        proposed = _expect(FactProposeArguments, arguments)
+        result = await self._require_facts().propose(
+            key=proposed.key,
+            value=proposed.value,
+            correction_text=proposed.correction_text,
+        )
+        return OperationResult(
+            kind="fact_proposed",
+            ref=str(result.candidate.id),
+            data={
+                **_fact_payload(result.candidate),
+                "correction_text": result.correction_text,
+            },
+        )
+
+    async def brief_today(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """The user's own today, read deterministically from local state and written nowhere."""
+        _expect(BriefTodayArguments, arguments)
+        service = self._today
+        if service is None:
+            raise ConversationCapabilityUnavailable("这台主机还不能生成今日概览")
+        brief = await service.build()
+        return OperationResult(kind="today_brief", data=_brief_payload(brief))
+
     async def system_capabilities(
         self, arguments: ConversationOperationArguments
     ) -> OperationResult:
@@ -857,6 +937,32 @@ class ConversationHandlers:
         if self._new_mail_drafts is None:
             raise ConversationCapabilityUnavailable("这台主机还不能起草新邮件")
         return self._new_mail_drafts
+
+    def _require_facts(self) -> ConversationalFactService:
+        if self._facts is None:
+            raise ConversationCapabilityUnavailable("这台主机还没有可用的长期信息存储")
+        return self._facts
+
+    async def preflight_fact(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A proposed fact must be storable before anything is written (ADR-0038 §12).
+
+        The key namespace is open, but a credential-shaped key is refused outright, and a
+        malformed key is refused with the reason rather than as a store error.
+        """
+        if isinstance(arguments, FactProposeArguments):
+            try:
+                validate_fact_key(arguments.key)
+            except ForbiddenFactKey as exc:
+                return f"「{exc.segment}」看起来是凭证，我不会把它记成长期信息"
+            except InvalidFactKey as exc:
+                return str(exc)
+            try:
+                validate_fact_value(arguments.value)
+            except DomainError as exc:
+                return str(exc)
+        return None
 
     async def _require_new_draft(self, reference: str) -> NewMailDraft:
         drafts = self._require_new_drafts()
@@ -1365,6 +1471,27 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             handlers.preflight_contact,
         ),
         (
+            ConversationOperationType.FACT_LIST,
+            ConfirmationPolicy.READ,
+            handlers.fact_list,
+        ),
+        (
+            ConversationOperationType.FACT_SHOW,
+            ConfirmationPolicy.READ,
+            handlers.fact_show,
+        ),
+        (
+            ConversationOperationType.FACT_PROPOSE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.fact_propose,
+            handlers.preflight_fact,
+        ),
+        (
+            ConversationOperationType.BRIEF_TODAY,
+            ConfirmationPolicy.READ,
+            handlers.brief_today,
+        ),
+        (
             ConversationOperationType.SYSTEM_CAPABILITIES,
             ConfirmationPolicy.READ,
             handlers.system_capabilities,
@@ -1441,6 +1568,49 @@ def _contact_payload(contact: Contact) -> dict[str, object]:
         "email_address": contact.email_address,
         "status": contact.status.value,
     }
+
+
+def _fact_payload(
+    fact: ConfirmedFact | FactCandidate, *, now: datetime | None = None
+) -> dict[str, object]:
+    """One candidate or confirmed fact as data: key, value and state, never provenance internals."""
+    payload: dict[str, object] = {"key": fact.fact_key, "value": fact.value}
+    if isinstance(fact, FactCandidate):
+        payload["status"] = fact.status.value
+    elif now is not None:
+        payload["state"] = fact.state_at(now).value
+    return payload
+
+
+def _brief_payload(brief: TodayBrief) -> dict[str, object]:
+    """One brief as data: bounded entries, no ids, no operation names, no database internals."""
+    return {
+        "local_date": brief.local_date.isoformat(),
+        "timezone": brief.timezone,
+        "schedule": [_brief_entry(entry) for entry in brief.schedule],
+        "tasks": [_brief_entry(entry) for entry in brief.tasks],
+        "attention": [_brief_entry(entry) for entry in brief.attention],
+        "waiting": [_brief_entry(entry) for entry in brief.waiting],
+        "checks": [_brief_entry(entry) for entry in brief.checks],
+        "overflow": dict(brief.overflow),
+        "empty": brief.is_empty,
+    }
+
+
+def _brief_entry(entry: BriefEntry) -> dict[str, object]:
+    """One brief line, with instants as ISO strings for the renderer."""
+    return {
+        "kind": entry.kind,
+        "label": entry.label,
+        "detail": entry.detail,
+        "starts_at": _iso_or_none(entry.starts_at),
+        "ends_at": _iso_or_none(entry.ends_at),
+        "at": _iso_or_none(entry.at),
+    }
+
+
+def _iso_or_none(value: object) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 def _new_mail_draft_payload(

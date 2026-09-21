@@ -378,6 +378,46 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         ("contact_id",),
     ),
     _operation(
+        "fact.list",
+        "List the long-term personal facts the user has confirmed. Use this for 我有哪些长期信息 / "
+        "你记得什么 about me.",
+    ),
+    _operation(
+        "fact.show",
+        "Read ONE confirmed long-term fact by its key. Use a key from recent_entities when one "
+        "matches the question (for example profile.office for 我的办公室). Never answer a personal "
+        "fact from memory, from the conversation, or from world knowledge: if this returns "
+        "nothing, the honest answer is that nothing has been confirmed. This never writes.",
+        {"key": {"type": "string", "minLength": 1, "maxLength": 128}},
+        ("key",),
+    ),
+    _operation(
+        "fact.propose",
+        "Propose one long-term fact to remember. Use ONLY when the user explicitly asks you to "
+        "remember something long-term (记住 / 以后记得 / 保存为长期信息) or corrects a remembered "
+        "value. Quote the user's own sentence in correction_text. This creates a reviewable "
+        "proposal and NEVER confirms it: the runtime shows the exact preview and the user must say "
+        "an explicit phrase such as 确认记住 afterwards. Never treat a passing statement as a "
+        "memory request.",
+        {
+            "key": {"type": "string", "minLength": 1, "maxLength": 128},
+            "value": {"type": "string", "minLength": 1, "maxLength": _MAX_TEXT_CHARS},
+            "correction_text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_TEXT_CHARS,
+            },
+        },
+        ("key", "value", "correction_text"),
+    ),
+    _operation(
+        "brief.today",
+        "Summarise the user's own today: today's fixed time, the tasks that matter, what needs "
+        "attention, what is waiting for the user and what is unresolved. Use this for 我今天有什 "
+        "么事 / 今天要做什么 / 最近有什么需要我处理的. It reads real local state and writes "
+        "nothing; never answer these from memory.",
+    ),
+    _operation(
         "system.capabilities",
         "Describe what this build can currently do, from the runtime. Use this for any question "
         "about Tree's own abilities instead of answering from memory.",

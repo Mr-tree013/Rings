@@ -43,6 +43,12 @@ from assistant.application.conversation_recurring_intent import (
     declares_mutation,
     unsupported_recurrence,
 )
+from assistant.application.conversational_facts import (
+    FACT_CONFIRMATION_INTENT_CANCEL,
+    ConversationalFactService,
+    PendingFactReview,
+    fact_confirmation_intent,
+)
 from assistant.application.recipient_resolution import text_contains_address
 from assistant.domain.conversation import (
     CONFIRMATION_TTL_MINUTES,
@@ -104,6 +110,12 @@ CONFIRMATION_INTERPRETER_VERSION = "deterministic-confirmation-v1"
 EXTERNAL_CONFIRMATION_INTERPRETER_VERSION = "deterministic-external-confirmation-v1"
 """Recorded on a turn that settled a reviewed external action without a model call."""
 
+FACT_CONFIRMATION_INTERPRETER_VERSION = "deterministic-fact-confirmation-v1"
+"""Recorded on a turn that confirmed or refused a long-term fact without a model call."""
+
+FACT_REVIEW_NOTICE_LIMIT = 3
+"""How many pending fact reviews a session start will re-render at once."""
+
 CONFIRMATION_INTENT_CONFIRM = "confirm"
 CONFIRMATION_INTENT_REJECT = "reject"
 
@@ -143,6 +155,7 @@ class ConversationService:
         planning_timezone: str | None = None,
         confirmation_ttl: timedelta | None = None,
         external: ConversationExternalReviewService | None = None,
+        facts: ConversationalFactService | None = None,
     ) -> None:
         self._repository = repository
         self._interpreter = interpreter
@@ -154,6 +167,7 @@ class ConversationService:
             minutes=CONFIRMATION_TTL_MINUTES
         )
         self._external = external
+        self._facts = facts
 
     # ------------------------------------------------------------------ session surface
 
@@ -283,6 +297,89 @@ class ConversationService:
             return ()
         return tuple(await self._external.waiting(thread_id))
 
+    async def pending_fact_review(self) -> str | None:
+        """A fact proposal waiting for a human, re-rendered from its durable candidate.
+
+        Called when a session starts, exactly like the external-send preview. It shows the exact
+        proposed value again and can never confirm anything (ADR-0038 §13): the durable row *is* the
+        review, so a restart loses nothing and decides nothing.
+        """
+        if self._facts is None:
+            return None
+        waiting = await self._facts.pending(limit=FACT_REVIEW_NOTICE_LIMIT)
+        if not waiting:
+            return None
+        return render.render_fact_pending_notice(waiting)
+
+    async def _answer_fact_confirmation(
+        self,
+        thread: ConversationThread,
+        user_message_id: ConversationMessageId,
+        waiting: Sequence[PendingFactReview],
+        intent: str,
+        key: str | None,
+    ) -> ConversationReply:
+        """Settle one pending fact review, deterministically, without a model (ADR-0038 §6).
+
+        No `ActionRequest`, no `Approval` and no `ExecutionRun` is involved: confirming a fact is a
+        local knowledge mutation through the existing learning service.
+        """
+        turn = await self._control_turn(
+            thread,
+            user_message_id,
+            version=FACT_CONFIRMATION_INTERPRETER_VERSION,
+        )
+        facts = self._facts
+        if facts is None:  # pragma: no cover - the caller only routes here when it exists
+            return await self._finish(
+                thread, turn, ConversationTurnStatus.FAILED, render.render_empty_turn()
+            )
+        if key is not None:
+            matches = [review for review in waiting if review.fact_key == key.strip()]
+            if not matches:
+                return await self._finish(
+                    thread,
+                    turn,
+                    ConversationTurnStatus.COMPLETED,
+                    render.render_fact_unknown_key(key, waiting),
+                )
+            waiting = matches
+        if len(waiting) > 1:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_fact_reviews_ambiguous(waiting),
+            )
+        review = waiting[0]
+        if intent == FACT_CONFIRMATION_INTENT_CANCEL:
+            await facts.reject(review.candidate.id)
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_fact_review_cancelled(review),
+            )
+        try:
+            confirmation = await facts.confirm(review.candidate.id)
+        except DomainError as exc:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_fact_failed(str(exc)),
+                error_code=ConversationErrorCode.OPERATION_FAILED,
+            )
+        return await self._finish(
+            thread,
+            turn,
+            ConversationTurnStatus.COMPLETED,
+            render.render_fact_confirmed(
+                confirmation, correction_text=review.correction_text
+            ),
+            operation_types=(),
+        )
+
     async def send(
         self,
         thread_id: ConversationThreadId,
@@ -323,6 +420,16 @@ class ConversationService:
             # Only once the deterministically handled phrases are out of the way is an expired
             # review closed, so "确认发送" after the window answered, never a model call.
             await self._external.expire_due(thread.id)
+        if self._facts is not None:
+            # A pending fact is settled the same way an external review is: by the human's own
+            # exact words, before anything is interpreted, with no model in the path (ADR-0038).
+            fact_intent = fact_confirmation_intent(text)
+            if fact_intent is not None:
+                waiting = await self._facts.pending()
+                if waiting:
+                    return await self._answer_fact_confirmation(
+                        thread, user_message.id, waiting, fact_intent[0], fact_intent[1]
+                    )
         pending = await self._repository.operations_waiting_for_confirmation(thread.id)
         intent = _confirmation_intent(text)
         if pending and intent is not None:
@@ -870,7 +977,11 @@ class ConversationService:
         )
 
     async def _control_turn(
-        self, thread: ConversationThread, user_message_id: ConversationMessageId
+        self,
+        thread: ConversationThread,
+        user_message_id: ConversationMessageId,
+        *,
+        version: str = EXTERNAL_CONFIRMATION_INTERPRETER_VERSION,
     ) -> ConversationTurn:
         """The turn row for a message no model interpreted."""
         context = await self._context_builder.build(thread.id, confirmation_pending=True)
@@ -878,7 +989,7 @@ class ConversationService:
             ConversationTurn(
                 thread_id=thread.id,
                 user_message_id=user_message_id,
-                interpreter_version=EXTERNAL_CONFIRMATION_INTERPRETER_VERSION,
+                interpreter_version=version,
                 context_fingerprint=_fingerprint(context.to_json()),
                 created_at=self._clock.now(),
             )

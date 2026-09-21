@@ -85,6 +85,10 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "contact.create",
         "contact.edit",
         "contact.retire",
+        "fact.list",
+        "fact.show",
+        "fact.propose",
+        "brief.today",
         "system.capabilities",
     }
 
@@ -115,6 +119,8 @@ def test_no_external_or_privileged_operation_exists() -> None:
             member.value in reviewed_mail
             or member.value == "system.capabilities"
             or member.value.startswith("contact.")
+            or member.value
+            in {"fact.list", "fact.show", "fact.propose"}
         ):
             continue
         assert not member.value.startswith(FORBIDDEN_OPERATION_PREFIXES), member.value
