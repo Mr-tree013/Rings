@@ -8,7 +8,7 @@ A local-first personal operations system that grows with you.
 
 **Language:** [中文](README.md) ｜ English
 
-**Version:** 1.1.0 · **Reference environment:** Linux / WSL + Python 3.13
+**Version:** 1.1.1 · **Reference environment:** Linux / WSL + Python 3.13
 
 Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
 SQLite database plus the files that database references, and reaches the outside world only through
@@ -156,8 +156,12 @@ is going on today?" returns a read-only summary of your own day — schedule, ta
 anything waiting — in your configured timezone.
 
 When the model answers unusably, Tree repairs it **once** and executes nothing; when the terminal
-sends bytes it cannot decode, it says so and keeps the session open. "What can you do?" is answered
-from the runtime's own configuration.
+sends bytes it cannot decode, it says so and keeps the session open. In a real terminal, input goes
+through a real line editor: arrow keys move the cursor, Home/End, Backspace/Delete and session-local
+Up/Down history work, and deleting one Chinese character removes one character. History lives in
+memory only — no history file is written. Ctrl-C cancels the line; Ctrl-D on an empty prompt exits.
+Revising a proposal that has not been confirmed retires the earlier one, so one "ok" settles only
+the newest group. "What can you do?" is answered from the runtime's own configuration.
 
 | Entry point | What it is for |
 | --- | --- |
@@ -235,7 +239,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 | Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
 | System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.1.0) | [docs/releases/1.1.0.md](docs/releases/1.1.0.md) |
+| Release notes (current release: v1.1.1) | [docs/releases/1.1.1.md](docs/releases/1.1.1.md) |
 | Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 

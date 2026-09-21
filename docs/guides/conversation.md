@@ -42,6 +42,39 @@ What Tree says it can do comes from the runtime's own capability metadata rather
 `你能做什么` reflects the accounts, roots and timezone this host actually has, and `/help` uses the
 same source.
 
+## Editing a line
+
+When you run `rings` in a real terminal, the prompt is a real line editor:
+
+| Key | What it does |
+| --- | --- |
+| Left / Right | Move the cursor through the line, Chinese and ASCII alike |
+| Home / End | Jump to the start or the end of what you have typed |
+| Backspace / Delete | Remove one character — a whole Chinese character, not a byte of it |
+| Up / Down | Walk the prompts you already submitted **in this session** |
+| Ctrl-C | Discard the unfinished line and return to `You >` |
+| Ctrl-D (on an empty line) | Leave Rings cleanly (the same as `/exit`) |
+
+Two details are deliberate:
+
+* **Editing history is memory only.** Up/Down recall prompts from this session, and nothing is
+  written to `~/.history`, `~/.rings_history` or any other file — a prompt may contain private
+  data. What you actually said is kept in the conversation database; the line history is only there
+  so you can retype a question.
+* **Editing keys never become conversation text.** Left and Right move the cursor; they are never
+  submitted as `^[[D`/`^[[C`, and nothing in the model's input carries terminal control sequences.
+  After you press Enter the text is checked once more, and a line containing a NUL, an unpaired
+  surrogate or a raw control sequence is refused with a sentence — no turn, no model call, no
+  change to your data.
+
+Chinese input, pasted text (`发信地址:251880385@smail.nju.edu.cn.收信地址"刘夏芸"<251880557@smail.nju.edu.cn>`
+and the like), full-width punctuation, quotes, angle brackets and emoji are ordinary text: they are
+neither rewritten nor rejected.
+
+Piped input is a different path on purpose. `pw chat` with input from a pipe or a script keeps
+strict, deterministic decoding and the fail-closed behaviour described above; it does not use the
+interactive editor.
+
 ## What you can say
 
 ```text
@@ -103,8 +136,44 @@ no:  取消 · 不要 · 不用 · 算了 · 不 · 否 · 别 · no · n · can
 
 A confirmation is bound to the conversation, the operation, its fingerprint and a 30-minute
 expiry. Saying yes twice applies the plan once; a confirmation that expired is refused and you are
-asked to regenerate it. If more than one confirmation is somehow pending, Tree asks which one
-rather than choosing.
+asked to regenerate it. A confirmation is also bound to the *turn that proposed it*: one message
+that proposes something is one **confirmation group**, and `可以` settles one group and no other.
+
+That matters most when you change your mind before answering:
+
+```text
+You > 我周二十点到十二点有课，下午两点到四点是 ICS，晚上六点半到九点二十是中国近代史纲要
+Tree > 要把这些加入固定安排吗？
+       - 每周二 10:00–12:00 · 生成式软件工程（网课）
+       - 每周二 14:00–16:00 · 计算机系统基础（ICS）
+       - 每周二 18:30–21:20 · 中国近代史纲要（仙二-404）
+       回复「可以」我就保存，或回复「取消」。
+You > ics的地点是在仙一107
+Tree > 要把这些加入固定安排吗？
+       - 每周二 10:00–12:00 · 生成式软件工程（网课）
+       - 每周二 14:00–16:00 · 计算机系统基础（ICS）（仙一107）
+       - 每周二 18:30–21:20 · 中国近代史纲要（仙二-404）
+       回复「可以」我就保存，或回复「取消」。
+You > 可以
+Tree > 已加入固定安排：
+       - 每周二 10:00–12:00 · 生成式软件工程（网课）
+       - 每周二 14:00–16:00 · 计算机系统基础（ICS）（仙一107）
+       - 每周二 18:30–21:20 · 中国近代史纲要（仙二-404）
+       从 2026-09-21 起持续到你删除。
+```
+
+The first proposal was **retired** the moment the second one replaced it: it can never be applied
+afterwards, and the old `计算机系统基础（ICS）` rule without a room is never created as a side effect.
+If some of the rules already existed, the answer says so in one sentence (`其中 2 条已存在，没有重复添加。`)
+rather than repeating a paragraph per rule.
+
+Two more properties of the same rule:
+
+* if two **unrelated** groups are waiting — say a weekly schedule and a plan to apply — `可以` does
+  not pick one: Tree asks which you mean and applies neither, and no model is consulted to guess;
+* `取消` withdraws the outstanding questions without applying anything, so it needs no target.
+
+Mail is never touched by any of this: only your own explicit `确认发送` sends a letter.
 
 Among the local operations, `plan.apply_proposal` is the only one that requires a confirmation:
 everything else is either a read (executes immediately) or an unambiguous local write (executes

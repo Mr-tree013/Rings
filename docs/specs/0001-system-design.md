@@ -585,3 +585,4 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0037 Conversational outbound mail and deterministic recipient resolution
 - ADR-0038 Conversational fact confirmation
 - ADR-0039 Deterministic today brief
+- ADR-0040 Interactive terminal line editing and pending confirmation groups

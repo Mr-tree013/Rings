@@ -54,5 +54,5 @@ Security-sensitive areas, in the order they matter:
 
 ## Supported versions
 
-This project publishes versioned releases; the current release line is 1.1.0. A fix is issued on the
+This project publishes versioned releases; the current release line is 1.1.1. A fix is issued on the
 current line, and older tags stay as they were.

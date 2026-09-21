@@ -24,8 +24,8 @@ from assistant.cli import app
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
-VERSION = "1.1.0"
-"""The version this release hardens to. A release candidate that is not 1.1.0 fails here."""
+VERSION = "1.1.1"
+"""The version this release hardens to. A release candidate that is not 1.1.1 fails here."""
 
 
 def _top_level_commands() -> list[str]:

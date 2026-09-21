@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.1.0 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.1.1 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -140,7 +140,11 @@ Tree 会问你而不是猜。外部动作（发邮件、eHall 提交）**不会*
 时区给出今天的安排、任务和需要处理的事，只读，不会替你确认或执行任何东西。
 
 模型偶尔给出不合规的回答时，Tree 只会重试**一次**并且不执行任何操作；终端给的输入无法解码时，
-它会说明并让你重新输入，而不是结束会话。「你能做什么」的回答来自当前运行时的真实配置。
+它会说明并让你重新输入，而不是结束会话。在真实终端里，输入用的是真正的行编辑器：左右键移动光标、
+Home/End、Backspace/Delete、上下键翻本次会话的输入历史都可以用，删掉一个汉字不会留下半个字符；
+历史只存在内存里，不会写入任何 history 文件。Ctrl-C 取消这一行，Ctrl-D（空行时）正常退出。
+修改一个还没确认的提议时，旧提议会被作废，所以一次「可以」只会确认最新的那一组。
+「你能做什么」的回答来自当前运行时的真实配置。
 
 | 入口 | 用途 |
 | --- | --- |
@@ -220,7 +224,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.1.0） | [docs/releases/1.1.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.1.0.md) |
+| Release Notes（当前版本：v1.1.1） | [docs/releases/1.1.1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.1.1.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 

@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-09-21
+
+A focused hotfix for two defects in the 1.1.0 conversation, with no new product capability and no
+migration. See `docs/releases/1.1.1.md` for the full notes and ADR-0040 for the decisions.
+
+### Fixed
+
+- **Interactive terminal line editing.** `rings` now edits lines with a real terminal editor
+  (`prompt-toolkit`) when stdin and stdout are terminals: Left/Right, Home/End, Backspace/Delete
+  and Up/Down history all work, CJK display width is the editor's, and Backspace deletes a whole
+  character rather than a UTF-8 byte. Previously arrow keys were read as bytes and submitted as
+  conversation text (`^[[D`, `^[[C`), and deleting a Chinese character could leave an undecodable
+  byte sequence behind — which the strict Phase 10C decoder then refused. Submitted text is
+  validated once more after editing (no NUL, no lone surrogate, no raw ANSI or unintended control
+  character), and a rejection produces no turn, no model call and no mutation. Ctrl-C cancels the
+  unfinished line; Ctrl-D on an empty prompt exits cleanly; editing history is in-memory only and
+  is never written to a history file. Piped/scripted input keeps the existing strict decoding path
+  unchanged.
+- **Revising a pending local confirmation left the old proposal live.** A pending local
+  confirmation is now a group bounded by the turn that proposed it. Revising a proposal of the same
+  kind retires the group it replaced (its operations become `REJECTED` and its turn stops waiting),
+  so one `可以` settles exactly one group and a superseded proposal can never be applied. When two
+  unrelated groups are waiting, Tree asks which one and applies neither; `取消` withdraws the
+  outstanding questions without applying anything. Confirming a revised schedule renders as one
+  list rather than one paragraph per rule, counting rules that already existed in one sentence.
+  External mail confirmation and fact confirmation vocabulary are unchanged.
+
+### Added
+
+- `prompt-toolkit` as the interactive line-editing frontend (the only runtime dependency added
+  after v1.0.0); the non-interactive path does not import it.
+- ADR-0040 and `docs/releases/1.1.1.md`.
+
+### Notes
+
+- No migration is added: the schema remains `0001`–`0019`, and a superseded group is expressed with
+  the existing `REJECTED` status.
+- A duplicate recurring rule that v1.1.0 already created is **not** deleted or retired
+  automatically; the hotfix prevents future duplication and the release notes explain how to
+  retire it manually.
+
 ## [1.1.0] - 2026-09-21
 
 The conversational release: everything 1.0.0 could do through `pw` is now reachable by saying what
