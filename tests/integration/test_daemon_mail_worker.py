@@ -99,6 +99,7 @@ async def test_no_model_means_no_event_worker(
     assert [service.name for service in build_services(config, clock, database)] == [
         "index-sync",
         "scheduler",
+        "attention",
         "mail-sync",
     ]
 
@@ -118,6 +119,7 @@ async def test_a_configured_model_starts_the_event_worker(
     assert [service.name for service in services] == [
         "index-sync",
         "scheduler",
+        "attention",
         "mail-sync",
         "event-worker",
     ]
@@ -145,9 +147,10 @@ async def test_the_worker_starts_without_mail_accounts_once_a_model_exists(
     assert [service.name for service in with_model] == [
         "index-sync",
         "scheduler",
+        "attention",
         "event-worker",
     ]
-    assert [service.name for service in without_model] == ["index-sync", "scheduler"]
+    assert [service.name for service in without_model] == ["index-sync", "scheduler", "attention"]
 
 
 async def test_a_received_mail_is_analyzed_by_the_daemon(

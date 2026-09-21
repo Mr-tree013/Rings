@@ -117,13 +117,6 @@ class WebDependencies:
     there is no route below that would let it (ADR-0042 §21).
     """
 
-    attention_projector: Any = None
-    """`AttentionProjector`: refreshed on demand when a page opens.
-
-    Reconciliation is periodic in the daemon; refreshing on load keeps a just-restarted host from
-    showing a stale count without making the browser the authority.
-    """
-
 
 class _PrivateClientMiddleware(BaseHTTPMiddleware):
     """Refuse anything that is not loopback or a private address.
@@ -206,11 +199,6 @@ def _register_chat_routes(
             None
             if dependencies.attention is None
             else lambda: dependencies.attention
-        ),
-        attention_projector=(
-            None
-            if dependencies.attention_projector is None
-            else lambda: dependencies.attention_projector
         ),
         assets=assets,
         require_session=_session,

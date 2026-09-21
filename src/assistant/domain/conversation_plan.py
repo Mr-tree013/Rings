@@ -1138,6 +1138,9 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.FACT_SHOW: frozenset({"key"}),
     ConversationOperationType.FACT_PROPOSE: frozenset({"key", "value", "correction_text"}),
     ConversationOperationType.BRIEF_TODAY: frozenset(),
+    ConversationOperationType.ATTENTION_LIST: frozenset({"include_settled"}),
+    ConversationOperationType.ATTENTION_ACKNOWLEDGE: frozenset({"reference"}),
+    ConversationOperationType.ATTENTION_DISMISS: frozenset({"reference"}),
     ConversationOperationType.SYSTEM_CAPABILITIES: frozenset(),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""

@@ -67,7 +67,6 @@ def register_chat_routes(
     *,
     chat: Callable[[], ConversationChatService],
     attention: Callable[[], object] | None = None,
-    attention_projector: Callable[[], object] | None = None,
     assets: object,
     require_session: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
     require_mutation: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
@@ -235,11 +234,11 @@ def register_chat_routes(
         session = await require_session(request)
         if isinstance(session, JSONResponse):
             return session
-        if attention_projector is not None:
-            # Reconcile before reading, so a drawer opened right after a task went overdue is
-            # current instead of up to one daemon interval behind. Idempotent and bounded.
-            await attention_projector().refresh()  # type: ignore[attr-defined]
-        summary = await attention().list_live(limit=ATTENTION_LIMIT)  # type: ignore[attr-defined]
+        service = attention()
+        # Reconcile before reading, so a drawer opened right after a task went overdue is current
+        # instead of up to one daemon interval behind. Idempotent and bounded.
+        await service.refresh()  # type: ignore[attr-defined]
+        summary = await service.list_live(limit=ATTENTION_LIMIT)  # type: ignore[attr-defined]
         return JSONResponse(
             {
                 "total": summary.total,

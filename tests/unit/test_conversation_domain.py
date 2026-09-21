@@ -89,6 +89,9 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "fact.show",
         "fact.propose",
         "brief.today",
+        "attention.list",
+        "attention.acknowledge",
+        "attention.dismiss",
         "system.capabilities",
     }
 

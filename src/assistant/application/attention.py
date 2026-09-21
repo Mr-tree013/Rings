@@ -634,11 +634,30 @@ class AttentionProjector:
 
 
 class AttentionService:
-    """List, acknowledge and dismiss the inbox. It cannot execute anything."""
+    """List, acknowledge, dismiss — and, when it owns a projector, keep itself current.
 
-    def __init__(self, *, items: AttentionRepository, clock: Clock) -> None:
+    Reconciliation lives here rather than in every caller because "what needs me" has to be true at
+    the moment somebody asks, and three different entry points (a conversation turn, the browser
+    drawer, the today brief) all ask that question. It is still the same idempotent projector doing
+    the same bounded work, and a service built without one is a pure read.
+    """
+
+    def __init__(
+        self,
+        *,
+        items: AttentionRepository,
+        clock: Clock,
+        projector: AttentionProjector | None = None,
+    ) -> None:
         self._items = items
         self._clock = clock
+        self._projector = projector
+
+    async def refresh(self) -> AttentionRefresh | None:
+        """Reconcile the inbox with its sources, or do nothing when this service is read-only."""
+        if self._projector is None:
+            return None
+        return await self._projector.refresh()
 
     async def list_live(self, *, limit: int = ATTENTION_LIMIT) -> AttentionSummary:
         """The live inbox: most urgent first, then oldest, bounded."""

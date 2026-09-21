@@ -117,6 +117,29 @@ def build_capability_snapshot(
         CapabilityArea("work", CapabilityState.AVAILABLE, {"operations": 1}),
         CapabilityArea("notifications", CapabilityState.AVAILABLE, {"operations": 2}),
         CapabilityArea(
+            "attention",
+            state(
+                offered=ConversationOperationType.ATTENTION_LIST in available,
+                configured=True,
+            ),
+            {
+                "operations": 3,
+                "deterministic": True,
+                "proactive_execution": False,
+                "sources": [
+                    "task deadlines",
+                    "mail analyses",
+                    "plan proposals",
+                    "fact candidates",
+                    "awaiting confirmations",
+                    "unresolved external outcomes",
+                    "reminders",
+                    "observations",
+                ],
+                "model_decides_urgency": False,
+            },
+        ),
+        CapabilityArea(
             "planning",
             state(
                 offered=ConversationOperationType.PLAN_PROPOSE_WEEK in available,

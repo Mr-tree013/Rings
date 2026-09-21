@@ -131,6 +131,7 @@ async def test_the_control_plane_is_absent_unless_it_is_enabled(
     assert [service.name for service in build_services(config, clock, database)] == [
         "index-sync",
         "scheduler",
+        "attention",
     ]
 
 
@@ -147,6 +148,7 @@ async def test_enabling_the_control_plane_adds_one_service(
     assert [service.name for service in services] == [
         "index-sync",
         "scheduler",
+        "attention",
         "mobile-web",
     ]
     web = services[-1]

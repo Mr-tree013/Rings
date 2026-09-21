@@ -2856,6 +2856,103 @@ def test_the_daemon_cannot_execute_an_external_action() -> None:
             assert not imported.startswith(banned_imports), f"{relative} imports {imported}"
 
 
+ATTENTION_MODULE = "application/attention.py"
+"""The projector and the service. ADR-0042 §4-5, §21, §25."""
+
+
+def test_the_attention_projector_cannot_reach_a_model_or_an_effect() -> None:
+    """§75: reconciliation is deterministic application logic, and its imports prove it.
+
+    `application/attention.py` reads bounded source collections and writes derived rows. It must
+    never be able to ask a model what is important, approve anything, execute anything, or open a
+    connection — so the imports are the boundary, not the docstring.
+    """
+    source = (SOURCE_ROOT / ATTENTION_MODULE).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported = {
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+
+    for forbidden in (
+        "assistant.ports.model",
+        "assistant.application.action_execution",
+        "assistant.application.approval_service",
+        "assistant.application.learning_service",
+        "sqlite3",
+        "httpx",
+        "playwright",
+        "subprocess",
+        "asyncio",
+    ):
+        assert forbidden not in imported, f"{ATTENTION_MODULE} imports {forbidden}"
+    # And nothing that could act on a source: no executor, no approval, no model adapter.
+    for name in ("ActionExecutor", "ApprovalService", "ModelPort", "ModelRequest"):
+        assert name not in _identifiers(SOURCE_ROOT / ATTENTION_MODULE), name
+
+
+def test_only_the_store_implements_attention_persistence() -> None:
+    """§6: attention is durable, and the only module that speaks SQL about it is the store."""
+    offenders = [
+        _relative(path)
+        for path in _source_modules()
+        if _relative(path) not in {"store/attention.py"}
+        and "attention_items" in path.read_text(encoding="utf-8")
+        and _relative(path).endswith(".py")
+        # The migration file and the two tests that read the reviewed SQL are not Python modules.
+        and _relative(path) != "store/migrations.py"
+    ]
+
+    assert not offenders, f"modules outside the store name the attention table: {offenders}"
+
+
+def test_the_attention_vocabulary_has_no_execution_verb() -> None:
+    """§12: the model may list, acknowledge and dismiss attention. There is nothing else."""
+    from assistant.application.conversation_capabilities import build_phase_10a_registry
+    from assistant.domain.conversation_plan import ConversationOperationType
+
+    attention_operations = {
+        operation.value
+        for operation in ConversationOperationType
+        if operation.value.startswith("attention.")
+    }
+
+    assert attention_operations == {
+        "attention.list",
+        "attention.acknowledge",
+        "attention.dismiss",
+    }
+    schema = (SOURCE_ROOT / "application" / "conversation_schema.py").read_text(encoding="utf-8")
+    assert "attention.execute" not in schema
+    assert callable(build_phase_10a_registry)
+
+
+def test_the_watcher_cannot_reach_an_attention_effect() -> None:
+    """§11: a watcher may produce an observation, and that may be surfaced — nothing more.
+
+    The projector reads `web_observations` and `observation_analyses`; the watcher itself gains no
+    ability to settle an item, and no attention module gains an ability to fetch a URL.
+    """
+    watcher_modules = [
+        path
+        for path in _source_modules()
+        if _relative(path) in {"application/web_watch.py", "adapters/web_watch/fetcher.py"}
+        or _relative(path).startswith("adapters/web_watch/")
+    ]
+    assert watcher_modules, "the watcher modules were not found"
+
+    for path in watcher_modules:
+        names = _identifiers(path)
+        assert not {name for name in names if name.startswith("Attention")}, path
+        assert "attention_repository" not in names
+
+
 def test_no_release_added_a_production_dependency() -> None:
     """§4/§53: the dependency set is frozen with the capability set."""
     import tomllib

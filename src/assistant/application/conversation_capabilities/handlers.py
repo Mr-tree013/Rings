@@ -830,6 +830,9 @@ class ConversationHandlers:
         """The unified inbox: what the user's own state says needs them, in product language."""
         arguments = _expect(AttentionListArguments, arguments)
         service = self._require_attention()
+        # Reconciled first: "最近有什么需要我处理的" has to describe this moment, not whatever the
+        # last daemon interval happened to write.
+        await service.refresh()
         summary = (
             await service.list_all(limit=ATTENTION_LIST_LIMIT)
             if arguments.include_settled
@@ -844,9 +847,9 @@ class ConversationHandlers:
     ) -> OperationResult:
         """Mark one item seen. It settles the reminder, never the thing it points at."""
         arguments = _expect(AttentionSettleArguments, arguments)
-        item = await self._require_attention().settle_by_reference(
-            arguments.reference, dismiss=False
-        )
+        service = self._require_attention()
+        await service.refresh()
+        item = await service.settle_by_reference(arguments.reference, dismiss=False)
         return OperationResult(
             kind="attention_settled",
             data={"title": item.title, "status": item.status.value},
@@ -857,9 +860,9 @@ class ConversationHandlers:
     ) -> OperationResult:
         """Stop reminding about one item. The source object is not touched."""
         arguments = _expect(AttentionDismissArguments, arguments)
-        item = await self._require_attention().settle_by_reference(
-            arguments.reference, dismiss=True
-        )
+        service = self._require_attention()
+        await service.refresh()
+        item = await service.settle_by_reference(arguments.reference, dismiss=True)
         return OperationResult(
             kind="attention_settled",
             data={"title": item.title, "status": item.status.value},

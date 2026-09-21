@@ -96,7 +96,7 @@ def test_the_backup_commands_round_trip(isolated: Path) -> None:
     # The manifest names the reviewed migration range it was built from, not a fixed version: the
     # list is the runtime's own applied history, so the newest entry is the one worth pinning.
     assert "0001_initial.sql" in inspected.output
-    assert "0020_conversation_requests.sql" in inspected.output
+    assert "0021_attention_items.sql" in inspected.output
 
 
 def test_a_backup_is_never_overwritten(isolated: Path) -> None:

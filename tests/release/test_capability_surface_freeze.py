@@ -145,10 +145,17 @@ def test_the_web_chat_route_set_is_frozen(tmp_path: Path) -> None:
             "POST",
             "/api/chat/threads/{thread_id}/confirmations/{confirmation_id}/cancel",
         ),
+        # Phase 11B (ADR-0042 §18, §21): read the inbox, settle one item. There is deliberately
+        # no execute, approve, send, submit or retry route, and the assertion below pins that.
+        ("GET", "/api/chat/attention"),
+        ("POST", "/api/chat/attention/{item_id}/acknowledge"),
+        ("POST", "/api/chat/attention/{item_id}/dismiss"),
     }
     chat_routes = {route for route in _chat_routes(tmp_path) if "/chat" in route[1]}
 
     assert chat_routes == expected
+    for verb in ("execute", "approve", "send", "submit", "retry", "resend"):
+        assert not [route for route in chat_routes if f"/{verb}" in route[1]]
 
 
 def test_no_chat_route_offers_a_generic_capability(tmp_path: Path) -> None:

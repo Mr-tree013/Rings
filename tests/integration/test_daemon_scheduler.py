@@ -81,7 +81,7 @@ async def test_the_daemon_composes_index_sync_and_the_scheduler(
 
     services = build_services(config, clock, bootstrap.runtime_database(clock))
 
-    assert [service.name for service in services] == ["index-sync", "scheduler"]
+    assert [service.name for service in services] == ["index-sync", "scheduler", "attention"]
 
 
 async def test_the_daemon_only_supervises_mail_when_accounts_are_configured(
@@ -98,10 +98,11 @@ async def test_the_daemon_only_supervises_mail_when_accounts_are_configured(
         _config_with_mail(config), clock, database
     )
 
-    assert [service.name for service in without_mail] == ["index-sync", "scheduler"]
+    assert [service.name for service in without_mail] == ["index-sync", "scheduler", "attention"]
     assert [service.name for service in with_mail] == [
         "index-sync",
         "scheduler",
+        "attention",
         "mail-sync",
     ]
 

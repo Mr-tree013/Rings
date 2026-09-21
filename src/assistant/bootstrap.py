@@ -552,8 +552,7 @@ def mobile_web_dependencies(
         deadlines=_deadline_lookup(database),
         clock=clock,
         chat=chat,
-        attention=attention_service(database, clock),
-        attention_projector=attention_projector(database, clock, config),
+        attention=attention_service(database, clock, config),
     )
 
 
@@ -641,9 +640,20 @@ def attention_repository(database: Database) -> SqliteAttentionRepository:
     return SqliteAttentionRepository(database)
 
 
-def attention_service(database: Database, clock: Clock) -> AttentionService:
-    """The bounded read/settle surface over the attention inbox."""
-    return AttentionService(items=attention_repository(database), clock=clock)
+def attention_service(
+    database: Database, clock: Clock, config: AssistantConfig | None = None
+) -> AttentionService:
+    """The bounded read/settle surface over the attention inbox.
+
+    With a `config`, the service also owns the projector and reconciles before a caller reads, which
+    is what makes "有什么需要我处理的" answer for this moment. Without one (an integrity or CLI path
+    that only needs to read rows) it is a pure reader.
+    """
+    return AttentionService(
+        items=attention_repository(database),
+        clock=clock,
+        projector=None if config is None else attention_projector(database, clock, config),
+    )
 
 
 def attention_projector(
@@ -693,10 +703,7 @@ def today_brief_service(
         planning=planning_repository(database),
         scheduler=scheduler_repository(database),
         conversations=conversation_repository(database),
-        attention=attention_service(database, clock),
-        attention_projector=(
-            attention_projector(database, clock, config) if refresh_attention else None
-        ),
+        attention=attention_service(database, clock, config if refresh_attention else None),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         sends=mail_send_status_service(clock, database),
@@ -1559,7 +1566,7 @@ def conversation_capabilities(
         mail_drafts_repository=mail_draft_repository(database),
         capability_snapshot=snapshot,
         mail_accounts=() if config is None else config.mail.accounts,
-        attention=attention_service(database, clock),
+        attention=attention_service(database, clock, config),
     )
     return build_phase_10a_registry(handlers)
 

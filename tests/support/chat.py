@@ -121,6 +121,9 @@ class ChatStack:
             deadlines=base.deadlines,
             clock=base.clock,
             chat=self.surface,
+            attention=bootstrap.attention_service(
+                self.database, self.clock, self.harness.config
+            ),
         )
 
     def client(self, *, is_private: Callable[[str], bool] | None = None) -> TestClient:

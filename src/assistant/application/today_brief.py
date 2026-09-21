@@ -32,12 +32,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from assistant.application.attention import AttentionProjector, AttentionService
+from assistant.application.attention import AttentionService
 from assistant.application.conversational_facts import ConversationalFactService
 from assistant.application.mail_send_status import MailDeliveryState, MailSendStatusService
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.domain.attention import AttentionKind
+from assistant.domain.conversation import ConversationOperationStatus
+from assistant.domain.conversation_plan import ConversationOperationType
 from assistant.domain.errors import PlanningNotConfigured
+from assistant.domain.planning import PlanProposalStatus
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
@@ -128,7 +131,6 @@ class TodayBriefService:
         recurring: RecurringCalendarService | None = None,
         facts: ConversationalFactService | None = None,
         attention: AttentionService | None = None,
-        attention_projector: AttentionProjector | None = None,
         clock: Clock,
         planning_timezone: str | None,
     ) -> None:
@@ -142,7 +144,6 @@ class TodayBriefService:
         self._recurring = recurring
         self._facts = facts
         self._attention_inbox = attention
-        self._attention_projector = attention_projector
         self._clock = clock
         self._timezone = planning_timezone
 
@@ -171,10 +172,11 @@ class TodayBriefService:
 
     async def build(self) -> TodayBrief:
         """Read every bounded source once and return the brief. It mutates nothing."""
-        if self._attention_projector is not None:
+        if self._attention_inbox is not None:
             # Reconciled before it is read, so "需要处理" describes this moment rather than the last
-            # time some other service happened to run the projector. Idempotent, bounded, local.
-            await self._attention_projector.refresh()
+            # time some other service happened to run the projector. Idempotent, bounded and local;
+            # a service built without a projector makes this call a no-op.
+            await self._attention_inbox.refresh()
         timezone = self.require_timezone()
         start, end = self.window()
         today = self.today()
@@ -401,6 +403,10 @@ class TodayBriefService:
         well as in the reminder inbox, which is how one waiting plan became two lines. They are now
         normalised attention items, so this section carries only what attention does not: mail that
         has already been prepared for an exact send and has not been approved yet.
+
+        A brief assembled *without* an attention inbox — an older embedded caller, an index-only
+        path — keeps the old, less tidy reporting rather than silently losing three sections. That
+        is what makes the normalisation an improvement rather than a subtraction.
         """
         entries: list[BriefEntry] = []
         if self._sends is not None:
@@ -418,7 +424,38 @@ class TodayBriefService:
                         label=f"{prepared} 封邮件等待你的发送确认",
                     )
                 )
+        if self._attention_inbox is None:
+            entries.extend(await self._legacy_waiting())
         return _bounded(tuple(_deduplicate(entries)), WAITING_LIMIT, overflow, "waiting")
+
+    async def _legacy_waiting(self) -> list[BriefEntry]:
+        """The pre-Phase-11B waiting items, for a brief with no attention inbox behind it."""
+        entries: list[BriefEntry] = []
+        summaries = await self._planning.list_proposal_summaries(limit=WAITING_LIMIT + 1)
+        if [
+            summary
+            for summary in summaries
+            if summary.proposal.status is PlanProposalStatus.PENDING
+        ]:
+            entries.append(
+                BriefEntry(kind="plan_proposal", label="有一份周计划提案等待应用")
+            )
+        if self._facts is not None:
+            pending_facts = await self._facts.pending(limit=WAITING_LIMIT + 1)
+            if pending_facts:
+                entries.append(
+                    BriefEntry(
+                        kind="fact_review",
+                        label=f"{len(pending_facts)} 条长期信息等待确认",
+                    )
+                )
+        for operation in await self._conversations.list_operations_by_status(
+            ConversationOperationStatus.WAITING_CONFIRMATION
+        ):
+            label = _LEGACY_WAITING_OPERATION_LABELS.get(operation.operation_type)
+            if label is not None:
+                entries.append(BriefEntry(kind="local_confirmation", label=label))
+        return entries
 
     async def _checks(self, overflow: dict[str, int]) -> tuple[BriefEntry, ...]:
         """Unresolved external outcomes. Unknown is reported as unknown, never as failed."""
@@ -437,6 +474,13 @@ class TodayBriefService:
             ),
         )
         return _bounded((entry,), CHECK_LIMIT, overflow, "checks")
+
+
+_LEGACY_WAITING_OPERATION_LABELS: dict[ConversationOperationType, str] = {
+    ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY: "有固定安排等待你确认",
+    ConversationOperationType.MAIL_COMPOSE_NEW: "有邮件草稿等待你确认发送",
+}
+"""The Phase 10G wording, kept for the attention-free fallback above and nothing else."""
 
 
 def _bounded(
