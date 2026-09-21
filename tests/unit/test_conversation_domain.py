@@ -47,7 +47,7 @@ FORBIDDEN_OPERATION_PREFIXES = (
 
 
 def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
-    """Phase 10A's daily-local operations plus Phase 10B's documented mail surface."""
+    """Phase 10A's daily-local operations, Phase 10B's mail surface and Phase 10D's weekly rules."""
     expected = {
         "status.get",
         "task.list",
@@ -59,6 +59,10 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "task.complete",
         "calendar.list",
         "calendar.create",
+        "calendar.recurring.list",
+        "calendar.recurring.create_weekly",
+        "calendar.recurring.edit",
+        "calendar.recurring.retire",
         "work.record",
         "plan.current",
         "plan.propose_week",
@@ -218,6 +222,37 @@ def test_only_time_bearing_operations_need_a_planning_timezone() -> None:
     )
     assert not requires_planning_timezone(
         ConversationOperationType.TASK_LIST, build_arguments("task.list", {})
+    )
+    # A weekly commitment without a stated zone is only meaningful in the planning timezone.
+    assert requires_planning_timezone(
+        ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY,
+        build_arguments(
+            "calendar.recurring.create_weekly",
+            {
+                "title": "计算机系统基础课",
+                "weekday": 1,
+                "start_local_time": "10:00",
+                "end_local_time": "12:00",
+            },
+        ),
+    )
+    # With its own IANA zone it is fully determined, and no planning timezone is needed.
+    assert not requires_planning_timezone(
+        ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY,
+        build_arguments(
+            "calendar.recurring.create_weekly",
+            {
+                "title": "计算机系统基础课",
+                "weekday": 1,
+                "start_local_time": "10:00",
+                "end_local_time": "12:00",
+                "timezone": "Asia/Shanghai",
+            },
+        ),
+    )
+    assert not requires_planning_timezone(
+        ConversationOperationType.CALENDAR_RECURRING_LIST,
+        build_arguments("calendar.recurring.list", {}),
     )
 
 

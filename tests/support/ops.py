@@ -150,6 +150,25 @@ class RuntimeFixture:
         proposal = await self.learning.propose_fact(key, value, "SENTINEL-FACT-NOTE")
         await self.learning.confirm_fact(proposal.candidate.id)
 
+    async def add_weekly_rule(
+        self,
+        *,
+        title: str = "计算机系统基础课",
+        weekday: int = 1,
+        start: str = "10:00",
+        end: str = "12:00",
+        timezone: str = "Asia/Shanghai",
+    ):
+        """One durable weekly commitment, created through the real application service."""
+        from assistant.application.recurring_calendar_service import RecurringCalendarService
+        from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
+
+        return await RecurringCalendarService(
+            SqliteRecurringCalendarRepository(self.database),
+            self.clock,
+            default_timezone=timezone,
+        ).create_weekly(title=title, weekday=weekday, start=start, end=end)
+
     # ------------------------------------------------------------------ services
 
     def backup_service(self) -> BackupService:
@@ -186,6 +205,7 @@ class RuntimeFixture:
             "corrections",
             "confirmed_facts",
             "mobile_sessions",
+            "recurring_calendar_rules",
         )
         with self.database.connect() as connection:
             return {

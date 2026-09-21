@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -60,6 +61,11 @@ class ConversationOperationType(StrEnum):
     CALENDAR_LIST = "calendar.list"
     CALENDAR_CREATE = "calendar.create"
 
+    CALENDAR_RECURRING_LIST = "calendar.recurring.list"
+    CALENDAR_RECURRING_CREATE_WEEKLY = "calendar.recurring.create_weekly"
+    CALENDAR_RECURRING_EDIT = "calendar.recurring.edit"
+    CALENDAR_RECURRING_RETIRE = "calendar.recurring.retire"
+
     WORK_RECORD = "work.record"
 
     PLAN_CURRENT = "plan.current"
@@ -89,6 +95,7 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.TASK_LIST,
         ConversationOperationType.TASK_SHOW,
         ConversationOperationType.CALENDAR_LIST,
+        ConversationOperationType.CALENDAR_RECURRING_LIST,
         ConversationOperationType.PLAN_CURRENT,
         ConversationOperationType.NOTIFICATION_LIST,
         ConversationOperationType.KNOWLEDGE_ASK,
@@ -122,6 +129,57 @@ def _aware(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise InvalidConversationPlan(f"{field_name} must be timezone-aware")
     return value
+
+
+_CLOCK_TEXT = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+"""A local civil time as `HH:MM`. Minutes are the smallest unit a weekly rule carries."""
+
+MAX_RECURRING_TITLE_CHARS = 200
+"""A weekly rule's title is bounded the same way the recurring-calendar domain bounds it."""
+
+
+def _clock_text(value: str, field_name: str) -> str:
+    cleaned = value.strip()
+    if not _CLOCK_TEXT.match(cleaned):
+        raise InvalidConversationPlan(f"{field_name} must be a HH:MM local time")
+    return cleaned
+
+
+def _optional_clock_text(value: str | None, field_name: str) -> str | None:
+    return None if value is None else _clock_text(value, field_name)
+
+
+def _weekday(value: int, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidConversationPlan(f"{field_name} must be an integer weekday")
+    if not 1 <= value <= 7:
+        raise InvalidConversationPlan("weekday is ISO 1 (Monday) to 7 (Sunday)")
+    return value
+
+
+def _optional_weekday(value: int | None, field_name: str) -> int | None:
+    return None if value is None else _weekday(value, field_name)
+
+
+def _timezone_name(value: str, field_name: str) -> str:
+    cleaned = _text(value, field_name)
+    if len(cleaned) > 64:
+        raise InvalidConversationPlan(f"{field_name} is at most 64 characters")
+    return cleaned
+
+
+def _optional_timezone_name(value: str | None, field_name: str) -> str | None:
+    return None if value is None else _timezone_name(value, field_name)
+
+
+def _civil_date(value: date, field_name: str) -> date:
+    if isinstance(value, datetime) or not isinstance(value, date):
+        raise InvalidConversationPlan(f"{field_name} must be a calendar date")
+    return value
+
+
+def _optional_civil_date(value: date | None, field_name: str) -> date | None:
+    return None if value is None else _civil_date(value, field_name)
 
 
 def _task_id(value: UUID) -> TaskId:
@@ -491,6 +549,120 @@ class CalendarCreateArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarRecurringListArguments:
+    """The weekly commitments the user keeps, retired ones only when asked for."""
+
+    include_retired: bool = False
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CALENDAR_RECURRING_LIST, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarRecurringCreateWeeklyArguments:
+    """One weekly commitment, as civil time in an explicit IANA timezone (ADR-0036 §9-§12).
+
+    `timezone=None` means "the runtime's planning timezone", never the host's: a bare weekday and
+    clock time has no meaning without one, and guessing is exactly what ADR-0036 forbids.
+    """
+
+    title: str
+    weekday: int
+    start_local_time: str
+    end_local_time: str
+    timezone: str | None = None
+    starts_on: date | None = None
+    ends_on: date | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.title, "title")
+        if len(self.title.strip()) > MAX_RECURRING_TITLE_CHARS:
+            raise InvalidConversationPlan(
+                f"title is at most {MAX_RECURRING_TITLE_CHARS} characters"
+            )
+        _weekday(self.weekday, "weekday")
+        _clock_text(self.start_local_time, "start_local_time")
+        _clock_text(self.end_local_time, "end_local_time")
+        if self.end_local_time <= self.start_local_time:
+            raise InvalidConversationPlan(
+                "a weekly commitment must end after it starts on the same day"
+            )
+        _optional_timezone_name(self.timezone, "timezone")
+        _optional_civil_date(self.starts_on, "starts_on")
+        _optional_civil_date(self.ends_on, "ends_on")
+        if (
+            self.starts_on is not None
+            and self.ends_on is not None
+            and self.ends_on < self.starts_on
+        ):
+            raise InvalidConversationPlan("ends_on cannot precede starts_on")
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarRecurringEditArguments:
+    """Change one weekly commitment's meaning; unset fields keep their current value.
+
+    `timezone` is deliberately absent: a rule's meaning is its civil time in one named zone, and
+    moving a class to another zone is a different commitment rather than an edit of this one.
+    """
+
+    rule_id: str
+    title: str | None = None
+    weekday: int | None = None
+    start_local_time: str | None = None
+    end_local_time: str | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CALENDAR_RECURRING_EDIT, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.rule_id, "rule_id")
+        changes = (
+            self.title,
+            self.weekday,
+            self.start_local_time,
+            self.end_local_time,
+        )
+        if all(value is None for value in changes):
+            raise InvalidConversationPlan(
+                "calendar.recurring.edit needs at least one field to change"
+            )
+        if self.title is not None:
+            _text(self.title, "title")
+            if len(self.title.strip()) > MAX_RECURRING_TITLE_CHARS:
+                raise InvalidConversationPlan(
+                    f"title is at most {MAX_RECURRING_TITLE_CHARS} characters"
+                )
+        _optional_weekday(self.weekday, "weekday")
+        _optional_clock_text(self.start_local_time, "start_local_time")
+        _optional_clock_text(self.end_local_time, "end_local_time")
+        if (
+            self.start_local_time is not None
+            and self.end_local_time is not None
+            and self.end_local_time <= self.start_local_time
+        ):
+            raise InvalidConversationPlan(
+                "a weekly commitment must end after it starts on the same day"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarRecurringRetireArguments:
+    """End one weekly commitment for the future. Nothing historical is removed."""
+
+    rule_id: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.CALENDAR_RECURRING_RETIRE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.rule_id, "rule_id")
+
+
+@dataclass(frozen=True, slots=True)
 class WorkRecordArguments:
     """Record time actually spent on an existing task."""
 
@@ -544,6 +716,10 @@ ConversationOperationArguments = (
     | TaskCompleteArguments
     | CalendarListArguments
     | CalendarCreateArguments
+    | CalendarRecurringListArguments
+    | CalendarRecurringCreateWeeklyArguments
+    | CalendarRecurringEditArguments
+    | CalendarRecurringRetireArguments
     | WorkRecordArguments
     | PlanCurrentArguments
     | PlanProposeWeekArguments
@@ -572,7 +748,7 @@ def arguments_payload(arguments: ConversationOperationArguments) -> dict[str, An
         if entry.name == "operation_type":
             continue
         value = getattr(arguments, entry.name)
-        if isinstance(value, datetime):
+        if isinstance(value, (datetime, date)):
             raw[entry.name] = value.isoformat()
         elif isinstance(value, StrEnum):
             raw[entry.name] = value.value
@@ -600,6 +776,22 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.CALENDAR_CREATE: frozenset(
         {"title", "starts_at", "ends_at", "description"}
     ),
+    ConversationOperationType.CALENDAR_RECURRING_LIST: frozenset({"include_retired"}),
+    ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY: frozenset(
+        {
+            "title",
+            "weekday",
+            "start_local_time",
+            "end_local_time",
+            "timezone",
+            "starts_on",
+            "ends_on",
+        }
+    ),
+    ConversationOperationType.CALENDAR_RECURRING_EDIT: frozenset(
+        {"rule_id", "title", "weekday", "start_local_time", "end_local_time"}
+    ),
+    ConversationOperationType.CALENDAR_RECURRING_RETIRE: frozenset({"rule_id"}),
     ConversationOperationType.WORK_RECORD: frozenset({"task_id", "started_at", "ended_at"}),
     ConversationOperationType.PLAN_CURRENT: frozenset(),
     ConversationOperationType.PLAN_PROPOSE_WEEK: frozenset({"next_week"}),
@@ -674,6 +866,29 @@ def _instant(value: object, field_name: str) -> datetime:
 
 def _optional_instant(value: object, field_name: str) -> datetime | None:
     return None if value is None else _instant(value, field_name)
+
+
+def _civil_date_value(value: object, field_name: str) -> date:
+    if not isinstance(value, str):
+        raise InvalidConversationPlan(f"{field_name} must be a YYYY-MM-DD string")
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise InvalidConversationPlan(f"{field_name}: not a calendar date") from exc
+
+
+def _optional_civil_date_value(value: object, field_name: str) -> date | None:
+    return None if value is None else _civil_date_value(value, field_name)
+
+
+def _weekday_value(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidConversationPlan(f"{field_name} must be an integer weekday")
+    return value
+
+
+def _optional_weekday_value(value: object, field_name: str) -> int | None:
+    return None if value is None else _weekday_value(value, field_name)
 
 
 def _priority(value: object) -> TaskPriority:
@@ -759,6 +974,40 @@ def build_arguments(
             starts_at=_instant(payload.get("starts_at"), "starts_at"),
             ends_at=_instant(payload.get("ends_at"), "ends_at"),
             description=_optional_strings(payload.get("description"), "description"),
+        )
+    if kind is ConversationOperationType.CALENDAR_RECURRING_LIST:
+        return CalendarRecurringListArguments(
+            include_retired=_boolean(
+                payload.get("include_retired"), "include_retired", default=False
+            )
+        )
+    if kind is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY:
+        return CalendarRecurringCreateWeeklyArguments(
+            title=_strings(payload.get("title"), "title"),
+            weekday=_weekday_value(payload.get("weekday"), "weekday"),
+            start_local_time=_strings(
+                payload.get("start_local_time"), "start_local_time"
+            ),
+            end_local_time=_strings(payload.get("end_local_time"), "end_local_time"),
+            timezone=_optional_strings(payload.get("timezone"), "timezone"),
+            starts_on=_optional_civil_date_value(payload.get("starts_on"), "starts_on"),
+            ends_on=_optional_civil_date_value(payload.get("ends_on"), "ends_on"),
+        )
+    if kind is ConversationOperationType.CALENDAR_RECURRING_EDIT:
+        return CalendarRecurringEditArguments(
+            rule_id=_strings(payload.get("rule_id"), "rule_id"),
+            title=_optional_strings(payload.get("title"), "title"),
+            weekday=_optional_weekday_value(payload.get("weekday"), "weekday"),
+            start_local_time=_optional_strings(
+                payload.get("start_local_time"), "start_local_time"
+            ),
+            end_local_time=_optional_strings(
+                payload.get("end_local_time"), "end_local_time"
+            ),
+        )
+    if kind is ConversationOperationType.CALENDAR_RECURRING_RETIRE:
+        return CalendarRecurringRetireArguments(
+            rule_id=_strings(payload.get("rule_id"), "rule_id")
         )
     if kind is ConversationOperationType.WORK_RECORD:
         return WorkRecordArguments(
@@ -877,6 +1126,21 @@ def requires_planning_timezone(
         return True
     if operation_type is ConversationOperationType.TASK_CREATE:
         return isinstance(arguments, TaskCreateArguments) and arguments.due_at is not None
+    if (
+        operation_type is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY
+        and isinstance(arguments, CalendarRecurringCreateWeeklyArguments)
+    ):
+        # A weekly commitment with its own IANA zone is already fully determined; one without is
+        # only meaningful against the configured planning timezone (ADR-0036 §6-§8).
+        return arguments.timezone is None
+    if operation_type in (
+        ConversationOperationType.CALENDAR_RECURRING_LIST,
+        ConversationOperationType.CALENDAR_RECURRING_EDIT,
+        ConversationOperationType.CALENDAR_RECURRING_RETIRE,
+    ):
+        # Listing, renaming and retiring a stored rule carry no civil time of their own: the rule
+        # already knows its zone.
+        return False
     return False
 
 
@@ -935,9 +1199,14 @@ class ConversationPlan:
 __all__ = [
     "MAX_OPERATIONS_PER_TURN",
     "MAX_OPERATION_TEXT_CHARS",
+    "MAX_RECURRING_TITLE_CHARS",
     "READ_OPERATIONS",
     "CalendarCreateArguments",
     "CalendarListArguments",
+    "CalendarRecurringCreateWeeklyArguments",
+    "CalendarRecurringEditArguments",
+    "CalendarRecurringListArguments",
+    "CalendarRecurringRetireArguments",
     "ConversationOperationArguments",
     "ConversationOperationType",
     "ConversationPlan",

@@ -32,6 +32,13 @@ _MAX_TEXT_CHARS = 2000
 
 _DATE_TIME: dict[str, Any] = {"type": "string", "format": "date-time"}
 _NULLABLE_DATE_TIME: dict[str, Any] = {"type": ["string", "null"], "format": "date-time"}
+_CIVIL_DATE = {"type": "string", "format": "date"}
+_NULLABLE_CIVIL_DATE = {"type": ["string", "null"], "format": "date"}
+_CLOCK_TIME = {"type": "string", "pattern": r"^([01][0-9]|2[0-3]):[0-5][0-9]$"}
+_NULLABLE_CLOCK_TIME = {"type": ["string", "null"], "pattern": r"^([01][0-9]|2[0-3]):[0-5][0-9]$"}
+_WEEKDAY = {"type": "integer", "minimum": 1, "maximum": 7}
+_NULLABLE_WEEKDAY = {"type": ["integer", "null"], "minimum": 1, "maximum": 7}
+_TIMEZONE_NAME = {"type": ["string", "null"], "maxLength": 64}
 _NULLABLE_TEXT = {"type": ["string", "null"], "maxLength": _MAX_TEXT_CHARS}
 _TASK_ID = {"type": "string", "format": "uuid"}
 _PRIORITY = {"enum": ["low", "normal", "high", None]}
@@ -131,6 +138,62 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
             "description": _NULLABLE_TEXT,
         },
         ("title", "starts_at", "ends_at", "description"),
+    ),
+    _operation(
+        "calendar.recurring.list",
+        "List the user's standing weekly commitments (classes and other fixed weekly time). "
+        "Use this for any question about fixed arrangements, recurring schedules or 固定安排.",
+        {"include_retired": {"type": "boolean"}},
+        ("include_retired",),
+    ),
+    _operation(
+        "calendar.recurring.create_weekly",
+        "Record ONE standing weekly commitment: the same weekday, the same local start and end "
+        "time, every week until it ends. One rule is one weekday: for '周一和周三' propose two "
+        "operations. Set timezone only when the user named one; null means the runtime's planning "
+        "timezone, which the runtime applies itself. starts_on defaults to today in that "
+        "timezone; set ends_on only when the user named a last day. There is no recurrence string "
+        "argument, and every-N-weeks, odd/even weeks, monthly, yearly and holiday exceptions are "
+        "not expressible here.",
+        {
+            "title": {"type": "string", "minLength": 1, "maxLength": _MAX_TITLE_CHARS},
+            "weekday": _WEEKDAY,
+            "start_local_time": _CLOCK_TIME,
+            "end_local_time": _CLOCK_TIME,
+            "timezone": _TIMEZONE_NAME,
+            "starts_on": _NULLABLE_CIVIL_DATE,
+            "ends_on": _NULLABLE_CIVIL_DATE,
+        },
+        (
+            "title",
+            "weekday",
+            "start_local_time",
+            "end_local_time",
+            "timezone",
+            "starts_on",
+            "ends_on",
+        ),
+    ),
+    _operation(
+        "calendar.recurring.edit",
+        "Change one existing weekly commitment, by a rule_id from recent_entities. Null means "
+        "'leave unchanged'. Use this for '把刚才那门课改成九点到十一点'.",
+        {
+            "rule_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "title": {"type": ["string", "null"], "maxLength": _MAX_TITLE_CHARS},
+            "weekday": _NULLABLE_WEEKDAY,
+            "start_local_time": _NULLABLE_CLOCK_TIME,
+            "end_local_time": _NULLABLE_CLOCK_TIME,
+        },
+        ("rule_id", "title", "weekday", "start_local_time", "end_local_time"),
+    ),
+    _operation(
+        "calendar.recurring.retire",
+        "End one standing weekly commitment for the future, by a rule_id from recent_entities. "
+        "Use this for '以后周一没有这门课了'. It never deletes anything that already happened. "
+        "This is the only way to stop a weekly commitment; there is no delete.",
+        {"rule_id": {"type": "string", "minLength": 1, "maxLength": 64}},
+        ("rule_id",),
     ),
     _operation(
         "work.record",

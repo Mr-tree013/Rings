@@ -39,6 +39,10 @@ from assistant.application.conversation_external_review import (
     PreparedReview,
 )
 from assistant.application.conversation_prompt import CONFIRM_PHRASES, REJECT_PHRASES
+from assistant.application.conversation_recurring_intent import (
+    declares_mutation,
+    unsupported_recurrence,
+)
 from assistant.domain.conversation import (
     CONFIRMATION_TTL_MINUTES,
     ConversationMessage,
@@ -54,6 +58,7 @@ from assistant.domain.conversation import (
 )
 from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
+    CalendarRecurringCreateWeeklyArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     ConversationPlan,
@@ -428,7 +433,7 @@ class ConversationService:
             return await self._finish(
                 thread, turn, ConversationTurnStatus.COMPLETED, (spoken or "").strip()
             )
-        return await self._run_plan(thread, turn, plan, activity=activity)
+        return await self._run_plan(thread, turn, plan, text=text, activity=activity)
 
     async def _run_plan(
         self,
@@ -436,6 +441,7 @@ class ConversationService:
         turn: ConversationTurn,
         plan: ConversationPlan,
         *,
+        text: str = "",
         activity: Callable[[str], None] | None = None,
     ) -> ConversationReply:
         unsupported = [
@@ -454,6 +460,30 @@ class ConversationService:
                 ConversationTurnStatus.FAILED,
                 render.render_unsupported(unsupported),
             )
+
+        recurring = _recurring_creates(plan)
+        if recurring:
+            # Two deterministic checks the model cannot argue with (ADR-0036 §12, §19): a
+            # recurrence v1.1 cannot express is refused, and a statement is answered with a
+            # question rather than with durable state.
+            named = unsupported_recurrence(text)
+            if named is not None:
+                for ordinal, operation in enumerate(plan.operations):
+                    await self._store_operation(
+                        turn, ordinal, operation, status=ConversationOperationStatus.REJECTED
+                    )
+                return await self._finish(
+                    thread,
+                    turn,
+                    ConversationTurnStatus.FAILED,
+                    render.render_unsupported_recurrence(named),
+                    operation_types=tuple(
+                        operation.operation_type.value for operation in plan.operations
+                    ),
+                    error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
+                )
+            if not declares_mutation(text):
+                return await self._hold_recurring_for_confirmation(thread, turn, recurring)
 
         refusal = await self._preflight(plan)
         if refusal is not None:
@@ -615,7 +645,7 @@ class ConversationService:
                 created_at=now,
             )
         )
-        if len(pending) > 1:
+        if len(pending) > 1 and not _is_recurring_batch(pending):
             listing = [
                 f"- {operation.operation_type.value}（{str(operation.id)[:8]}）"
                 for operation in pending
@@ -626,6 +656,9 @@ class ConversationService:
                 ConversationTurnStatus.COMPLETED,
                 render.render_multiple_pending(listing),
             )
+        if _is_recurring_batch(pending):
+            # One sentence about Monday and Wednesday is one confirmation, not two questions.
+            return await self._answer_recurring_batch(thread, turn, pending, intent)
         operation = pending[0]
         if _is_expired(operation, now):
             await self._repository.update_operation(
@@ -673,6 +706,127 @@ class ConversationService:
         )
 
     # ------------------------------------------------------- external action settlement
+
+    async def _hold_recurring_for_confirmation(
+        self,
+        thread: ConversationThread,
+        turn: ConversationTurn,
+        recurring: Sequence[tuple[int, PlannedOperation]],
+    ) -> ConversationReply:
+        """Ask before a described weekly commitment becomes durable state (ADR-0036 §19).
+
+        Nothing at all runs in this turn: the unconfirmed commitment is the input the rest of the
+        plan was built on, so a plan that includes one applies none of itself (ADR-0035 §16). The
+        creates are stored as `WAITING_CONFIRMATION`, which is the runtime's existing local
+        confirmation — no second approval framework exists for this.
+        """
+        for _, planned in recurring:
+            capability = self._capabilities.get(planned.operation_type)
+            if capability is None or capability.preflight is None:
+                continue
+            try:
+                refusal = await capability.preflight(planned.arguments, PreflightContext())
+            except DomainError as exc:
+                refusal = str(exc)
+            except Exception:
+                refusal = f"我现在无法确认「{planned.operation_type.value}」是否可以执行"
+            if refusal is not None:
+                # Asking about a commitment that could not be saved anyway would be a trap.
+                for position, planned_operation in recurring:
+                    await self._store_operation(
+                        turn,
+                        position,
+                        planned_operation,
+                        status=ConversationOperationStatus.REJECTED,
+                    )
+                return await self._finish(
+                    thread,
+                    turn,
+                    ConversationTurnStatus.FAILED,
+                    render.render_preflight_refused(refusal),
+                    operation_types=tuple(
+                        planned.operation_type.value for _, planned in recurring
+                    ),
+                    error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
+                )
+        expires_at = self._clock.now() + self._confirmation_ttl
+        entries: list[dict[str, str | int]] = []
+        for position, planned in recurring:
+            await self._store_operation(
+                turn,
+                position,
+                planned,
+                status=ConversationOperationStatus.WAITING_CONFIRMATION,
+                expires_at=expires_at,
+            )
+            entries.append(_recurring_confirmation_entry(planned))
+        return await self._finish(
+            thread,
+            turn,
+            ConversationTurnStatus.WAITING_CONFIRMATION,
+            render.render_recurring_confirmation_request(entries),
+            operation_types=tuple(
+                planned.operation_type.value for _, planned in recurring
+            ),
+            waiting=True,
+        )
+
+    async def _answer_recurring_batch(
+        self,
+        thread: ConversationThread,
+        turn: ConversationTurn,
+        pending: Sequence[ConversationOperation],
+        intent: str,
+    ) -> ConversationReply:
+        """Settle one confirmation that covers several weekly commitments at once."""
+        now = self._clock.now()
+        if any(_is_expired(operation, now) for operation in pending):
+            for operation in pending:
+                await self._repository.update_operation(
+                    _replace_operation(
+                        operation, status=ConversationOperationStatus.REJECTED, at=now
+                    )
+                )
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_confirmation_expired(),
+            )
+        if intent == CONFIRMATION_INTENT_REJECT:
+            for operation in pending:
+                await self._repository.update_operation(
+                    _replace_operation(
+                        operation, status=ConversationOperationStatus.REJECTED, at=now
+                    )
+                )
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_confirmation_rejected(),
+            )
+        results: list[OperationResult] = []
+        for operation in pending:
+            outcome = await self._execute_existing(turn, operation)
+            if outcome.failure is not None:
+                applied = render.render_results(results, timezone=self._planning_timezone)
+                failure = render.render_failure(operation.operation_type.value, outcome.failure)
+                return await self._finish(
+                    thread,
+                    turn,
+                    ConversationTurnStatus.FAILED,
+                    "\n".join(part for part in (applied, failure) if part),
+                )
+            if outcome.result is not None:
+                results.append(outcome.result)
+        return await self._finish(
+            thread,
+            turn,
+            ConversationTurnStatus.COMPLETED,
+            render.render_results(results, timezone=self._planning_timezone),
+            operation_types=tuple(operation.operation_type.value for operation in pending),
+        )
 
     async def _control_turn(
         self, thread: ConversationThread, user_message_id: ConversationMessageId
@@ -919,6 +1073,45 @@ def _apply_arguments(proposal_id: str) -> ConversationOperationArguments:
     from assistant.domain.conversation_plan import PlanApplyProposalArguments
 
     return PlanApplyProposalArguments(proposal_id=proposal_id)
+
+
+def _recurring_creates(
+    plan: ConversationPlan,
+) -> tuple[tuple[int, PlannedOperation], ...]:
+    """Every weekly-commitment creation in a plan, with the ordinal it will be stored at."""
+    return tuple(
+        (ordinal, planned)
+        for ordinal, planned in enumerate(plan.operations)
+        if planned.operation_type is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY
+    )
+
+
+def _recurring_confirmation_entry(
+    planned: PlannedOperation,
+) -> dict[str, str | int]:
+    """The four fields the question about one weekly commitment needs."""
+    arguments = planned.arguments
+    if not isinstance(arguments, CalendarRecurringCreateWeeklyArguments):
+        raise AssertionError(  # pragma: no cover - the caller filters by operation type
+            "a recurring confirmation entry needs a weekly-commitment creation"
+        )
+    return {
+        "title": arguments.title,
+        "weekday": arguments.weekday,
+        "start_local_time": arguments.start_local_time,
+        "end_local_time": arguments.end_local_time,
+    }
+
+
+def _is_recurring_batch(pending: Sequence[ConversationOperation]) -> bool:
+    """Whether every waiting operation is one weekly-commitment creation."""
+    if not pending:
+        return False
+    return all(
+        operation.operation_type
+        is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY
+        for operation in pending
+    )
 
 
 def _settlement_text(outcome: ConfirmationOutcome) -> str:

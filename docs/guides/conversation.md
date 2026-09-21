@@ -52,6 +52,10 @@ same source.
 报告改到周日截止
 刚才那个任务做完了
 周四下午两点到四点是课
+每周一十点到十二点有课，记下来，再帮我安排下周
+我有哪些固定安排？
+把刚才那门课改成九点到十一点
+以后周一没有这门课了
 今天论文写了一个半小时
 帮我安排一下这周
 看看刚才的计划
@@ -97,6 +101,56 @@ rather than choosing.
 Among the local operations, `plan.apply_proposal` is the only one that requires a confirmation:
 everything else is either a read (executes immediately) or an unambiguous local write (executes
 immediately). Mail is different, and is described next.
+
+## Fixed weekly arrangements
+
+A class that happens every week is not an event and not a scheduled job: it is one *rule* you keep.
+Tree stores it once, derives its occurrences when you look at a week, and the planner treats them as
+busy time, so a plan block is never placed on top of a class.
+
+```text
+You > 每周一十点到十二点有课，记下来，再帮我安排下周
+Tree > 已加入固定安排：
+       每周一 10:00–12:00 · 计算机系统基础课
+       从 2026-09-21 起持续到你删除。
+       周计划提案 …（2 个时间块）… 要应用这个计划吗？回复「可以」我就写进计划，或回复「取消」。
+You > 可以
+Tree > 已应用周计划提案（…）：新增 2 个时间块，替换 0 个。
+```
+
+Four things about how this behaves are worth knowing:
+
+* **A statement is not an instruction.** `我每周一十点到十二点有课。` only describes your week, so
+  Tree asks `要把这些加入固定安排吗？` and writes nothing until you answer. `记下来`、`记录一下`、
+  `加到日历`、`放进固定安排` are instructions, and are written directly.
+* **One rule is one weekday.** `每周一和周三下午两点到四点都有软件工程课，记录下来。` creates two
+  rules with the same title, time and timezone — not one rule with a weekday list.
+* **The timezone is the runtime's.** A new rule is interpreted in `[planning].timezone`; without one,
+  Tree asks which timezone you mean instead of using the machine's. Say `按东京时间` and the rule
+  carries `Asia/Tokyo` itself. `TZ` and the host clock never decide what a rule means.
+* **Weekly only.** Odd/even weeks, every-N-weeks, monthly or yearly recurrence and holiday
+  exceptions cannot be expressed in this version, and Tree refuses them rather than approximating
+  them. There is no recurrence string to write and no `rrule` to pass.
+
+Follow-ups use the rule you last saw, and never guess between several:
+
+```text
+You > 我有哪些固定安排？
+Tree > 现在有 1 条固定安排：
+       - 每周一 10:00–12:00 · 计算机系统基础课
+You > 把刚才那门课改成九点到十一点。
+Tree > 已更新固定安排：
+       每周一 09:00–11:00 · 计算机系统基础课
+       从 2026-09-21 起持续到你删除。
+You > 以后周一没有这门课了。
+Tree > 以后周一不再有「计算机系统基础课」了。它原来的时间是 每周一 10:00–12:00；
+       已经过去的工作记录和计划都没有改动。
+```
+
+Editing keeps the rule's identity and changes only its future meaning. Retiring stops future
+occurrences and deletes nothing: there is no "delete a rule", and history is never rewritten.
+`calendar.list` shows one-off events and the derived weekly occurrences together, so a week reads
+the way you think about it.
 
 ## Mail: draft, exact preview, then one explicit send
 
@@ -172,6 +226,8 @@ separate fact about content. They are never merged.
   does not wire the conversation into it.
 * **No guessing.** An ambiguous task, an id that was never in the context, a missing timezone and
   an expired confirmation all produce a question.
+* **No recurrence this build cannot honour.** "单双周"、"每两周一次"、"每个月第一周" and "节假日除外"
+  are refused with zero mutation rather than being quietly recorded as every week.
 * **No shell, filesystem, browser or HTTP.** There is no generic tool loop; the plan vocabulary is
   closed, and an operation outside it is a refused answer rather than an adventurous one.
 

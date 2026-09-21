@@ -12,10 +12,13 @@ from pathlib import Path
 import pytest
 
 from assistant.application.greedy_planner import GreedyPlanner
-from assistant.application.planner_service import PlannerService
+from assistant.application.planner_service import PlannerService, busy_intervals
 from assistant.application.recurring_calendar_service import RecurringCalendarService
+from assistant.domain.calendar_event import CalendarEvent
 from assistant.domain.config import PlanningConfig, Weekday, WeeklyAvailabilityRule
 from assistant.domain.errors import InvalidTimeInterval, RecurringRuleNotFound
+from assistant.domain.planning import PlanningWindow
+from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.db import Database
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
@@ -193,3 +196,41 @@ async def test_the_planner_treats_a_class_as_busy_time(
         assert not (
             block.starts_at < class_window[1] and block.ends_at > class_window[0]
         ), f"a plan block overlaps the class: {block.starts_at}-{block.ends_at}"
+
+
+async def test_recurring_time_is_merged_with_overlapping_events(
+    database: Database, clock: FakeClock
+) -> None:
+    """Busy time is a set, not a list: an event over a class is one interval (ADR-0036 §13)."""
+    recurring = _service(database, clock)
+    await recurring.create_weekly(
+        title="计算机系统基础课", weekday=1, start="10:00", end="12:00"
+    )
+    commitments = SqliteCommitmentRepository(database)
+    await commitments.add_calendar_event(
+        CalendarEvent(
+            title="临时的课",
+            starts_at=datetime(2026, 9, 21, 3, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 9, 21, 6, 0, tzinfo=UTC),
+            created_at=MONDAY,
+            updated_at=MONDAY,
+        )
+    )
+    window = PlanningWindow(
+        starts_at=datetime(2026, 9, 21, 0, 0, tzinfo=UTC),
+        ends_at=datetime(2026, 9, 28, 0, 0, tzinfo=UTC),
+        timezone="Asia/Shanghai",
+    )
+    snapshot = await SqlitePlanningRepository(database).load_snapshot(window)
+    occurrences = await recurring.expand_range(
+        window_start=window.starts_at, window_end=window.ends_at
+    )
+
+    merged = busy_intervals(
+        snapshot,
+        tuple((item.starts_at, item.ends_at) for item in occurrences),
+    )
+
+    assert len(merged) == 1
+    assert merged[0][0] == datetime(2026, 9, 21, 2, 0, tzinfo=UTC)
+    assert merged[0][1] == datetime(2026, 9, 21, 6, 0, tzinfo=UTC)

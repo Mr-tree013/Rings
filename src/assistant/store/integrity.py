@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 
+from assistant.domain.errors import DomainError
 from assistant.domain.integrity import IntegritySection, IntegritySeverity
 from assistant.ports.integrity_repository import (
     ConfiguredRoot,
@@ -29,6 +30,7 @@ from assistant.ports.integrity_repository import (
 )
 from assistant.store.db import Database
 from assistant.store.errors import StoreError
+from assistant.store.recurring_calendar import RULE_FIELDS, row_to_rule
 
 _OBSERVATION_EVENT_TYPES = ("web.page.changed", "manual.input.received")
 
@@ -49,6 +51,7 @@ class SqliteIntegrityRepository:
                     _capability_section(connection),
                     _conversation_section(connection),
                     _learning_section(connection),
+                    _recurring_section(connection),
                     _mail_section(connection),
                     _observation_section(connection),
                 )
@@ -258,6 +261,53 @@ def _learning_section(connection: sqlite3.Connection) -> IntegritySection:
             tuple(critical),
         )
     return IntegritySection("learning", IntegritySeverity.OK, "facts and playbooks OK")
+
+
+def _recurring_section(connection: sqlite3.Connection) -> IntegritySection:
+    """Weekly commitments: every rule must still mean what it says it means (ADR-0036 §3).
+
+    Each rule is read back through the domain constructor — so its weekday, local time order,
+    IANA zone, date order and retirement consistency are all re-checked — and its fingerprint is
+    re-derived from the stored fields. Occurrences are never materialised, so there is nothing
+    derived here to be stale.
+    """
+    critical: list[str] = []
+    failing: list[str] = []
+    total = 0
+    active = 0
+    for row in connection.execute(
+        f"SELECT {RULE_FIELDS} FROM recurring_calendar_rules ORDER BY created_at, id"
+    ).fetchall():
+        total += 1
+        identifier = str(row[0])[:8]
+        stored_fingerprint = str(row[9])
+        try:
+            rule = row_to_rule(row)
+        except (DomainError, ValueError, KeyError) as exc:
+            failing.append(f"weekly rule {identifier} cannot be interpreted: {exc}")
+            continue
+        if rule.status.value == "active":
+            active += 1
+        if rule.fingerprint != stored_fingerprint:
+            # Stored authority disagreeing with itself, exactly like a rewritten action payload.
+            critical.append(
+                f"weekly rule {identifier} does not hash to its stored fingerprint"
+            )
+    for row in connection.execute(
+        "SELECT rule_fingerprint AS fingerprint, count(*) AS total "
+        "FROM recurring_calendar_rules WHERE status = 'active' "
+        "GROUP BY rule_fingerprint HAVING count(*) > 1"
+    ).fetchall():
+        critical.append(
+            f"{row['total']} active weekly rules share one meaning "
+            f"({str(row['fingerprint'])[:8]})"
+        )
+    summary = f"{total} weekly rule(s) checked, {active} active"
+    if critical:
+        return IntegritySection("recurring", IntegritySeverity.CRITICAL, summary, tuple(critical))
+    if failing:
+        return IntegritySection("recurring", IntegritySeverity.FAIL, summary, tuple(failing))
+    return IntegritySection("recurring", IntegritySeverity.OK, summary)
 
 
 def _mail_section(connection: sqlite3.Connection) -> IntegritySection:

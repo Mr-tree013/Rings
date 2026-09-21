@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Weekly recurring schedules (Phase 10D, ADR-0036).** A weekly class is authoritative calendar
+  state: `RecurringCalendarRule` is one weekday with a local start and end time and an explicit
+  IANA timezone, occurrences are derived on demand (never materialized as `CalendarEvent` rows), and
+  the deterministic planner treats them as busy time, so a plan block is never proposed over a
+  class. The conversation gains four closed operations — `calendar.recurring.list`,
+  `calendar.recurring.create_weekly`, `calendar.recurring.edit` and
+  `calendar.recurring.retire` — with no recurrence string anywhere. A *statement*
+  (`我每周一十点到十二点有课。`) asks before it writes; an explicit instruction (`记下来`, `加到日历`,
+  `放进固定安排`) is a local write. Weekly is the whole supported surface: odd/even weeks,
+  every-N-weeks, monthly or yearly recurrence and holiday exceptions are refused with zero
+  mutation. Repeating one request is idempotent; an edit keeps the rule's identity and only changes
+  the future; retiring a rule stops future occurrences and removes nothing historical.
+- Migration `0018_recurring_calendar_rules.sql`: one row per weekly commitment, with ISO weekday
+  bounds, local-time ordering, an active-duplicate unique index and a SHA-256 fingerprint.
+- `pw integrity check` re-derives every weekly rule's fingerprint read-only and reports a rule that
+  no longer hashes to its own meaning, a rule that breaks its own invariants, or two active rules
+  that share one meaning.
+
 ### Fixed
 
 +- **Conversation reliability and self-knowledge (Phase 10C, ADR-0035).** Terminal input is decoded

@@ -34,6 +34,11 @@ from assistant.domain.conversation_context import (
 from assistant.domain.deadline import Deadline
 from assistant.domain.notification import NotificationStatus
 from assistant.domain.planning import PlanProposal, PlanProposalStatus
+from assistant.domain.recurring_calendar import (
+    RecurringCalendarRule,
+    RecurringCalendarRuleStatus,
+    format_clock,
+)
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
@@ -42,6 +47,7 @@ from assistant.ports.mail_draft_repository import MailDraftRepository
 from assistant.ports.mail_intelligence_repository import MailIntelligenceRepository
 from assistant.ports.mail_repository import MailRepository
 from assistant.ports.planning_repository import PlanningRepository
+from assistant.ports.recurring_calendar_repository import RecurringCalendarRepository
 from assistant.ports.scheduler_repository import SchedulerRepository
 
 CALENDAR_LOOKAHEAD_DAYS = 14
@@ -73,6 +79,7 @@ class ConversationContextBuilder:
         mail: MailRepository | None = None,
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_drafts: MailDraftRepository | None = None,
+        recurring: RecurringCalendarRepository | None = None,
         max_messages: int = MAX_CONTEXT_MESSAGES,
         max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
         max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -89,6 +96,7 @@ class ConversationContextBuilder:
         self._mail = mail
         self._mail_intelligence = mail_intelligence
         self._mail_drafts = mail_drafts
+        self._recurring = recurring
         self._max_messages = max_messages
         self._max_history_chars = max_history_chars
         self._max_entities = max_entities
@@ -121,6 +129,7 @@ class ConversationContextBuilder:
             *await self._task_entities(),
             *await self._proposal_entities(),
             *await self._calendar_entities(now),
+            *await self._recurring_entities(),
             *await self._notification_entities(),
             *await self._mail_entities(),
         )
@@ -171,6 +180,30 @@ class ConversationContextBuilder:
                 detail=f"starts={event.starts_at.isoformat()} ends={event.ends_at.isoformat()}",
             )
             for event in events[: self._max_entities]
+        )
+
+    async def _recurring_entities(self) -> tuple[ConversationEntityRef, ...]:
+        """The user's standing weekly commitments, bounded and without any derived occurrence.
+
+        A follow-up like "把刚才那门课改成九点到十一点" is possible because the short id is here;
+        what the rule expands to is never sent, because occurrences are unbounded in principle and
+        the model has no use for a list of dates (ADR-0036 §10).
+        """
+        if self._recurring is None:
+            return ()
+        rules = await self._recurring.list_rules(
+            status=RecurringCalendarRuleStatus.ACTIVE
+        )
+        # The newest commitments are the ones a follow-up can mean; keep reading order.
+        recent = rules[-self._max_entities :]
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.RECURRING_CALENDAR_RULE,
+                id=str(rule.id)[:8],
+                label=rule.title,
+                detail=_recurring_detail(rule),
+            )
+            for rule in recent
         )
 
     async def _notification_entities(self) -> tuple[ConversationEntityRef, ...]:
@@ -298,6 +331,20 @@ def _proposal_label(proposal: PlanProposal) -> str:
     return (
         f"weekly plan proposal {proposal.window.starts_at.date().isoformat()} -> "
         f"{proposal.window.ends_at.date().isoformat()} ({proposal.window.timezone})"
+    )
+
+
+def _recurring_detail(rule: RecurringCalendarRule) -> str:
+    """Everything a follow-up needs about one rule, and nothing derived from it."""
+    return (
+        f"id={str(rule.id)[:8]} "
+        f"weekday={rule.weekday} "
+        f"start={format_clock(rule.start_time)} "
+        f"end={format_clock(rule.end_time)} "
+        f"timezone={rule.timezone} "
+        f"starts_on={rule.starts_on.isoformat()} "
+        f"ends_on={'-' if rule.ends_on is None else rule.ends_on.isoformat()} "
+        f"status={rule.status.value}"
     )
 
 

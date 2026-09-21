@@ -111,6 +111,7 @@ from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
 from assistant.application.playbook_replay import PlaybookReplayRegistry
 from assistant.application.playbook_service import PlaybookService
+from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.retry import RetryPolicy
 from assistant.application.rolling_replan import RollingReplanRequester
 from assistant.application.scheduler_service import SchedulerService
@@ -165,6 +166,7 @@ from assistant.store.mobile_sessions import SqliteMobileSessionRepository
 from assistant.store.observation_analyses import SqliteObservationAnalysisRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.playbooks import SqlitePlaybookRepository
+from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
 from assistant.store.web_watch import SqliteWebWatchRepository
 from assistant.store.work import SqliteWorkRepository
@@ -887,13 +889,35 @@ def planner_service(
     """The deterministic weekly planner over the configured planning preferences.
 
     `config=None` means "this command did not need host configuration"; the planner then
-    reports `PlanningNotConfigured` instead of guessing a timezone.
+    reports `PlanningNotConfigured` instead of guessing a timezone. Weekly commitments are handed
+    in as busy time, so a plan block is never proposed over a class (ADR-0036 §13).
     """
     return PlannerService(
         planning_repository(database),
         GreedyPlanner(),
         None if config is None else config.planning,
         clock,
+        recurring=recurring_calendar_service(database, clock, config),
+    )
+
+
+def recurring_calendar_repository(database: Database) -> SqliteRecurringCalendarRepository:
+    """Durable weekly recurring rules (ADR-0036 §3)."""
+    return SqliteRecurringCalendarRepository(database)
+
+
+def recurring_calendar_service(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> RecurringCalendarService:
+    """Weekly commitments, interpreted in the configured planning timezone by default.
+
+    `default_timezone=None` means "this host has not chosen one"; the service then refuses to
+    interpret a bare weekday and time rather than reaching for the machine's timezone.
+    """
+    return RecurringCalendarService(
+        recurring_calendar_repository(database),
+        clock,
+        default_timezone=_planning_timezone_of(config),
     )
 
 
@@ -1214,6 +1238,7 @@ def conversation_context_builder(
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         mail_drafts=mail_draft_repository(database),
+        recurring=recurring_calendar_repository(database),
     )
 
 
@@ -1274,6 +1299,7 @@ def conversation_capabilities(
         knowledge=grounded_answer_service(knowledge, config, model=model),
         commitments=commitment_repository(database),
         clock=clock,
+        recurring=recurring_calendar_service(database, clock, config),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         mail_sync=(
@@ -1395,6 +1421,8 @@ __all__ = [
     "playbook_repository",
     "playbook_service",
     "raw_mail_store",
+    "recurring_calendar_repository",
+    "recurring_calendar_service",
     "registered_action_executors",
     "require_model_config",
     "rolling_replan_requester",

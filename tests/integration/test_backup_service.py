@@ -77,7 +77,7 @@ async def test_a_used_runtime_is_backed_up_with_its_referenced_objects(
     assert manifest.counts.mail_messages == 1
     assert manifest.counts.web_observations == 1
     assert manifest.counts.confirmed_facts == 1
-    assert manifest.migration_files[-1] == "0017_conversation_external_reviews.sql"
+    assert manifest.migration_files[-1] == "0018_recurring_calendar_rules.sql"
 
 
 async def test_the_archive_excludes_everything_it_must(
@@ -326,6 +326,45 @@ async def test_a_restored_runtime_reads_its_core_entities(
     assert [fact.value for fact in facts] == ["Room 302"]
     assert mail == 1
     _ = AppPaths  # the restored tree is the layout the composition root resolves
+
+
+async def test_weekly_commitments_survive_a_backup_and_a_restore(
+    runtime: RuntimeFixture, tmp_path: Path
+) -> None:
+    """ADR-0036 §4: a rule is one row in SQLite, so the existing archive carries it unchanged.
+
+    Nothing about the archive format changes for recurring commitments, and nothing derived is
+    archived: the restored runtime derives the same future from the same rule.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from assistant.application.recurring_calendar_service import RecurringCalendarService
+    from assistant.store.db import Database
+    from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
+
+    await _seeded(runtime)
+    rule = await runtime.add_weekly_rule()
+    service = runtime.backup_service()
+    archive = service.create(tmp_path / "backup.gab")
+    destination = tmp_path / "recovered"
+
+    result = service.restore(archive.path, destination)
+
+    assert result.integrity_ok is True
+    restored = RecurringCalendarService(
+        SqliteRecurringCalendarRepository(Database.at(destination / "assistant.db")),
+        FakeClock(start=NOW),
+        default_timezone="Asia/Shanghai",
+    )
+    rules = await restored.list_active()
+    assert [item.title for item in rules] == ["计算机系统基础课"]
+    assert rules[0].id == rule.id
+    assert rules[0].fingerprint == rule.fingerprint
+    window_start = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
+    occurrences = await restored.expand_range(
+        window_start=window_start, window_end=window_start + timedelta(days=7)
+    )
+    assert len(occurrences) == 1  # the same future, derived rather than archived
 
 
 async def test_a_restore_invalidates_live_capabilities_but_keeps_history(

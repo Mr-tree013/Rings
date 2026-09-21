@@ -9,12 +9,17 @@ Rings keeps five ideas apart instead of collapsing them into one calendar:
 | `Task` | Something you intend to do. |
 | `Deadline` | The latest acceptable time for a task. |
 | `CalendarEvent` | Time that is already occupied. |
+| `RecurringCalendarRule` | Time that is occupied **every week** until it ends. |
 | `PlanBlock` | Time you plan to spend on a task. |
 | `WorkSession` | Time you actually spent, in exact seconds. |
 
 **A deadline does not occupy calendar time, and a plan block is never treated as actual work.**
 Remaining effort is the task estimate minus recorded work sessions; planning can never claim that
 work happened.
+
+A recurring rule is authoritative calendar state, not a scheduled job and not a pile of events: it
+is stored once, its occurrences are derived for whatever range is asked about, and the planner
+treats them as busy time — so a plan block is never proposed on top of a class.
 
 ## Enable / configure
 
@@ -68,6 +73,12 @@ uv run pw calendar add "SE lecture" \
 
 uv run pw calendar --days 30
 ```
+
+Time that is taken **every week** is a recurring rule. In the conversation, one sentence is enough
+(`每周一 10 点到 12 点有课，记下来，再帮我安排下周`); the same rule is one weekday, so
+"周一和周三" is two rules. Unsupported recurrence is refused rather than approximated: odd/even
+weeks, every-N-weeks, monthly or yearly recurrence and holiday exceptions are not recorded in this
+version.
 
 Plan a block by hand, or record what actually happened:
 
@@ -161,11 +172,15 @@ guessed.
 - `pw plan week` complains about `MISSING_ESTIMATE`: fix it with `pw task edit <TASK> --estimate N`.
 - No `[planning].timezone` means the interpreter refuses time-bearing requests instead of guessing
   the machine timezone.
-- There is no repeating task or repeating event support, and no personal effort learning, in v1.
+- Recurring support is weekly and same-day only: one rule is one weekday, no overnight rule, no
+  every-N-weeks, no odd/even weeks, no monthly or yearly recurrence and no holiday exceptions.
+  A weekly rule is never materialized as `CalendarEvent` rows.
+- There is no repeating *task* support, and no personal effort learning, in v1.
 
 ## Implementation notes
 
 - Domain model: [ADR-0014](../adr/0014-commitment-domain-model.md)
 - Planner: [ADR-0015](../adr/0015-deterministic-weekly-planner.md)
 - Scheduling and replanning: [ADR-0016](../adr/0016-durable-scheduler-and-replanning.md)
+- Weekly recurring rules: [ADR-0036](../adr/0036-weekly-recurring-calendar-rules.md)
 - System design §6 and §7.2: [docs/specs/0001-system-design.md](../specs/0001-system-design.md)

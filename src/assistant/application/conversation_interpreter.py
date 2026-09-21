@@ -43,6 +43,8 @@ from assistant.domain.conversation_context import (
 )
 from assistant.domain.conversation_errors import ConversationErrorCode
 from assistant.domain.conversation_plan import (
+    CalendarRecurringEditArguments,
+    CalendarRecurringRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     ConversationPlan,
@@ -306,6 +308,12 @@ _REFERENCE_KINDS: dict[ConversationOperationType, ConversationEntityKind] = {
     ConversationOperationType.MAIL_SHOW: ConversationEntityKind.MAIL_MESSAGE,
     ConversationOperationType.MAIL_REPLY_DRAFT: ConversationEntityKind.MAIL_MESSAGE,
     ConversationOperationType.MAIL_THREAD: ConversationEntityKind.MAIL_THREAD,
+    ConversationOperationType.CALENDAR_RECURRING_EDIT: (
+        ConversationEntityKind.RECURRING_CALENDAR_RULE
+    ),
+    ConversationOperationType.CALENDAR_RECURRING_RETIRE: (
+        ConversationEntityKind.RECURRING_CALENDAR_RULE
+    ),
 }
 """Which entity kind each operation may reference, and what it must have seen to do so."""
 
@@ -369,6 +377,8 @@ def _referenced_id(arguments: ConversationOperationArguments) -> object:
         return arguments.thread_id
     if isinstance(arguments, MailPrepareReplySendArguments):
         return arguments.draft_id or arguments.message_id
+    if isinstance(arguments, (CalendarRecurringEditArguments, CalendarRecurringRetireArguments)):
+        return arguments.rule_id
     return None
 
 

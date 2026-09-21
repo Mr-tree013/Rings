@@ -130,6 +130,32 @@ ExecutionRun（既有）
 - `mail.send` 不在模型能力表里；`approval.*`、`action.execute`、`execution.*` 同样不存在；
 - SMTP `UNKNOWN` 永不自动重试；重启不会自动执行已审批或未知的动作。
 
+### 4.3 每周固定安排（Phase 10D，ADR-0036）
+
+每周重复的课是**权威日历状态**，不是 `ScheduledJob`，也不是一堆 `CalendarEvent`：
+
+```text
+RecurringCalendarRule（一条规则 = 一个星期几 + 本地起止时间 + IANA 时区 + starts_on/ends_on）
+      ↓  expand(range)（纯 zoneinfo 运算，不读宿主时区）
+RecurringCalendarOccurrence（派生视图，不落库）
+      ↓
+PlannerService：与 CalendarEvent / 手工 PlanBlock 合并为 busy intervals
+      ↓
+PlanProposal（仍由人确认后才 apply）
+```
+
+硬性约束：
+
+- 规则是权威状态，occurrence 是派生视图：不物化、不缓存、不写入 `calendar_events`；
+- 一条规则只表示一个星期几；「周一和周三」= 两条规则；
+- 新建规则默认使用 `[planning].timezone`；缺失时提问，绝不使用 `datetime.now().astimezone()`、`TZ` 或隐式 UTC；
+- v1.1 只支持 WEEKLY、同日、不过夜；单双周 / 每两周 / 每月 / 每年 / 节假日例外 / 考试周例外一律拒绝，不做近似；
+- 陈述句（「我每周一十点到十二点有课。」）不等于写入指令：先询问，得到确认才写；「记下来 / 加到日历 / 放进固定安排」才是写入指令；
+- 编辑保留规则身份（同 id、同 created_at，新 fingerprint），只影响未来；retire 停止未来 occurrence，不删除历史；
+- 重复请求幂等（同 fingerprint = 同一条规则）；
+- 对话层不写 SQL、不拥有第二套规则模型：`ConversationHandlers` 只调用 `RecurringCalendarService`；
+- 每周规则是**本地**写入：不产生 `ActionRequest` / `Approval` / `ExecutionRun`，不触达外部系统。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）
@@ -211,6 +237,7 @@ classification
 | `Task` | 用户需要完成的工作 |
 | `Deadline` | 截止点 |
 | `Event` | 固定时间事件 |
+| `RecurringCalendarRule` | 每周固定占用的时间（一条规则一个星期几），occurrence 为派生视图 |
 | `PlanBlock` | 计划用于完成 Task 的时间块 |
 | `WorkSession` | 实际工作记录 |
 | `Case` | 跨邮件、资料、表单等组成的一件完整事务 |
@@ -479,3 +506,7 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0030 A controlled local MCP interface
 - ADR-0031 Operational integrity, safe backup, and recovery
 - ADR-0032 Version 1 runtime, upgrade, and release contract
+- ADR-0033 The Tree conversation runtime
+- ADR-0034 Conversational external action review
+- ADR-0035 A conversation reliability boundary
+- ADR-0036 Weekly recurring calendar rules

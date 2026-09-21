@@ -36,12 +36,17 @@ from assistant.application.mail_send_reconciliation import MailSendReconciliatio
 from assistant.application.mail_send_status import MailDeliveryState, MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.planner_service import PlannerService
+from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.work_service import WorkService
 from assistant.domain.config import MailAccountConfig
 from assistant.domain.conversation_plan import (
     CalendarCreateArguments,
     CalendarListArguments,
+    CalendarRecurringCreateWeeklyArguments,
+    CalendarRecurringEditArguments,
+    CalendarRecurringListArguments,
+    CalendarRecurringRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
     KnowledgeAskArguments,
@@ -71,7 +76,11 @@ from assistant.domain.conversation_plan import (
     WorkRecordArguments,
 )
 from assistant.domain.deadline import Deadline
-from assistant.domain.errors import ConversationCapabilityUnavailable
+from assistant.domain.errors import (
+    ConversationCapabilityUnavailable,
+    InvalidTimeInterval,
+    RecurringRuleNotFound,
+)
 from assistant.domain.grounded_answer import KnowledgeEvidence
 from assistant.domain.knowledge import SourceSpanKind
 from assistant.domain.mail import MailMessage
@@ -81,6 +90,12 @@ from assistant.domain.planning import (
     PlanProposalDetail,
     PlanProposalStatus,
     PlanProposalSummary,
+)
+from assistant.domain.recurring_calendar import (
+    RecurringCalendarOccurrence,
+    RecurringCalendarRule,
+    format_clock,
+    weekday_label,
 )
 from assistant.domain.task import Task, TaskId, TaskStatus
 from assistant.ports.clock import Clock
@@ -105,6 +120,9 @@ MAIL_BODY_EXCERPT_CHARS = 1200
 MAIL_THREAD_LIMIT = 20
 """How many messages of one thread `mail.thread` may carry."""
 
+RECURRING_LIST_LIMIT = 12
+"""How many weekly commitments one listing may carry, matching the recent-entity bound."""
+
 
 class ConversationHandlers:
     """Executes one allowed operation against the existing application services."""
@@ -120,6 +138,7 @@ class ConversationHandlers:
         knowledge: GroundedAnswerService,
         commitments: CommitmentRepository,
         clock: Clock,
+        recurring: RecurringCalendarService | None = None,
         mail: MailRepository | None = None,
         mail_intelligence: MailIntelligenceRepository | None = None,
         mail_sync: MailSyncService | None = None,
@@ -141,6 +160,7 @@ class ConversationHandlers:
         self._knowledge = knowledge
         self._commitments = commitments
         self._clock = clock
+        self._recurring = recurring
         self._mail = mail
         self._mail_intelligence = mail_intelligence
         self._mail_sync = mail_sync
@@ -217,6 +237,11 @@ class ConversationHandlers:
         end = now + timedelta(days=days)
         events = await self._calendar.list_events(query_start=now, query_end=end)
         blocks = await self._commitments.list_plan_blocks_in_range(query_start=now, query_end=end)
+        occurrences = (
+            ()
+            if self._recurring is None
+            else await self._recurring.expand_range(window_start=now, window_end=end)
+        )
         return OperationResult(
             kind="calendar",
             data={
@@ -224,6 +249,12 @@ class ConversationHandlers:
                 "events": [
                     _interval_payload(event.title, event.starts_at, event.ends_at)
                     for event in events[:CALENDAR_LIST_LIMIT]
+                ],
+                # Derived, never stored: a weekly class shows up in the week it happens, with no
+                # occurrence row and no synthetic identity anywhere near the model or the user.
+                "recurring": [
+                    _recurring_occurrence_payload(occurrence)
+                    for occurrence in occurrences[:CALENDAR_LIST_LIMIT]
                 ],
                 "plan_blocks": [
                     _interval_payload(
@@ -608,6 +639,42 @@ class ConversationHandlers:
             return "找不到这份周计划提案"
         return None
 
+    async def preflight_recurring(
+        self, arguments: ConversationOperationArguments, context: PreflightContext
+    ) -> str | None:
+        """A weekly commitment needs a timezone and, when it names one, a real rule.
+
+        Both checks are read-only and run before the first mutation of the turn, so a missing
+        planning timezone or a rule that cannot be resolved leaves durable state untouched
+        (ADR-0036 §6-§8, ADR-0035 §15-§16).
+        """
+        service = self._recurring
+        if service is None:
+            return "这台主机还没有可以保存固定安排的地方"
+        if isinstance(arguments, CalendarRecurringCreateWeeklyArguments):
+            if arguments.timezone is None and service.default_timezone is None:
+                return (
+                    f"你希望我按哪个时区理解{weekday_label(arguments.weekday)} "
+                    f"{arguments.start_local_time}–{arguments.end_local_time} 的"
+                    f"「{arguments.title}」？配置里现在没有 [planning].timezone。"
+                )
+            return None
+        reference = _recurring_reference(arguments)
+        if reference is None:  # pragma: no cover - only recurring operations reach this check
+            return None
+        try:
+            await service.require_rule(reference)
+        except RecurringRuleNotFound:
+            return f"找不到这条固定安排（{reference[:8]}）"
+        except InvalidTimeInterval as exc:
+            return str(exc)
+        return None
+
+    def _require_recurring(self) -> RecurringCalendarService:
+        if self._recurring is None:
+            raise ConversationCapabilityUnavailable("这台主机还没有可用的固定安排存储")
+        return self._recurring
+
     async def _resolve_draft_for_prepare(
         self, asked: MailPrepareReplySendArguments
     ) -> MailDraft:
@@ -728,6 +795,70 @@ class ConversationHandlers:
             data=_interval_payload(event.title, event.starts_at, event.ends_at),
         )
 
+    async def calendar_recurring_list(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        listed = _expect(CalendarRecurringListArguments, arguments)
+        rules = await self._require_recurring().list_rules(
+            include_retired=listed.include_retired
+        )
+        return OperationResult(
+            kind="recurring_rules",
+            data={
+                "rules": [
+                    _recurring_payload(rule) for rule in rules[:RECURRING_LIST_LIMIT]
+                ],
+                "include_retired": listed.include_retired,
+            },
+        )
+
+    async def calendar_recurring_create_weekly(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        created = _expect(CalendarRecurringCreateWeeklyArguments, arguments)
+        rule, was_created = await self._require_recurring().ensure_weekly(
+            title=created.title,
+            weekday=created.weekday,
+            start=created.start_local_time,
+            end=created.end_local_time,
+            timezone=created.timezone,
+            starts_on=created.starts_on,
+            ends_on=created.ends_on,
+        )
+        return OperationResult(
+            kind="recurring_rule_created",
+            ref=str(rule.id),
+            data={**_recurring_payload(rule), "created": was_created},
+        )
+
+    async def calendar_recurring_edit(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        edited = _expect(CalendarRecurringEditArguments, arguments)
+        rule = await self._require_recurring().edit(
+            edited.rule_id,
+            title=edited.title,
+            weekday=edited.weekday,
+            start=edited.start_local_time,
+            end=edited.end_local_time,
+        )
+        return OperationResult(
+            kind="recurring_rule_updated",
+            ref=str(rule.id),
+            data=_recurring_payload(rule),
+        )
+
+    async def calendar_recurring_retire(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        retired = _expect(CalendarRecurringRetireArguments, arguments)
+        rule = await self._require_recurring().retire(retired.rule_id)
+        return OperationResult(
+            kind="recurring_rule_retired",
+            ref=str(rule.id),
+            data=_recurring_payload(rule),
+        )
+
     async def work_record(self, arguments: ConversationOperationArguments) -> OperationResult:
         recorded = _expect(WorkRecordArguments, arguments)
         session = await self._work.record_session(
@@ -812,6 +943,11 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             handlers.preflight_task,
         ),
         (ConversationOperationType.CALENDAR_LIST, ConfirmationPolicy.READ, handlers.calendar_list),
+        (
+            ConversationOperationType.CALENDAR_RECURRING_LIST,
+            ConfirmationPolicy.READ,
+            handlers.calendar_recurring_list,
+        ),
         (ConversationOperationType.PLAN_CURRENT, ConfirmationPolicy.READ, handlers.plan_current),
         (
             ConversationOperationType.NOTIFICATION_LIST,
@@ -856,6 +992,24 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConversationOperationType.CALENDAR_CREATE,
             ConfirmationPolicy.LOCAL_WRITE,
             handlers.calendar_create,
+        ),
+        (
+            ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.calendar_recurring_create_weekly,
+            handlers.preflight_recurring,
+        ),
+        (
+            ConversationOperationType.CALENDAR_RECURRING_EDIT,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.calendar_recurring_edit,
+            handlers.preflight_recurring,
+        ),
+        (
+            ConversationOperationType.CALENDAR_RECURRING_RETIRE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.calendar_recurring_retire,
+            handlers.preflight_recurring,
         ),
         (
             ConversationOperationType.WORK_RECORD,
@@ -969,6 +1123,45 @@ def _mail_message_reference(arguments: ConversationOperationArguments) -> str | 
     if isinstance(arguments, (MailShowArguments, MailReplyDraftArguments)):
         return arguments.message_id
     return None
+
+
+def _recurring_reference(arguments: ConversationOperationArguments) -> str | None:
+    """The weekly rule an operation names, read through its own type."""
+    if isinstance(
+        arguments, (CalendarRecurringEditArguments, CalendarRecurringRetireArguments)
+    ):
+        return arguments.rule_id
+    return None
+
+
+def _recurring_payload(rule: RecurringCalendarRule) -> dict[str, object]:
+    """One weekly rule as data. No fingerprint, no row internals, nothing derived."""
+    return {
+        "id": str(rule.id),
+        "short_id": str(rule.id)[:8],
+        "title": rule.title,
+        "weekday": rule.weekday,
+        "start_local_time": format_clock(rule.start_time),
+        "end_local_time": format_clock(rule.end_time),
+        "timezone": rule.timezone,
+        "starts_on": rule.starts_on.isoformat(),
+        "ends_on": None if rule.ends_on is None else rule.ends_on.isoformat(),
+        "status": rule.status.value,
+    }
+
+
+def _recurring_occurrence_payload(
+    occurrence: RecurringCalendarOccurrence,
+) -> dict[str, object]:
+    """One derived occurrence as the calendar listing shows it: title, instants, weekday and the
+    zone it was derived in. No occurrence id exists to leak."""
+    return {
+        "title": occurrence.title,
+        "starts_at": occurrence.starts_at.isoformat(),
+        "ends_at": occurrence.ends_at.isoformat(),
+        "weekday": occurrence.starts_at.isoweekday(),
+        "timezone": str(occurrence.starts_at.tzinfo),
+    }
 
 
 def _task_payload(

@@ -92,6 +92,28 @@ def build_capability_snapshot(
     areas = (
         CapabilityArea("tasks", CapabilityState.AVAILABLE, {"operations": 6}),
         CapabilityArea("calendar", CapabilityState.AVAILABLE, {"operations": 2}),
+        CapabilityArea(
+            "recurring_calendar",
+            state(
+                offered=(
+                    ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY in available
+                ),
+                configured=planning is not None,
+            ),
+            {
+                "operations": 4,
+                "weekly_only": True,
+                "one_weekday_per_rule": True,
+                "planner_avoids_recurring": True,
+                "unsupported": [
+                    "odd/even weeks",
+                    "every N weeks",
+                    "monthly",
+                    "yearly",
+                    "holiday exceptions",
+                ],
+            },
+        ),
         CapabilityArea("work", CapabilityState.AVAILABLE, {"operations": 1}),
         CapabilityArea("notifications", CapabilityState.AVAILABLE, {"operations": 2}),
         CapabilityArea(

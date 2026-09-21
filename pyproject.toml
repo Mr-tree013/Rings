@@ -80,11 +80,13 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/assistant/cli_chat.py" = ["RUF001"]
 # The conversation tests speak the same Chinese the conversation surface answers in.
 "tests/integration/test_conversation_mail.py" = ["RUF001"]
+"tests/integration/test_conversation_recurring.py" = ["RUF001"]
 "tests/integration/test_conversation_runtime.py" = ["RUF001"]
 "tests/unit/test_cli_chat.py" = ["RUF001"]
 "tests/unit/test_cli_chat_mail.py" = ["RUF001"]
 "tests/acceptance/test_tree_real_usage.py" = ["RUF001"]
 "tests/unit/test_conversation_domain.py" = ["RUF001"]
+"tests/unit/test_conversation_recurring_intent.py" = ["RUF001"]
 "tests/unit/test_conversation_reliability.py" = ["RUF001"]
 
 [tool.mypy]

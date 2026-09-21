@@ -93,7 +93,7 @@ def test_the_backup_commands_round_trip(isolated: Path) -> None:
     assert "VALID" in verified.output
     assert inspected.exit_code == 0, inspected.output
     assert "Format version" in inspected.output
-    assert "0017_conversation_external_reviews.sql" in inspected.output
+    assert "0018_recurring_calendar_rules.sql" in inspected.output
 
 
 def test_a_backup_is_never_overwritten(isolated: Path) -> None:

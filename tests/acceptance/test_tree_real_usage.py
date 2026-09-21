@@ -205,6 +205,12 @@ def test_capability_answers_come_from_the_runtime(
     assert "确认发送" in result.output
     assert "任意收件人的邮件" in result.output  # reply-only is stated
     assert "本版本未启用" not in result.output
+    # Weekly recurring schedules are described truthfully, including what is not supported.
+    assert "固定安排（每周重复）" in result.output
+    assert "自动避开固定安排占用的时间" in result.output
+    assert "单双周" in result.output
+    assert "每两周一次" in result.output
+    assert "节假日或考试周除外" in result.output
     _assert_clean(result.output)
 
 
@@ -236,6 +242,8 @@ def test_help_uses_the_same_capability_source(
     assert result.exit_code == 0, result.output
     assert "回复邮件" in result.output
     assert "确认发送" in result.output
+    assert "固定安排（每周重复）" in result.output
+    assert "每周一十点到十二点有课，记下来" in result.output
     assert "本版本未启用" not in result.output
 
 

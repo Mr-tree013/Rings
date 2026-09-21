@@ -62,6 +62,36 @@ class RecurringCalendarService:
         Raises:
             InvalidTimeInterval: the fields do not describe a weekly same-day commitment.
         """
+        rule, _ = await self.ensure_weekly(
+            title=title,
+            weekday=weekday,
+            start=start,
+            end=end,
+            timezone=timezone,
+            starts_on=starts_on,
+            ends_on=ends_on,
+        )
+        return rule
+
+    async def ensure_weekly(
+        self,
+        *,
+        title: str,
+        weekday: int,
+        start: str | datetime | None = None,
+        end: str | datetime | None = None,
+        timezone: str | None = None,
+        starts_on: date | None = None,
+        ends_on: date | None = None,
+    ) -> tuple[RecurringCalendarRule, bool]:
+        """Create one weekly rule, or return the existing one and say which happened.
+
+        The flag is what lets a caller tell the user "这个固定安排已经存在" instead of reporting a
+        creation that did not happen.
+
+        Raises:
+            InvalidTimeInterval: the fields do not describe a weekly same-day commitment.
+        """
         zone = timezone or self._default_timezone
         if zone is None:
             raise InvalidTimeInterval(
@@ -85,12 +115,20 @@ class RecurringCalendarService:
         existing = await self._rules.find_active_by_fingerprint(candidate.fingerprint)
         if existing is not None:
             # Idempotent: the same weekly commitment is the same rule.
-            return existing
-        return await self._rules.add_rule(candidate)
+            return existing, False
+        return await self._rules.add_rule(candidate), True
 
     async def list_active(self) -> list[RecurringCalendarRule]:
         """Every live rule, oldest first."""
         return await self._rules.list_rules(status=RecurringCalendarRuleStatus.ACTIVE)
+
+    async def list_rules(
+        self, *, include_retired: bool = False
+    ) -> list[RecurringCalendarRule]:
+        """Every live rule, oldest first — retired ones only when they were asked for."""
+        return await self._rules.list_rules(
+            status=None if include_retired else RecurringCalendarRuleStatus.ACTIVE
+        )
 
     async def resolve_rule_id(self, reference: str) -> RecurringCalendarRuleId:
         """Resolve a full id or a unique prefix.
@@ -146,6 +184,9 @@ class RecurringCalendarService:
             created_at=current.created_at,
             updated_at=now,
         )
+        conflict = await self._rules.find_active_by_fingerprint(updated.fingerprint)
+        if conflict is not None and conflict.id != updated.id:
+            raise InvalidTimeInterval(f"已经有一条同样的固定安排了 (id {str(conflict.id)[:8]})")
         return await self._rules.update_rule(updated)
 
     async def retire(self, reference: str) -> RecurringCalendarRule:

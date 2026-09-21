@@ -9,6 +9,7 @@ is reported as offline instead of being treated as corruption.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -229,3 +230,83 @@ async def test_an_empty_runtime_passes(runtime: RuntimeFixture) -> None:
         "mail raw 0/0 valid, web snapshots 0/0 valid"
     )
     _ = Database  # the fixture owns the database handle
+
+
+# ------------------------------------------------------------- weekly commitments (ADR-0036)
+
+
+async def test_a_healthy_runtime_with_weekly_commitments_passes(
+    runtime: RuntimeFixture,
+) -> None:
+    await _seed(runtime)
+    await runtime.add_weekly_rule()
+    await runtime.add_weekly_rule(
+        title="软件工程课", weekday=3, start="14:00", end="16:00"
+    )
+
+    report = await runtime.integrity_service().check()
+
+    assert report.passed is True
+    assert report.section("recurring").severity is IntegritySeverity.OK
+    assert report.section("recurring").summary == "2 weekly rule(s) checked, 2 active"
+
+
+async def test_a_rule_that_no_longer_hashes_to_its_fingerprint_is_critical(
+    runtime: RuntimeFixture,
+) -> None:
+    """Stored authority disagreeing with itself, exactly like a rewritten action payload."""
+    rule = await runtime.add_weekly_rule()
+    with runtime.database.connect() as connection:
+        connection.execute(
+            "UPDATE recurring_calendar_rules SET title = ? WHERE id = ?",
+            ("另一门课", str(rule.id)),
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("recurring")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert report.passed is False
+    assert any(str(rule.id)[:8] in finding for finding in section.findings)
+
+
+async def test_a_rule_that_breaks_its_own_invariants_is_reported(
+    runtime: RuntimeFixture,
+) -> None:
+    """A row written around the API still has to mean something."""
+    rule = await runtime.add_weekly_rule()
+    with runtime.database.connect() as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE recurring_calendar_rules SET weekday = 9 WHERE id = ?", (str(rule.id),)
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("recurring")
+    assert section.severity is IntegritySeverity.FAIL
+    assert report.passed is False
+    assert any("cannot be interpreted" in finding for finding in section.findings)
+
+
+async def test_two_active_rules_with_one_meaning_are_reported(
+    runtime: RuntimeFixture,
+) -> None:
+    """The unique index is what prevents this; the check is what notices if it is gone."""
+    rule = await runtime.add_weekly_rule()
+    with runtime.database.connect() as connection:
+        connection.execute("DROP INDEX recurring_calendar_rules_active_idx")
+        connection.execute(
+            "INSERT INTO recurring_calendar_rules (id, title, weekday, start_local_time, "
+            "end_local_time, timezone, starts_on, ends_on, status, rule_fingerprint, created_at, "
+            "updated_at, retired_at) SELECT ?, title, weekday, start_local_time, end_local_time, "
+            "timezone, starts_on, ends_on, status, rule_fingerprint, created_at, updated_at, "
+            "retired_at FROM recurring_calendar_rules WHERE id = ?",
+            (str(uuid4()), str(rule.id)),
+        )
+
+    report = await runtime.integrity_service().check()
+
+    section = report.section("recurring")
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("share one meaning" in finding for finding in section.findings)

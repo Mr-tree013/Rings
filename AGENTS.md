@@ -820,6 +820,26 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
 - 多操作计划必须先整体预检再执行第一个变更；不合法则整轮零变更并说明原因。
 - SMTP `UNKNOWN`、`ActionRequest`/`Approval`/`ExecutionRun` 与"确认发送"语义保持冻结。
 
+### 6.4 每周固定安排规则（Phase 10D，ADR-0036）
+
+- `RecurringCalendarRule` 是权威日历状态，**不是** `ScheduledJob`，也不是一堆 `CalendarEvent`；
+  occurrence 一律按需派生，不物化、不缓存、不写入 `calendar_events`。
+- 一条规则 = 一个星期几 + 本地起止时间 + 显式 IANA 时区（+ 可选 `starts_on` / `ends_on`）；
+  「周一和周三」是两条规则，没有 weekday list、没有 recurrence string、没有 `rrule` 依赖。
+- 新建规则的时区默认取 `[planning].timezone`；缺失时提问。**绝不**使用 `datetime.now().astimezone()`、
+  `TZ` 或隐式 UTC 作为语义来源。
+- v1.1 只支持 WEEKLY、同日、不过夜。单双周 / 每两周 / 每月 / 每年 / 节假日例外 / 考试周例外 /
+  外部日历同步一律拒绝（`UNSUPPORTED_SEMANTICS`，零变更），不做近似。
+- 陈述句（「我每周一十点到十二点有课。」）不是写入指令：必须复用现有本地确认机制先问再写；
+  「记下来 / 记录一下 / 加到日历 / 放进固定安排」才是写入指令。不新增第二套审批框架。
+- 编辑保留规则身份（同 id、同 `created_at`、新 fingerprint），只改变未来；retire 停止未来 occurrence，
+  不物理删除；历史 `WorkSession` 与已应用计划永不改写。
+- Planner 把派生 occurrence 当作 busy time（与 `CalendarEvent`、手工 `PlanBlock` 合并去重）；
+  模型**永不**直接创建 `PlanBlock`。
+- 每周规则是本地写入：不产生 `ActionRequest` / `Approval` / `ExecutionRun`，不新增外部能力。
+- 对话层不写 SQL、不拥有第二套规则模型：handlers 只通过 `RecurringCalendarService` 访问；
+  能力描述（`/help`、`system.capabilities`、模型上下文）继续同源于 registry + config。
+
 ## 7. 版本管理
 
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。

@@ -30,6 +30,7 @@ CONVERSATION_APPLICATION = (
     "application/conversation_schema.py",
     "application/conversation_prompt.py",
     "application/conversation_render.py",
+    "application/conversation_recurring_intent.py",
     "application/conversation_capabilities/registry.py",
     "application/conversation_capabilities/handlers.py",
     "application/conversation_external_review.py",
@@ -240,10 +241,104 @@ def test_the_model_is_asked_exactly_once_per_turn() -> None:
     assert service.count("await self._interpreter.plan(") == 1
 
 
-def test_the_migration_set_is_pinned_through_the_conversation_migration() -> None:
+def test_the_migration_set_is_pinned_through_the_recurring_calendar_migration() -> None:
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0017_conversation_external_reviews.sql"
-    assert len([name for name in names if name.startswith("0017")]) == 1
-    assert "0018" not in "".join(names)
+    assert names[-1] == "0018_recurring_calendar_rules.sql"
+    assert len([name for name in names if name.startswith("0018")]) == 1
+    assert "0019" not in "".join(names)
+
+
+# ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)
+
+RECURRING_DOMAIN = ("domain/recurring_calendar.py",)
+RECURRING_APPLICATION = (
+    "application/recurring_calendar_service.py",
+    "application/planner_service.py",
+    "application/planning_availability.py",
+)
+"""The weekly-commitment path: one pure domain, one service, and the planner that reads it."""
+
+
+def test_the_recurring_calendar_domain_is_pure() -> None:
+    for relative in RECURRING_DOMAIN:
+        modules = _imported_modules(relative)
+        for prefix in FORBIDDEN_IN_DOMAIN:
+            offending = sorted(
+                module
+                for module in modules
+                if module == prefix or module.startswith(f"{prefix}.")
+            )
+            assert not offending, f"{relative} imports {offending}"
+
+
+def test_recurrence_expansion_reaches_no_model_and_no_store() -> None:
+    """Deriving a term of classes is arithmetic over `zoneinfo`, not a model call or a query."""
+    forbidden = ("assistant.ports.model", "assistant.adapters", "assistant.store")
+    for relative in (*RECURRING_DOMAIN, *RECURRING_APPLICATION):
+        modules = _imported_modules(relative)
+        for prefix in forbidden:
+            offending = sorted(
+                module
+                for module in modules
+                if module == prefix or module.startswith(f"{prefix}.")
+            )
+            assert not offending, f"{relative} imports {offending}"
+        text = _read(relative)
+        assert "ModelPort" not in text, f"{relative} names ModelPort"
+
+
+def test_a_weekly_rule_is_not_a_scheduled_job() -> None:
+    """A class is a fact about the week; a job is something the system does (ADR-0036 §2)."""
+    for relative in (*RECURRING_DOMAIN, *RECURRING_APPLICATION, "store/recurring_calendar.py"):
+        text = _read(relative)
+        assert "ScheduledJob" not in text, f"{relative} names ScheduledJob"
+        assert "scheduler_repository" not in text, f"{relative} reaches the scheduler"
+    assert "scheduled_jobs" not in _read("store/recurring_calendar.py")
+
+
+def test_there_is_no_recurrence_grammar_dependency() -> None:
+    """v1.1 has four closed operations and no RRULE surface (ADR-0036 §12)."""
+    pyproject = (SOURCE_ROOT.parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert "rrule" not in pyproject.lower()
+    for path in sorted(SOURCE_ROOT.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        assert "RRULE" not in text, f"{path.name} mentions RRULE"
+        assert "recurrence_rule" not in text, f"{path.name} mentions recurrence_rule"
+
+
+def test_the_conversation_reaches_weekly_rules_through_the_service() -> None:
+    """No SQLite, no table name and no second rule model inside the conversation path."""
+    handlers = _read("application/conversation_capabilities/handlers.py")
+    assert "RecurringCalendarService" in handlers
+    for relative in CONVERSATION_APPLICATION:
+        text = _read(relative)
+        assert "recurring_calendar_rules" not in text, f"{relative} names a table"
+        assert "INSERT INTO" not in text, f"{relative} writes SQL"
+
+
+def test_weekly_rules_add_no_external_capability() -> None:
+    """A recurring write is local: no action type, no approval, no execution (ADR-0036 §15)."""
+    from assistant.application.conversation_capabilities import (
+        ConfirmationPolicy,
+        build_phase_10a_registry,
+    )
+    from assistant.domain.conversation_plan import ConversationOperationType
+
+    recurring = (
+        ConversationOperationType.CALENDAR_RECURRING_LIST,
+        ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY,
+        ConversationOperationType.CALENDAR_RECURRING_EDIT,
+        ConversationOperationType.CALENDAR_RECURRING_RETIRE,
+    )
+    # A conversation operation is not an action type, and nothing here creates one: the four
+    # recurring operations never appear in `action_requests`, so no approval can name them.
+    handlers = _read("application/conversation_capabilities/handlers.py")
+    for operation_type in recurring:
+        assert operation_type.value.startswith("calendar.recurring.")
+        assert f"ConversationOperationType.{operation_type.name}" in handlers
+    assert "prepare_action" not in handlers
+    assert "ApprovalService" not in handlers
+    assert "EXTERNAL_WRITE" not in {member.value for member in ConfirmationPolicy}
+    _ = build_phase_10a_registry  # the registry is built from the handlers, never by reflection

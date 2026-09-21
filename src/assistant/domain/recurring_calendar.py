@@ -65,6 +65,17 @@ def format_clock(value: time) -> str:
     return f"{value.hour:02d}:{value.minute:02d}"
 
 
+WEEKDAY_LABELS: tuple[str, ...] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+"""One label per ISO weekday, so everything that names a weekday names it the same way."""
+
+
+def weekday_label(weekday: int) -> str:
+    """The label of an ISO weekday (1 = Monday), or the number when it is not one."""
+    if 1 <= weekday <= 7:
+        return WEEKDAY_LABELS[weekday - 1]
+    return f"weekday {weekday}"
+
+
 @dataclass(frozen=True, slots=True)
 class RecurringCalendarOccurrence:
     """One derived occurrence, as aware instants."""
@@ -212,6 +223,7 @@ def expand_rules(
 __all__ = [
     "MAX_EXPANDED_OCCURRENCES",
     "MAX_RULE_TITLE_CHARS",
+    "WEEKDAY_LABELS",
     "RecurringCalendarOccurrence",
     "RecurringCalendarRule",
     "RecurringCalendarRuleId",
@@ -220,4 +232,5 @@ __all__ = [
     "format_clock",
     "new_recurring_rule_id",
     "parse_clock",
+    "weekday_label",
 ]

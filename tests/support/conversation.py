@@ -31,6 +31,7 @@ from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_status import MailSendStatusService
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.planner_service import PlannerService
+from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.application.task_service import TaskService
 from assistant.domain.action import ActionRequest, ActionType
 from assistant.domain.config import AssistantConfig
@@ -46,6 +47,7 @@ from assistant.store.mail_drafts import SqliteMailDraftRepository
 from assistant.store.mail_intelligence import SqliteMailIntelligenceRepository
 from assistant.store.migrations import apply_migrations
 from assistant.store.planning import SqlitePlanningRepository
+from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
 from tests.support.fakes import FakeClock
 from tests.support.mail_fakes import FakeMailSource
@@ -232,6 +234,8 @@ class ConversationHarness:
     tasks: TaskService
     planner: PlannerService
     calendar: CalendarService
+    recurring: RecurringCalendarService
+    recurring_rules: SqliteRecurringCalendarRepository
     reviews: SqliteConversationReviewRepository
     actions: SqliteActionRepository
     mail: SqliteMailRepository
@@ -242,7 +246,7 @@ class ConversationHarness:
     review_service: ConversationExternalReviewService
     executor: ScriptedMailExecutor
     mail_source: FakeMailSource
-    mail_sync: MailSyncService
+    mail_sync: MailSyncService | None
 
     def queue(self, *answers: str) -> FakeModelAdapter:
         """Queue model answers, in order."""
@@ -290,6 +294,7 @@ class ConversationHarness:
             f"{body}\r\n"
         )
         self.mail_source.add(uid, raw.encode("utf-8"))
+        assert self.mail_sync is not None, "this harness was built without a mail account"
         await self.mail_sync.sync_once()
         messages = await self.mail.list_messages(limit=50)
         assert messages, "the seeded message was not stored"
@@ -344,8 +349,12 @@ async def build_harness(
         database, clock, config, model=model, executors=executors
     )
     mail_source = FakeMailSource()
-    mail_sync = bootstrap.mail_sync_service(
-        config, clock, database, source_factory=lambda account: mail_source
+    mail_sync = (
+        bootstrap.mail_sync_service(
+            config, clock, database, source_factory=lambda account: mail_source
+        )
+        if config.mail.accounts
+        else None
     )
     return ConversationHarness(
         tmp_path=tmp_path,
@@ -361,6 +370,8 @@ async def build_harness(
         tasks=bootstrap.task_service(database, clock, config),
         planner=bootstrap.planner_service(database, clock, config),
         calendar=bootstrap.calendar_service(database, clock, config),
+        recurring=bootstrap.recurring_calendar_service(database, clock, config),
+        recurring_rules=bootstrap.recurring_calendar_repository(database),
         reviews=bootstrap.conversation_review_repository(database),
         actions=bootstrap.action_repository(database),
         mail=bootstrap.mail_repository(database),

@@ -110,10 +110,18 @@ You > plan my week
 Tree > A weekly proposal is ready (3 blocks). Apply it? Reply yes and I will write it down.
 You > yes
 Tree > Applied the proposal: 3 blocks created, 0 replaced.
+You > every Monday 10 to 12 I have a class, note it down, then plan next week
+Tree > Added to your fixed arrangements:
+       every Monday 10:00-12:00 · Computer Systems Fundamentals
+       from 2026-09-21 until you remove it.
+       A weekly proposal is ready (2 blocks, around that class). Apply it?
 ```
 
 Tree handles local daily work in natural language: tasks, calendar, work sessions, weekly planning
-and questions about your indexed sources. External effects are never the model's to perform: for
+and questions about your indexed sources. Fixed weekly arrangements are one weekday per rule, and
+only weekly: odd/even weeks, every-N-week and monthly recurrence are not recorded in this version.
+Saying "I have a class every Monday 10 to 12" is a statement, so Tree asks before it writes —
+only an explicit "note it down" is a write. External effects are never the model's to perform: for
 mail, Tree drafts, shows the **exact bytes** that would be sent, and only your explicit
 confirmation sends it — the `pw` approval chain is still the mechanism behind it.
 

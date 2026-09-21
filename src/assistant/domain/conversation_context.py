@@ -37,6 +37,7 @@ class ConversationEntityKind(StrEnum):
     TASK = "task"
     PROPOSAL = "proposal"
     CALENDAR_EVENT = "calendar_event"
+    RECURRING_CALENDAR_RULE = "recurring_calendar_rule"
     NOTIFICATION = "notification"
     MAIL_MESSAGE = "mail_message"
     MAIL_THREAD = "mail_thread"

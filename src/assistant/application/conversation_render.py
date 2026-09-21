@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.application.conversation_capabilities.registry import OperationResult
 from assistant.domain.conversation_errors import ConversationErrorCode
+from assistant.domain.recurring_calendar import weekday_label
 from assistant.domain.task import TaskPriority
 
 CONFIRMATION_OFFER = (
@@ -68,6 +69,14 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return f"已清除「{data.get('title', '')}」的截止时间。"
     if result.kind == "calendar":
         return _render_calendar(data, timezone)
+    if result.kind == "recurring_rules":
+        return _render_recurring_rules(data)
+    if result.kind == "recurring_rule_created":
+        return _render_recurring_created(data)
+    if result.kind == "recurring_rule_updated":
+        return _render_recurring_updated(data)
+    if result.kind == "recurring_rule_retired":
+        return _render_recurring_retired(data)
     if result.kind == "event_created":
         starts = _moment(data.get("starts_at"), timezone)
         ends = _moment(data.get("ends_at"), timezone)
@@ -161,6 +170,15 @@ def render_capabilities(data: dict[str, Any]) -> str:
     lines = ["我现在能做这些（按当前配置）："]
     lines.append("· 任务：查看列表和详情、新建、改标题/优先级/预估、设或清截止时间、标记完成")
     lines.append("· 日历与工作记录：查看未来几天的安排、登记已占用的时间、记录实际投入")
+    recurring = areas.get("recurring_calendar") or {}
+    if state_of("recurring_calendar") == "available":
+        lines.append(
+            "· 固定安排（每周重复）：查看、新增、修改、停用；一条规则一个星期几，"
+            "可以设结束日期"
+        )
+        lines.append("· 周计划：自动避开固定安排占用的时间，不会把任务排在课上")
+    else:
+        lines.append("· 固定安排：需要先在配置里设置 [planning].timezone")
     lines.append("· 提醒：查看提醒收件箱、把某条标为已读")
     planning = areas.get("planning") or {}
     if state_of("planning") == "available":
@@ -192,6 +210,8 @@ def render_capabilities(data: dict[str, Any]) -> str:
     else:
         lines.append("· 发送邮件：需要先配置发信（SMTP）账号")
     lines.append("")
+    if recurring.get("weekly_only"):
+        lines.append("做不到的：单双周、每两周一次、每月或每年重复、节假日或考试周除外。")
     lines.append("做不到的：新建一封任意收件人的邮件、提交校外系统的手续（eHall）、")
     lines.append("创建审批或绕过确认执行外部动作。")
     return "\n".join(lines)
@@ -498,6 +518,29 @@ def render_confirmation_request(operation_type: str) -> str:
     )
 
 
+def render_recurring_confirmation_request(rules: Sequence[dict[str, Any]]) -> str:
+    """Ask before a weekly commitment becomes durable state (ADR-0036 §19).
+
+    Saying "我每周一十点到十二点有课" states a fact, not an instruction. The runtime asks rather
+    than deciding for the user, and nothing is written until the answer arrives.
+    """
+    joined = "\n".join(f"- {_recurring_line(rule)}" for rule in rules)
+    return (
+        "要把这些加入固定安排吗？\n"
+        f"{joined}\n"
+        "回复「可以」我就保存，或回复「取消」。"
+    )
+
+
+def render_unsupported_recurrence(reason: str) -> str:
+    """A recurrence this build cannot express, refused instead of approximated (ADR-0036 §12)."""
+    return (
+        f"「{reason}」这类重复规则我还不能记。"
+        "现在只支持每周固定星期几，比如「每周一 10:00–12:00」。"
+        "需要的话，我可以按每周同一时间来记。"
+    )
+
+
 def render_confirmation_expired() -> str:
     """A pending confirmation was answered too late (ADR-0033 §12)."""
     return (
@@ -577,8 +620,9 @@ def _render_task(data: dict[str, Any], timezone: str | None, *, prefix: str) -> 
 
 def _render_calendar(data: dict[str, Any], timezone: str | None) -> str:
     events = data.get("events") or []
+    recurring = data.get("recurring") or []
     blocks = data.get("plan_blocks") or []
-    if not events and not blocks:
+    if not events and not recurring and not blocks:
         return f"接下来 {data.get('window_days', 0)} 天没有已记录的日程或计划。"
     lines = [f"接下来 {data.get('window_days', 0)} 天："]
     for event in events:
@@ -587,6 +631,8 @@ def _render_calendar(data: dict[str, Any], timezone: str | None) -> str:
             f"（{_moment(event.get('starts_at'), timezone)} → "
             f"{_moment(event.get('ends_at'), timezone)}）"
         )
+    for occurrence in recurring:
+        lines.append(f"- {_recurring_occurrence_line(occurrence)}")
     for block in blocks:
         label = block.get("title", "")
         lines.append(
@@ -595,6 +641,82 @@ def _render_calendar(data: dict[str, Any], timezone: str | None) -> str:
             f"{_moment(block.get('ends_at'), timezone)}）"
         )
     return "\n".join(lines)
+
+
+def _recurring_occurrence_line(occurrence: dict[str, Any]) -> str:
+    """One derived weekly class the way a person reads a week: `周一 10:00-12:00 课程 (每周)`.
+
+    The occurrence is shown in its own rule's timezone, because that is the zone its civil time
+    means something in; nothing derived (no id, no fingerprint) appears here.
+    """
+    zone = _zone(occurrence.get("timezone"))
+    start = _parsed(occurrence.get("starts_at"))
+    end = _parsed(occurrence.get("ends_at"))
+    if start is None or end is None:  # pragma: no cover - the handler always sends ISO instants
+        return str(occurrence.get("title", ""))
+    local_start = start.astimezone(zone)
+    local_end = end.astimezone(zone)
+    return (
+        f"{weekday_label(local_start.isoweekday())} "
+        f"{local_start.strftime('%H:%M')}–{local_end.strftime('%H:%M')} "
+        f"{occurrence.get('title', '')}（每周）"
+    )
+
+
+def _render_recurring_rules(data: dict[str, Any]) -> str:
+    rules = data.get("rules") or []
+    if not rules:
+        return "现在还没有固定的每周安排。"
+    lines = [f"现在有 {len(rules)} 条固定安排："]
+    for rule in rules:
+        suffix = "" if not rule.get("ends_on") else f"（到 {rule['ends_on']} 止）"
+        state = "" if rule.get("status", "active") == "active" else f"（{rule.get('status')}）"
+        lines.append(f"- {_recurring_line(rule)}{suffix}{state}")
+    return "\n".join(lines)
+
+
+def _render_recurring_created(data: dict[str, Any]) -> str:
+    line = _recurring_line(data)
+    if not data.get("created", True):
+        return f"这个固定安排已经存在，我没有重复添加：{line}。"
+    return f"已加入固定安排：\n{line}\n{_recurring_window_sentence(data)}"
+
+
+def _render_recurring_updated(data: dict[str, Any]) -> str:
+    return f"已更新固定安排：\n{_recurring_line(data)}\n{_recurring_window_sentence(data)}"
+
+
+def _render_recurring_retired(data: dict[str, Any]) -> str:
+    weekday = weekday_label(_weekday_of(data))
+    return (
+        f"以后{weekday}不再有「{data.get('title', '')}」了。"
+        f"它原来的时间是 {_weekly_phrase(data)}；已经过去的工作记录和计划都没有改动。"
+    )
+
+
+def _recurring_line(rule: dict[str, Any]) -> str:
+    """One rule in one line: its weekday, its local hours and its title."""
+    return f"{_weekly_phrase(rule)} · {rule.get('title', '')}"
+
+
+def _weekly_phrase(rule: dict[str, Any]) -> str:
+    return (
+        f"每{weekday_label(_weekday_of(rule))} "
+        f"{rule.get('start_local_time', '')}–{rule.get('end_local_time', '')}"
+    )
+
+
+def _weekday_of(rule: dict[str, Any]) -> int:
+    value = rule.get("weekday")
+    return value if isinstance(value, int) else 0
+
+
+def _recurring_window_sentence(rule: dict[str, Any]) -> str:
+    starts_on = rule.get("starts_on")
+    ends_on = rule.get("ends_on")
+    if ends_on:
+        return f"从 {starts_on} 起，到 {ends_on} 止。"
+    return f"从 {starts_on} 起持续到你删除。"
 
 
 def _render_proposal(data: dict[str, Any], timezone: str | None, applied: bool) -> str:
@@ -708,6 +830,16 @@ def _moment(value: object, timezone: str | None) -> str:
     return f"{localised.strftime('%Y-%m-%d %H:%M')}（{suffix}）"
 
 
+def _parsed(value: object) -> datetime | None:
+    """An ISO instant from a result payload, or `None` when there is not one."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:  # pragma: no cover - every caller passes an ISO string it produced
+        return None
+
+
 def _offset_text(offset: timedelta | None) -> str:
     """Render a UTC offset the way a person writes one: `+08:00`, `-04:00`, `+05:30`."""
     if offset is None:  # pragma: no cover - an aware instant always has one
@@ -740,6 +872,7 @@ __all__ = [
     "render_mail_send_preview",
     "render_multiple_pending",
     "render_preflight_refused",
+    "render_recurring_confirmation_request",
     "render_result",
     "render_results",
     "render_review_ambiguous",
@@ -750,4 +883,5 @@ __all__ = [
     "render_send_result",
     "render_unknown_local",
     "render_unsupported",
+    "render_unsupported_recurrence",
 ]
