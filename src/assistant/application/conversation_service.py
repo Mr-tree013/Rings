@@ -61,6 +61,7 @@ from assistant.domain.conversation import (
     ConversationThreadId,
     ConversationThreadStatus,
     ConversationTurn,
+    ConversationTurnId,
     ConversationTurnStatus,
 )
 from assistant.domain.conversation_errors import ConversationErrorCode
@@ -654,6 +655,13 @@ class ConversationService:
                 # A transient line, never persisted as conversation content (ADR-0035 §26).
                 activity(hint)
             if capability.policy is ConfirmationPolicy.CONFIRM_LOCAL:
+                # A newer offer to apply a plan replaces the older one: the user is answering
+                # about what is on screen now, never about a superseded question (ADR-0040 §14).
+                await self._supersede_older_confirmation_groups(
+                    thread,
+                    turn_id=turn.id,
+                    family=_confirmation_family(planned.operation_type),
+                )
                 stored = await self._store_operation(
                     turn,
                     ordinal,
@@ -733,6 +741,13 @@ class ConversationService:
             ):
                 # Creating a proposal is immediately followed by exactly one pending offer to
                 # apply it. It is still CONFIRM_LOCAL: nothing is applied until the user says yes.
+                await self._supersede_older_confirmation_groups(
+                    thread,
+                    turn_id=turn.id,
+                    family=_confirmation_family(
+                        ConversationOperationType.PLAN_APPLY_PROPOSAL
+                    ),
+                )
                 waiting = await self._store_operation(
                     turn,
                     ordinal + 1,
@@ -793,21 +808,42 @@ class ConversationService:
                 created_at=now,
             )
         )
-        if len(pending) > 1 and not _is_recurring_batch(pending):
-            listing = [
-                f"- {operation.operation_type.value}（{str(operation.id)[:8]}）"
-                for operation in pending
-            ]
+        groups = _confirmation_groups(pending)
+        if len(groups) > 1:
+            if intent == CONFIRMATION_INTENT_REJECT:
+                # "取消" is not a confirmation: withdrawing every outstanding question applies
+                # nothing, so it cannot fan out into anything and needs no target (ADR-0040 §15).
+                for operation in pending:
+                    await self._repository.update_operation(
+                        _replace_operation(
+                            operation, status=ConversationOperationStatus.REJECTED, at=now
+                        )
+                    )
+                return await self._finish(
+                    thread,
+                    turn,
+                    ConversationTurnStatus.COMPLETED,
+                    render.render_pending_withdrawn(len(groups)),
+                )
+            # One "可以" may never settle several historical proposals: ask which, apply none.
             return await self._finish(
                 thread,
                 turn,
                 ConversationTurnStatus.COMPLETED,
-                render.render_multiple_pending(listing),
+                render.render_multiple_pending(_confirmation_group_listing(groups)),
             )
-        if _is_recurring_batch(pending):
+        group = groups[0]
+        if _is_recurring_batch(group):
             # One sentence about Monday and Wednesday is one confirmation, not two questions.
-            return await self._answer_recurring_batch(thread, turn, pending, intent)
-        operation = pending[0]
+            return await self._answer_recurring_batch(thread, turn, group, intent)
+        if len(group) > 1:
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                render.render_multiple_pending(_confirmation_group_listing(groups)),
+            )
+        operation = group[0]
         if _is_expired(operation, now):
             await self._repository.update_operation(
                 _replace_operation(
@@ -898,6 +934,13 @@ class ConversationService:
                     error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
                 )
         expires_at = self._clock.now() + self._confirmation_ttl
+        # Whatever this turn is now asking about replaces the earlier question of the same kind:
+        # the old group is left un-applicable, so one "可以" can never settle both (ADR-0040 §16).
+        await self._supersede_older_confirmation_groups(
+            thread,
+            turn_id=turn.id,
+            family=_RECURRING_CONFIRMATION_FAMILY,
+        )
         entries: list[dict[str, str | int]] = []
         for position, planned in recurring:
             await self._store_operation(
@@ -972,7 +1015,8 @@ class ConversationService:
             thread,
             turn,
             ConversationTurnStatus.COMPLETED,
-            render.render_results(results, timezone=self._planning_timezone),
+            # One confirmed group of classes is one answer, not one paragraph per rule.
+            render.render_recurring_batch(results),
             operation_types=tuple(operation.operation_type.value for operation in pending),
         )
 
@@ -1155,6 +1199,52 @@ class ConversationService:
                     )
                 )
 
+    async def _supersede_older_confirmation_groups(
+        self,
+        thread: ConversationThread,
+        *,
+        turn_id: ConversationTurnId,
+        family: str,
+    ) -> None:
+        """Retire the pending groups this turn's new group replaces (ADR-0040 §14-§16).
+
+        A group is the set of operations one turn put in front of the user. When a later turn
+        proposes the same *kind* of thing again — a revised weekly schedule, a newer proposal to
+        apply — the older group stops being live: every operation in it becomes `REJECTED`, its
+        turn is finished, and no confirmation can reach it afterwards. Two unrelated kinds (a
+        weekly schedule and a plan to apply) stay live, and are deliberately left for the
+        ambiguity rule rather than for a guess.
+        """
+        pending = await self._repository.operations_waiting_for_confirmation(thread.id)
+        older = [
+            operation
+            for operation in pending
+            if operation.turn_id != turn_id
+            and _confirmation_family(operation.operation_type) == family
+        ]
+        if not older:
+            return
+        now = self._clock.now()
+        superseded_turns: set[ConversationTurnId] = set()
+        for operation in older:
+            await self._repository.update_operation(
+                _replace_operation(
+                    operation, status=ConversationOperationStatus.REJECTED, at=now
+                )
+            )
+            superseded_turns.add(operation.turn_id)
+        for superseded in superseded_turns:
+            superseded_turn = await self._repository.get_turn(superseded)
+            if superseded_turn is None or superseded_turn.status not in (
+                ConversationTurnStatus.PLANNED,
+                ConversationTurnStatus.WAITING_CONFIRMATION,
+            ):
+                continue
+            # Nothing is waiting on that turn any more, so it must not claim to be waiting.
+            await self._repository.update_turn(
+                _finish_turn(superseded_turn, ConversationTurnStatus.COMPLETED, at=now)
+            )
+
     # -------------------------------------------------------------------------- finishing
 
     async def _finish(
@@ -1242,7 +1332,13 @@ def _recurring_confirmation_entry(
     planned: PlannedOperation,
 ) -> dict[str, str | int]:
     """The four fields the question about one weekly commitment needs."""
-    arguments = planned.arguments
+    return _recurring_arguments_entry(planned.arguments)
+
+
+def _recurring_arguments_entry(
+    arguments: ConversationOperationArguments,
+) -> dict[str, str | int]:
+    """The same four fields, read back from a stored operation's arguments."""
     if not isinstance(arguments, CalendarRecurringCreateWeeklyArguments):
         raise AssertionError(  # pragma: no cover - the caller filters by operation type
             "a recurring confirmation entry needs a weekly-commitment creation"
@@ -1264,6 +1360,62 @@ def _is_recurring_batch(pending: Sequence[ConversationOperation]) -> bool:
         is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY
         for operation in pending
     )
+
+
+_RECURRING_CONFIRMATION_FAMILY = "recurring_weekly"
+"""The family a revised weekly-schedule proposal belongs to (ADR-0040 §14)."""
+
+
+def _confirmation_family(operation_type: ConversationOperationType) -> str:
+    """Which kind of question one pending operation belongs to.
+
+    Two operations may only supersede one another when they are the same kind of proposal: a
+    revised schedule replaces an earlier schedule, and a newer plan offer replaces an earlier
+    offer. Anything else is a different question and stays live.
+    """
+    if operation_type is ConversationOperationType.CALENDAR_RECURRING_CREATE_WEEKLY:
+        return _RECURRING_CONFIRMATION_FAMILY
+    return operation_type.value
+
+
+def _confirmation_groups(
+    pending: Sequence[ConversationOperation],
+) -> tuple[tuple[ConversationOperation, ...], ...]:
+    """Pending operations grouped by the turn that proposed them, oldest group first.
+
+    The turn is the group boundary: one message that proposes three weekly classes is one
+    question, and `可以` answers that question and no other (ADR-0040 §14).
+    """
+    ordered: list[tuple[ConversationOperation, ...]] = []
+    index: dict[ConversationTurnId, int] = {}
+    for operation in pending:
+        position = index.get(operation.turn_id)
+        if position is None:
+            index[operation.turn_id] = len(ordered)
+            ordered.append((operation,))
+            continue
+        ordered[position] = (*ordered[position], operation)
+    return tuple(ordered)
+
+
+def _confirmation_group_listing(
+    groups: Sequence[Sequence[ConversationOperation]],
+) -> list[str]:
+    """One human-readable line per pending group, for the "which one?" question."""
+    listing: list[str] = []
+    for group in groups:
+        if _is_recurring_batch(group):
+            rules = "；".join(
+                render.render_recurring_rule_line(
+                    _recurring_arguments_entry(operation.arguments)
+                )
+                for operation in group
+            )
+            listing.append(f"固定安排（{len(group)} 条）：{rules}")
+            continue
+        for operation in group:
+            listing.append(f"{operation.operation_type.value}（{str(operation.id)[:8]}）")
+    return listing
 
 
 def _unproven_addresses(plan: ConversationPlan, text: str) -> tuple[str, ...]:

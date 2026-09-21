@@ -12,7 +12,7 @@ back into a service.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -793,6 +793,50 @@ def render_multiple_pending(listing: Sequence[str]) -> str:
     return f"现在有多个待确认的操作，请告诉我是哪一个：\n{joined}"
 
 
+def render_pending_withdrawn(count: int) -> str:
+    """Every outstanding local question was withdrawn, and nothing was applied (ADR-0040 §20)."""
+    return f"好，{count} 个待确认的提议都没有应用。需要的时候再说一声。"
+
+
+def render_recurring_rule_line(rule: Mapping[str, Any]) -> str:
+    """One weekly commitment on one line, as the confirmation question shows it."""
+    return _recurring_line(dict(rule))
+
+
+def render_recurring_batch(results: Sequence[OperationResult]) -> str:
+    """One confirmed group of weekly commitments, as one answer (ADR-0040 §17).
+
+    Confirming three classes is one decision, so it reads as one list rather than as six mixed
+    lines of "added" and "already exists". Nothing is hidden: rules that already existed are
+    counted in one sentence, and a partial failure still comes through the caller's own path.
+    """
+    rules = [result.data for result in results if result.kind == "recurring_rule_created"]
+    if not rules:
+        return render_results(results, timezone=None)
+    created = [rule for rule in rules if rule.get("created", True)]
+    existing = len(rules) - len(created)
+    head = "已加入固定安排：" if created else "这些固定安排已经存在，我没有重复添加："
+    lines = [head, *[f"- {_recurring_line(rule)}" for rule in rules]]
+    if existing:
+        lines.append(f"其中 {existing} 条已存在，没有重复添加。")
+    window = _shared_window_sentence(created)
+    if window is not None:
+        lines.append(window)
+    return "\n".join(lines)
+
+
+def _shared_window_sentence(rules: Sequence[Mapping[str, Any]]) -> str | None:
+    """The one "starts on / ends on" sentence, when every new rule agrees on it."""
+    if not rules:
+        return None
+    window = {
+        (rule.get("starts_on"), rule.get("ends_on")) for rule in rules
+    }
+    if len(window) != 1:
+        return None
+    return _recurring_window_sentence(dict(rules[0]))
+
+
 def render_empty_turn() -> str:
     """A turn whose own words were empty still answers with something."""
     return "（没有需要回复的内容。）"
@@ -1153,8 +1197,11 @@ __all__ = [
     "render_interpretation_refused",
     "render_mail_send_preview",
     "render_multiple_pending",
+    "render_pending_withdrawn",
     "render_preflight_refused",
+    "render_recurring_batch",
     "render_recurring_confirmation_request",
+    "render_recurring_rule_line",
     "render_result",
     "render_results",
     "render_review_ambiguous",
