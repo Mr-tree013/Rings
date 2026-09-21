@@ -133,14 +133,14 @@ def test_the_lock_file_is_private_and_diagnostic(tmp_path: Path) -> None:
             "pid": os.getpid(),
             "started_at": "2026-09-26T09:00:00+00:00",
             "runtime_root": str(tmp_path),
-            "version": "1.1.1",
+            "version": "1.2.0",
         },
     ).acquire()
     try:
         assert file_mode(lock_path) == PRIVATE_FILE_MODE
         metadata = read_lock_metadata(lock_path)
         assert metadata["pid"] == os.getpid()
-        assert metadata["version"] == "1.1.1"
+        assert metadata["version"] == "1.2.0"
         assert set(metadata) == {"pid", "started_at", "runtime_root", "version"}
     finally:
         lock.release()
