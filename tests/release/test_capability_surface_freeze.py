@@ -103,6 +103,74 @@ def test_no_mobile_route_can_execute_send_or_submit(tmp_path: Path) -> None:
     assert offenders == []
 
 
+def _chat_routes(tmp_path: Path) -> set[tuple[str, str]]:
+    """The route table when the host *does* serve a conversation runtime."""
+    import asyncio
+
+    from assistant.adapters.web.app import build_app
+    from assistant.adapters.web.server import is_private_client
+    from tests.support.chat import build_chat
+
+    stack = asyncio.run(build_chat(tmp_path))
+    app = build_app(stack.dependencies(), is_private=is_private_client)
+    routes: set[tuple[str, str]] = set()
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            routes.update((method, route.path) for method in route.methods)
+    return routes
+
+
+def test_the_web_chat_route_set_is_frozen(tmp_path: Path) -> None:
+    """ADR-0041 §14: the browser chat surface is exactly this, and nothing generic is added.
+
+    The control plane's own freeze (above) is unchanged, because a host without a conversation
+    runtime still registers none of these routes.
+    """
+    expected = {
+        ("GET", "/chat"),
+        ("GET", "/chat.js"),
+        ("GET", "/chat.css"),
+        ("GET", "/api/chat/bootstrap"),
+        ("GET", "/api/chat/threads"),
+        ("POST", "/api/chat/threads"),
+        ("GET", "/api/chat/threads/{thread_id}/snapshot"),
+        ("POST", "/api/chat/threads/{thread_id}/messages"),
+        ("POST", "/api/chat/requests/{request_id}/cancel"),
+        ("GET", "/api/chat/threads/{thread_id}/events"),
+        (
+            "POST",
+            "/api/chat/threads/{thread_id}/confirmations/{confirmation_id}/confirm",
+        ),
+        (
+            "POST",
+            "/api/chat/threads/{thread_id}/confirmations/{confirmation_id}/cancel",
+        ),
+    }
+    chat_routes = {route for route in _chat_routes(tmp_path) if "/chat" in route[1]}
+
+    assert chat_routes == expected
+
+
+def test_no_chat_route_offers_a_generic_capability(tmp_path: Path) -> None:
+    """There is no `/execute`, no `/tool`, no `/action`, no `/approval` and no `/sql`."""
+    forbidden = (
+        "execute",
+        "tool",
+        "sql",
+        "shell",
+        "approval",
+        "/api/chat/actions",
+        "generic",
+    )
+    offenders = [
+        f"{method} {path}"
+        for method, path in _chat_routes(tmp_path)
+        if "/chat" in path and any(word in path.lower() for word in forbidden)
+    ]
+
+    assert offenders == []
+
+
 def test_the_mcp_surface_is_frozen() -> None:
     """§42: four resources, and a tool set decided by configuration rather than by version."""
     assert RESOURCE_URIS == (

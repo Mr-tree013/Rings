@@ -7,6 +7,7 @@ free of these imports — `tests/unit/test_architecture.py` enforces that.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import timedelta
@@ -64,11 +65,17 @@ from assistant.application.conversation_capabilities import (
 from assistant.application.conversation_capabilities.introspection import (
     build_capability_snapshot,
 )
+from assistant.application.conversation_cards import ConversationCardService
+from assistant.application.conversation_chat import ConversationChatService
 from assistant.application.conversation_context import ConversationContextBuilder
+from assistant.application.conversation_event_broker import ConversationEventBroker
 from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
 )
 from assistant.application.conversation_interpreter import ConversationInterpreterService
+from assistant.application.conversation_request_coordinator import (
+    ConversationRequestCoordinator,
+)
 from assistant.application.conversation_service import ConversationService
 from assistant.application.conversational_facts import ConversationalFactService
 from assistant.application.ehall_certificate import EHallCertificateService
@@ -155,6 +162,7 @@ from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.contacts import SqliteContactRepository
+from assistant.store.conversation_requests import SqliteConversationRequestRepository
 from assistant.store.conversation_reviews import SqliteConversationReviewRepository
 from assistant.store.conversations import SqliteConversationRepository
 from assistant.store.db import Database
@@ -519,12 +527,17 @@ def _deadline_lookup(
 
 
 def mobile_web_dependencies(
-    config: AssistantConfig | None, clock: Clock, database: Database
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    chat: ConversationChatService | None = None,
 ) -> WebDependencies:
     """The application services the control plane may speak to, and nothing else.
 
-    Read it as a permission list: tasks, cases, drafts, actions, approvals, notifications and auth.
-    There is no execution service here, no SMTP executor and no eHall gateway.
+    Read it as a permission list: tasks, cases, drafts, actions, approvals, notifications, auth —
+    and, when this host has a conversation runtime, the Tree chat surface. There is no execution
+    service here, no SMTP executor and no eHall gateway.
     """
     return WebDependencies(
         auth=mobile_auth_service(config, clock, database),
@@ -536,16 +549,31 @@ def mobile_web_dependencies(
         notifications=scheduler_repository(database),
         deadlines=_deadline_lookup(database),
         clock=clock,
+        chat=chat,
     )
 
 
 def mobile_web_service(
-    config: AssistantConfig | None, clock: Clock, database: Database
+    config: AssistantConfig | None,
+    clock: Clock,
+    database: Database,
+    *,
+    model: ModelPort | None = None,
+    chat: ConversationChatService | None = None,
 ) -> MobileWebService:
-    """The supervised mobile web service, when the control plane is enabled."""
+    """The supervised mobile web service, when the control plane is enabled.
+
+    The Tree chat surface is mounted when — and only when — this host can actually hold a
+    conversation. A host without `[model]` keeps the existing control plane and gets no `/chat`,
+    which is more honest than a shell that cannot answer anything.
+    """
     mobile = MobileConfig() if config is None else config.mobile
+    surface = chat
+    if surface is None:
+        with contextlib.suppress(ModelNotConfigured, ModelCredentialsMissing):
+            surface = conversation_chat_service(database, clock, config, model=model)
     return MobileWebService(
-        mobile_web_dependencies(config, clock, database),
+        mobile_web_dependencies(config, clock, database, chat=surface),
         bind=mobile.bind_mode,
         port=mobile.port,
     )
@@ -1296,6 +1324,84 @@ def _planning_timezone_of(config: AssistantConfig | None) -> str | None:
 def conversation_repository(database: Database) -> SqliteConversationRepository:
     """Durable conversation threads, messages, turns and operation outcomes."""
     return SqliteConversationRepository(database)
+
+
+def conversation_request_repository(database: Database) -> SqliteConversationRequestRepository:
+    """The durable queue of accepted browser input (ADR-0041 §4-§10)."""
+    return SqliteConversationRequestRepository(database)
+
+
+def conversation_event_broker(*, queue_size: int | None = None) -> ConversationEventBroker:
+    """The ephemeral, in-process notification channel the chat surface publishes to."""
+    if queue_size is None:
+        return ConversationEventBroker()
+    return ConversationEventBroker(queue_size=queue_size)
+
+
+def conversation_request_coordinator(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    conversation: ConversationService,
+    broker: ConversationEventBroker,
+) -> ConversationRequestCoordinator:
+    """Serialize browser input per thread and feed it to the one conversation runtime."""
+    del config
+    return ConversationRequestCoordinator(
+        requests=conversation_request_repository(database),
+        conversation=conversation,
+        threads=conversation_repository(database),
+        broker=broker,
+        clock=clock,
+    )
+
+
+def conversation_chat_service(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    model: ModelPort | None = None,
+    executors: Mapping[ActionType, ActionExecutor] | None = None,
+    broker: ConversationEventBroker | None = None,
+) -> ConversationChatService:
+    """The application surface the browser adapter speaks to.
+
+    One composition, shared by the chat routes and by the daemon's queue service, so the durable
+    queue, the notification channel and the runtime are the same objects in both places.
+
+    Raises:
+        ModelNotConfigured: no `[model]` section, so there is no conversation to serve.
+        ModelCredentialsMissing: the environment holds no credential.
+    """
+    conversation = conversation_service(
+        database, clock, config, model=model, executors=executors
+    )
+    channel = broker if broker is not None else conversation_event_broker()
+    coordinator = conversation_request_coordinator(
+        database, clock, config, conversation=conversation, broker=channel
+    )
+    return ConversationChatService(
+        conversation=conversation,
+        coordinator=coordinator,
+        cards=ConversationCardService(
+            conversation=conversation,
+            reviews=conversation_external_review_service(
+                database, clock, config, executors=executors
+            ),
+            conversations=conversation_repository(database),
+            planning=planning_repository(database),
+            commitments=commitment_repository(database),
+            facts=conversational_fact_service(database, clock),
+            clock=clock,
+        ),
+        conversations=conversation_repository(database),
+        requests=conversation_request_repository(database),
+        broker=channel,
+        brief=today_brief_service(database, clock, config),
+        clock=clock,
+    )
 
 
 def conversation_context_builder(

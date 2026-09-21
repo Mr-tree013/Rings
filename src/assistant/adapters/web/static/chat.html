@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tree 对话</title>
+    <!-- An empty data icon: the page needs no image, and the browser then has no favicon to fetch. -->
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/chat.css" />
+  </head>
+  <body>
+    <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>
+
+    <div class="shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-head">
+          <h1>Tree</h1>
+          <button id="close-sidebar" class="icon-button" type="button" aria-label="收起对话列表">
+            ×
+          </button>
+        </div>
+        <button id="new-thread" class="primary block" type="button">新对话</button>
+        <h2 class="sidebar-title">对话</h2>
+        <ul id="thread-list" class="thread-list"></ul>
+        <p class="muted small">
+          终端 <code>rings</code> 仍然可用；这里和它共用同一套对话运行时。
+        </p>
+      </aside>
+
+      <main class="conversation">
+        <header class="conversation-head">
+          <button id="open-sidebar" class="icon-button" type="button" aria-label="打开对话列表">
+            ☰
+          </button>
+          <div>
+            <h2 id="thread-title">新的对话</h2>
+            <p class="muted small" id="connection" data-state="connecting">正在连接…</p>
+          </div>
+        </header>
+
+        <div id="scroller" class="scroller">
+          <section id="welcome" class="welcome" hidden>
+            <p id="greeting" class="greeting"></p>
+            <div id="quick-actions" class="quick-actions"></div>
+            <div id="brief" class="brief" hidden></div>
+          </section>
+
+          <ol id="messages" class="messages"></ol>
+          <ol id="queue" class="queue"></ol>
+          <div id="cards" class="cards"></div>
+          <p id="activity" class="activity" hidden></p>
+        </div>
+
+        <div class="composer-area">
+          <button id="new-messages" class="new-messages" type="button" hidden>
+            有新消息 ↓
+          </button>
+          <form id="composer" class="composer">
+            <label class="visually-hidden" for="input">给 Tree 的消息</label>
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="和 Tree 说点什么…（Enter 发送，Shift+Enter 换行）"
+              autocomplete="off"
+            ></textarea>
+            <div class="composer-actions">
+              <button id="stop" class="danger" type="button" hidden>停止</button>
+              <button id="send" class="primary" type="submit">发送</button>
+            </div>
+          </form>
+          <p class="muted small">
+            外发动作（例如发邮件）仍然需要你在确认卡片上明确确认；卡片和终端确认效果一致。
+          </p>
+        </div>
+      </main>
+    </div>
+
+    <script src="/chat.js"></script>
+  </body>
+</html>

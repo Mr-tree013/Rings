@@ -34,9 +34,11 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from assistant.adapters.web.chat import register_chat_routes
 from assistant.application.action_service import ActionService, ApprovalState
 from assistant.application.approval_service import ApprovalService
 from assistant.application.case_service import CaseService
+from assistant.application.conversation_chat import ConversationChatService
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mobile_auth import MobileAuthService
 from assistant.application.task_service import CreateTask, TaskService
@@ -101,6 +103,12 @@ class WebDependencies:
     deadlines: Any
     """`async (tasks) -> {task_id: Deadline}`: the read model the CLI already uses."""
     clock: Any
+    chat: ConversationChatService | None = None
+    """The Tree chat surface, when this host has a conversation runtime to offer.
+
+    `None` means the routes are not registered at all: a browser shell that could not answer
+    anything would be a worse promise than an honest absence.
+    """
 
 
 class _PrivateClientMiddleware(BaseHTTPMiddleware):
@@ -159,7 +167,31 @@ def build_app(
     _register_write_routes(app, dependencies)
     _register_approval_routes(app, dependencies)
     _register_approval_link_routes(app, dependencies)
+    if dependencies.chat is not None:
+        _register_chat_routes(app, dependencies, assets)
     return app
+
+
+def _register_chat_routes(
+    app: FastAPI, dependencies: WebDependencies, assets: Path
+) -> None:
+    """Mount the Tree chat surface behind the control plane's existing session and CSRF pair."""
+    chat = dependencies.chat
+    assert chat is not None  # the caller only reaches here when it exists
+
+    async def _session(request: Request) -> MobileWebSession | JSONResponse:
+        return await _require_session(dependencies, request)
+
+    async def _mutation(request: Request) -> MobileWebSession | JSONResponse:
+        return await _require_mutation(dependencies, request)
+
+    register_chat_routes(
+        app,
+        chat=lambda: chat,
+        assets=assets,
+        require_session=_session,
+        require_mutation=_mutation,
+    )
 
 
 def _register_static_routes(app: FastAPI, assets: Path) -> None:
