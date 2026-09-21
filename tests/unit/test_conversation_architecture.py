@@ -24,6 +24,7 @@ CONVERSATION_DOMAIN = (
     "domain/conversation_context.py",
 )
 CONVERSATION_APPLICATION = (
+    "application/conversation_input.py",
     "application/conversation_service.py",
     "application/conversation_context.py",
     "application/conversation_interpreter.py",
@@ -466,6 +467,60 @@ def test_the_fact_confirmation_path_has_no_model_dependency() -> None:
         for module in modules
         if module.startswith("assistant.application.structured_model")
     ]
+
+
+# ------------------------------------- the terminal boundary and local confirmation (ADR-0040)
+
+
+_ESCAPE_SEQUENCE_LITERALS = ('"\\x1b["', '"\x1b["', '"\\033["', '"\x9b"', '"^[["')
+"""How a home-grown ANSI parser would start: it would have to name the sequence it parses."""
+
+
+def test_no_escape_sequence_parser_exists_in_the_conversation_core() -> None:
+    """§25: the application and domain layers never parse terminal control sequences.
+
+    The one module that mentions them is the input boundary, and it only *rejects* ESC before a
+    line can become a turn (ADR-0040 §8). Nothing downstream — no runtime, no renderer, no domain
+    rule — knows what `^[[D` is.
+    """
+    allowed = {"application/conversation_input.py"}
+    offenders: list[str] = []
+    for directory in ("application", "domain"):
+        for path in sorted((SOURCE_ROOT / directory).rglob("*.py")):
+            relative = path.relative_to(SOURCE_ROOT).as_posix()
+            if relative in allowed:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(literal in text for literal in _ESCAPE_SEQUENCE_LITERALS):
+                offenders.append(relative)
+
+    assert offenders == []
+
+
+def test_the_strict_decoder_is_usable_without_the_line_editor() -> None:
+    """§23: a non-TTY session must be able to decode strictly without importing prompt_toolkit."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys;"
+        "from assistant.application.conversation_input import decode_strictly, build_input_source;"
+        "assert 'prompt_toolkit' not in sys.modules, 'the strict path pulled in the editor';"
+        "assert decode_strictly('你好'.encode()) == ('你好', None);"
+        "assert decode_strictly(b'\\xff\\xfe')[0] is None;"
+        "print(type(build_input_source()).__name__)"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        env={"PYTHONPATH": str(SOURCE_ROOT.parent), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(SOURCE_ROOT.parent),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "ConsoleInput"
 
 
 def test_the_conversation_reaches_facts_only_through_the_learning_service() -> None:

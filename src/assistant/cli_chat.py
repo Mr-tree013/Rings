@@ -3,8 +3,10 @@
 Both entry points run the same `ConversationService`, so there is one runtime to keep honest. What
 this module adds is the *surrounding* reliability the product needs, and nothing else:
 
-* input arrives through `ConsoleInput`, which decodes strictly and turns a decoding failure into a
-  recoverable message instead of the end of the session (ADR-0035 §4-§6);
+* input arrives through the terminal boundary: a real terminal gets a real line editor
+  (`prompt_toolkit`), while piped or scripted input keeps `ConsoleInput` and strict decoding
+  (ADR-0035 §4-§6, ADR-0040 §5). Either way a failure to read a line is a recoverable message
+  instead of the end of the session, and Ctrl-C discards only the unfinished line;
 * every turn runs inside an error boundary: a recoverable failure becomes a sentence, the loop
   continues, and internals go to stderr only when `RINGS_DEBUG=1` is set (§7-§9);
 * `/help` is rendered from the same capability snapshot the runtime uses (§15), so it cannot drift
@@ -30,7 +32,10 @@ from assistant.application import conversation_render as render
 from assistant.application.conversation_capabilities.introspection import (
     build_capability_snapshot,
 )
-from assistant.application.conversation_input import ConsoleInput
+from assistant.application.conversation_input import (
+    ConversationInputSource,
+    build_input_source,
+)
 from assistant.application.conversation_service import ConversationService
 from assistant.cli_support import console, error_console
 from assistant.domain.config import AssistantConfig
@@ -123,6 +128,12 @@ def run_conversation(
     debug = debug_enabled()
     try:
         return asyncio.run(_main(input_fn=input_fn, announce=announce, debug=debug))
+    except KeyboardInterrupt:
+        # A Ctrl-C that arrives outside the line editor (mid-answer, say) still leaves quietly:
+        # the editor's own Ctrl-C is handled as a cancelled line and never reaches this point.
+        console.print()
+        console.print(GOODBYE)
+        return 130
     except InvalidAssistantConfig as exc:
         return _report(f"invalid configuration: {exc}", code=2, debug=debug, detail=str(exc))
     except ModelNotConfigured as exc:
@@ -169,7 +180,7 @@ async def _session(
     clock = bootstrap.system_clock()
     database = bootstrap.runtime_database(clock)
     adapter = bootstrap.model_adapter(config)
-    reader = None if input_fn is not None else ConsoleInput()
+    reader = None if input_fn is not None else build_input_source()
     try:
         service = bootstrap.conversation_service(database, clock, config, model=adapter)
         for notice in await service.recover_interrupted():
@@ -188,7 +199,7 @@ async def _session(
             # showing it again is not confirming it (ADR-0038 §13).
             console.print(f"[bold]Tree >[/bold] {waiting_fact}")
         while True:
-            text, should_exit = _read(reader, input_fn, debug)
+            text, should_exit = await _read(reader, input_fn, debug)
             if should_exit:
                 console.print(GOODBYE)
                 return 0
@@ -208,8 +219,8 @@ async def _session(
         await bootstrap.close_model(adapter)
 
 
-def _read(
-    reader: ConsoleInput | None,
+async def _read(
+    reader: ConversationInputSource | None,
     input_fn: Callable[[str], str] | None,
     debug: bool,
 ) -> tuple[str | None, bool]:
@@ -217,11 +228,19 @@ def _read(
 
     `text is None` means "nothing usable, keep prompting": either a decoding failure or an empty
     line. Neither is allowed to end the session, and neither may reach the model.
+
+    The editor runs in a worker thread: `prompt_toolkit` drives its own event loop, and asyncio
+    does not nest, so awaiting it here is what lets a real line editor live inside this runtime
+    without blocking the loop that owns the conversation.
     """
     if reader is not None:
-        user = reader.read_line("You > ")
+        user = await asyncio.to_thread(reader.read_line, "You > ")
         if user.is_closed:
             return None, True
+        if user.is_cancelled:
+            # Ctrl-C ends the line, not the session: no turn, no model call, no mutation.
+            console.print()
+            return None, False
         if user.is_decode_failure:
             answer = render.render_error(
                 ConversationErrorCode.INPUT_DECODE_FAILED, user.detail, debug=debug

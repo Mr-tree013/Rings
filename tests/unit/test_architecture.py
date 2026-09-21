@@ -2752,8 +2752,15 @@ PRODUCTION_DEPENDENCIES = (
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
     "mcp>=2,<3",
+    "prompt-toolkit>=3.0.51,<4",
 )
-"""Every runtime dependency v1 declares. Adding one is a phase, not a release chore."""
+"""Every runtime dependency v1 declares. Adding one is a phase, not a release chore.
+
+`prompt-toolkit` is the one addition after v1: ADR-0040 §6 requires the interactive terminal to
+edit lines with a mature editor instead of a home-grown raw-byte loop, and v1.1.1 is the hotfix
+that replaces the latter. It is a line-editing frontend only — no TUI framework, no new
+capability, and the non-interactive path does not import it.
+"""
 
 DEVELOPMENT_DEPENDENCIES = (
     "pytest>=8.3",

@@ -15,6 +15,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
     "mcp>=2,<3",
+    "prompt-toolkit>=3.0.51,<4",
 ]
 
 [project.scripts]
@@ -101,6 +102,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/unit/test_recipient_resolution.py" = ["RUF001"]
 "tests/unit/test_conversational_facts.py" = ["RUF001"]
 "tests/unit/test_conversation_reliability.py" = ["RUF001"]
+# The terminal editor tests type the same Chinese, punctuation and mail addresses a user does.
+"tests/unit/test_conversation_terminal.py" = ["RUF001"]
+# The confirmation-group tests speak the same Chinese schedule the runtime answers in.
+"tests/integration/test_conversation_confirmation_groups.py" = ["RUF001"]
+# The v1.1.1 acceptance test replays the real transcript verbatim.
+"tests/acceptance/test_v1_1_1_hotfix.py" = ["RUF001", "RUF003"]
 
 [tool.mypy]
 python_version = "3.13"
