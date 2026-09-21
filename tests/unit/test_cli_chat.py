@@ -152,6 +152,9 @@ def test_rings_and_pw_chat_use_the_same_runtime(monkeypatch: pytest.MonkeyPatch)
         return 0
 
     monkeypatch.setattr(cli_chat, "run_conversation", spy)
+    # `rings` reads its own arguments now that it has one (`--web`), so a test that calls the entry
+    # point directly says what a real invocation would say.
+    monkeypatch.setattr(cli_chat.sys, "argv", ["rings"])
 
     with pytest.raises(SystemExit) as exit_info:
         cli_chat.main()

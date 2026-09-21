@@ -21,13 +21,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import sys
 import traceback
+import webbrowser
 from collections.abc import Callable
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import typer
 
 from assistant import bootstrap
+from assistant.adapters.web.server import lan_addresses
 from assistant.application import conversation_render as render
 from assistant.application.conversation_capabilities.introspection import (
     build_capability_snapshot,
@@ -48,6 +53,7 @@ from assistant.domain.errors import (
     ModelCredentialsMissing,
     ModelNotConfigured,
 )
+from assistant.domain.mobile import MobileBindMode
 
 LOGGER = logging.getLogger("assistant.conversation")
 
@@ -362,8 +368,102 @@ def chat() -> None:
 
 
 def main() -> None:
-    """The `rings` entry point: an interactive Tree conversation."""
-    raise SystemExit(run_conversation(announce="Rings — 本地个人运营系统"))
+    """The `rings` entry point: an interactive Tree conversation, or `--web` to open the chat UI.
+
+    The default is deliberately unchanged. `rings` is still the terminal conversation, and
+    `rings --web` is a *convenience* that opens the browser surface this host already serves — it
+    never starts a daemon, never runs a command and never automates a browser (ADR-0041 §54).
+    """
+    arguments = sys.argv[1:]
+    if not arguments:
+        raise SystemExit(run_conversation(announce="Rings — 本地个人运营系统"))
+    if arguments == [WEB_FLAG]:
+        raise SystemExit(open_web_chat())
+    error_console.print(f"无法识别的参数：{' '.join(arguments)}")
+    error_console.print("用法：rings [--web]")
+    raise SystemExit(2)
+
+
+WEB_FLAG = "--web"
+"""The only argument `rings` understands, and the only one it needs."""
+
+WEB_PROBE_TIMEOUT_SECONDS = 0.5
+"""How long `rings --web` waits to find out whether the control plane is actually running."""
+
+
+def web_chat_url(config: AssistantConfig | None) -> str | None:
+    """The `/chat` URL this host would serve, or `None` when it does not serve one.
+
+    The address comes from `[mobile]` and from the kernel's own idea of this machine's LAN
+    addresses — never from a user-supplied hostname, and never from a proxy header.
+    """
+    if config is None or config.mobile is None or not config.mobile.enabled:
+        return None
+    mode = MobileBindMode(config.mobile.bind)
+    if mode is MobileBindMode.LOOPBACK:
+        host = "127.0.0.1"
+    else:
+        addresses = lan_addresses()
+        host = addresses[0] if addresses else "127.0.0.1"
+    return f"http://{host}:{config.mobile.port}/chat"
+
+
+def reachable(url: str, *, timeout: float = WEB_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Whether something is listening on that URL's host and port.
+
+    A diagnostic, not a health check: it opens one TCP connection and closes it. Anything that
+    fails — refused, timed out, no such host — is simply "not running", because that is what the
+    user needs to be told.
+    """
+    parsed = urlsplit(url)
+    if parsed.hostname is None or parsed.port is None:  # pragma: no cover - built by this module
+        return False
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def open_web_chat(
+    *,
+    config_path: Path | None = None,
+    opener: Callable[[str], object] | None = None,
+    probe: Callable[[str], bool] | None = None,
+) -> int:
+    """Open the Tree chat surface in this machine's browser, or explain why it cannot be opened.
+
+    Returns the process exit code: 0 when a browser was asked to open the URL, 1 when the host has
+    no chat surface to open. Nothing here starts a server; if the control plane is not running, the
+    honest answer is that it is not running.
+    """
+    browser_launcher = webbrowser.open if opener is None else opener
+    is_reachable = reachable if probe is None else probe
+    try:
+        loaded = asyncio.run(bootstrap.config_loader(config_path).load())
+    except (DomainError, InvalidAssistantConfig) as exc:
+        console.print(f"读不到主机配置，所以我没有打开网页界面：{exc}")
+        console.print("先运行 `pw doctor` 看看配置哪里不对。")
+        return 1
+    url = web_chat_url(loaded)
+    if url is None:
+        # `markup=False`: these sentences name config keys, and a key is not a style tag.
+        console.print(
+            "这个主机还没有启用网页控制面（config 里的 [mobile] enabled）。", markup=False
+        )
+        console.print(
+            "在 config.toml 里设置 [mobile] enabled = true 并重启 assistantd 之后再试一次。",
+            markup=False,
+        )
+        return 1
+    if not is_reachable(url):
+        console.print(f"网页控制面没有在运行：{url}")
+        console.print("先启动 `assistantd`，然后重新运行 `rings --web`。")
+        console.print("终端对话仍然可以直接用：运行 `rings`。")
+        return 1
+    console.print(f"正在打开 Tree 网页对话：{url}")
+    browser_launcher(url)
+    return 0
 
 
 def register(app: typer.Typer) -> None:
@@ -378,10 +478,14 @@ __all__ = [
     "GREETING",
     "HELP_HEADER",
     "RESUMED_GREETING",
+    "WEB_FLAG",
     "chat",
     "debug_enabled",
     "help_text",
     "main",
+    "open_web_chat",
+    "reachable",
     "register",
     "run_conversation",
+    "web_chat_url",
 ]

@@ -206,6 +206,7 @@ def test_rings_and_pw_chat_share_the_mail_runtime(
         return 0
 
     monkeypatch.setattr(cli_chat, "run_conversation", spy)
+    monkeypatch.setattr(cli_chat.sys, "argv", ["rings"])
 
     with pytest.raises(SystemExit) as exit_info:
         cli_chat.main()
