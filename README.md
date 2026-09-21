@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.0.0 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.1.0 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -109,6 +109,20 @@ Tree > 将要发送的邮件（以下内容就是实际发出的内容）：
        主题：打个招呼
        正文：你好，这是一封来自 Rings 的测试邮件。
        确认发送吗？回复「确认发送」我就发送，或回复「取消」。
+You > 记住我的办公室在仙林。
+Tree > 我准备记录这条长期信息：
+       - profile.office：仙林
+       （来自你的话：「记住我的办公室在仙林。」）
+       如果要长期保存，请明确说「确认记住」；说「不要记」我就不保存。
+You > 确认记住
+Tree > 已记住：
+       - profile.office：仙林
+You > 我今天有什么事？
+Tree > 今天（2026-09-21，Asia/Shanghai）：
+       安排
+       - 10:00–12:00 计算机系统基础课（每周）
+       任务
+       - 交软件工程报告（10-09 截止）
 ```
 
 Tree 用自然语言处理本地日常：任务、日历、固定安排（每周重复）、工作记录、周计划和资料问答。
@@ -119,6 +133,11 @@ Tree 用自然语言处理本地日常：任务、日历、固定安排（每周
 或者你自己的已配置邮箱（「发给我自己」）；地址不在你话里、名字查不到、有多个同名联系人时，
 Tree 会问你而不是猜。外部动作（发邮件、eHall 提交）**不会**由模型执行：发邮件时 Tree 会先起草，
 把**将要发出的完整内容**给你看，你回复「确认发送」之后才发出（`pw` 的审批链仍然是背后那套机制）。
+
+长期信息（例如「记住我的办公室在仙林」）会先给你看要保存的内容，只有你明确回复「确认记住」
+才真正保存；平铺直叙的一句话（「我的办公室在仙林」）不会自动变成记忆，泛泛的「可以」也不会。
+「你记得我的办公室在哪里吗？」只依据你确认过的长期信息回答。「我今天有什么事？」会按你配置的
+时区给出今天的安排、任务和需要处理的事，只读，不会替你确认或执行任何东西。
 
 模型偶尔给出不合规的回答时，Tree 只会重试**一次**并且不执行任何操作；终端给的输入无法解码时，
 它会说明并让你重新输入，而不是结束会话。「你能做什么」的回答来自当前运行时的真实配置。
@@ -201,7 +220,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.0.0） | [docs/releases/1.0.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.0.0.md) |
+| Release Notes（当前版本：v1.1.0） | [docs/releases/1.1.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.1.0.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 

@@ -8,7 +8,7 @@ A local-first personal operations system that grows with you.
 
 **Language:** [中文](README.md) ｜ English
 
-**Version:** 1.0.0 · **Reference environment:** Linux / WSL + Python 3.13
+**Version:** 1.1.0 · **Reference environment:** Linux / WSL + Python 3.13
 
 Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
 SQLite database plus the files that database references, and reaches the outside world only through
@@ -121,6 +121,20 @@ Tree > The email that would be sent (this is exactly what would leave the machin
        Subject: A quick hello
        Body: Hi — this is a test message from Rings.
        Send it? Reply "confirm send" and I will send it, or reply "cancel".
+You > remember that my office is in Xianlin
+Tree > About to remember this:
+       - profile.office: Xianlin
+       (from your words: "remember that my office is in Xianlin")
+       Say "确认记住" to keep it, or "不要记" and I will not.
+You > 确认记住
+Tree > Remembered:
+       - profile.office: Xianlin
+You > what is going on today?
+Tree > Today (2026-09-21, Asia/Shanghai):
+       Schedule
+       - 10:00–12:00 Computer Systems Fundamentals (weekly)
+       Tasks
+       - submit the SE report (due 10-09)
 ```
 
 Tree handles local daily work in natural language: tasks, calendar, work sessions, weekly planning
@@ -134,6 +148,12 @@ When the address is not in your message, the name is unknown, or two contacts sh
 asks instead of guessing. External effects are never the model's to perform: for mail, Tree drafts,
 shows the **exact bytes** that would be sent, and only your explicit confirmation sends it — the
 `pw` approval chain is still the mechanism behind it.
+
+Long-term facts ("remember that my office is in Xianlin") are shown to you before anything is
+stored, and only an explicit `确认记住` saves one; a plain statement is not a memory, and a generic
+"ok" confirms nothing. "Do you remember my office?" is answered from confirmed facts only. "What
+is going on today?" returns a read-only summary of your own day — schedule, tasks, attention and
+anything waiting — in your configured timezone.
 
 When the model answers unusably, Tree repairs it **once** and executes nothing; when the terminal
 sends bytes it cannot decode, it says so and keeps the session open. "What can you do?" is answered
@@ -215,7 +235,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 | Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
 | System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.0.0) | [docs/releases/1.0.0.md](docs/releases/1.0.0.md) |
+| Release notes (current release: v1.1.0) | [docs/releases/1.1.0.md](docs/releases/1.1.0.md) |
 | Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 
