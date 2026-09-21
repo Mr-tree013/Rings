@@ -1,6 +1,6 @@
 [project]
 name = "growing-assistant"
-version = "1.1.1"
+version = "1.2.0"
 description = "A personal assistant that grows: mail, personal knowledge, eHall errands and mobile approval in one auditable loop."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -106,6 +106,22 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/unit/test_conversation_terminal.py" = ["RUF001"]
 # The confirmation-group tests speak the same Chinese schedule the runtime answers in.
 "tests/integration/test_conversation_confirmation_groups.py" = ["RUF001"]
+# The browser-chat tests quote the same Chinese the chat surface shows and a user would type.
+"tests/integration/test_chat_cards.py" = ["RUF001"]
+"tests/integration/test_chat_queue.py" = ["RUF001"]
+"tests/integration/test_chat_web.py" = ["RUF001"]
+"tests/integration/test_chat_integrity_and_backup.py" = ["RUF001"]
+"tests/support/chat.py" = ["RUF001"]
+"tests/integration/test_conversation_request_store.py" = ["RUF001"]
+# The browser acceptance types the same Chinese a person types into the composer.
+"tests/e2e/test_chat_browser.py" = ["RUF001"]
+# The confirmation cards a browser shows are written in the same Chinese, with the same fullwidth
+# punctuation, as the terminal renderer they are the equivalent of.
+"src/assistant/application/conversation_cards.py" = ["RUF001"]
+# The browser chat surface's own read model answers in the same Chinese.
+"src/assistant/application/conversation_chat.py" = ["RUF001"]
+# The chat adapter answers with the same product sentences the rest of the surface uses.
+"src/assistant/adapters/web/chat.py" = ["RUF001"]
 # The v1.1.1 acceptance test replays the real transcript verbatim.
 "tests/acceptance/test_v1_1_1_hotfix.py" = ["RUF001", "RUF003"]
 
@@ -117,6 +133,10 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
+markers = [
+    # The browser acceptance needs a downloaded Chromium; the rest of the suite never does.
+    "e2e: an end-to-end acceptance test that drives a real browser",
+]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
