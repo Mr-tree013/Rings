@@ -1213,6 +1213,18 @@ def _mail_int(value: Mapping[str, object], key: str, default: int) -> int:
     return raw
 
 
+def parse_mail_account(entry: object) -> MailAccountConfig:
+    """Parse one `[[mail.accounts]]` table. The managed overlay reuses this exact parser.
+
+    Public because ADR-0043's overlay must not grow a second, more permissive reader: two parsers
+    would eventually disagree about what a valid account is, and the looser one would win.
+
+    Raises:
+        InvalidAssistantConfig: the entry is malformed or carries a forbidden credential key.
+    """
+    return _parse_mail_account(entry)
+
+
 def _parse_mail_account(entry: object) -> MailAccountConfig:
     if not isinstance(entry, Mapping):
         raise InvalidAssistantConfig("each [[mail.accounts]] entry must be a table")
@@ -1385,4 +1397,5 @@ __all__ = [
     "SchedulerConfig",
     "Weekday",
     "WeeklyAvailabilityRule",
+    "parse_mail_account",
 ]

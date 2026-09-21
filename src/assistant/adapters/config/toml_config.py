@@ -15,8 +15,10 @@ import asyncio
 import os
 import tomllib
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
+from assistant.adapters.config.mail_overlay import merge_accounts, overlay_path, read_overlay
 from assistant.domain.config import AssistantConfig
 from assistant.domain.errors import InvalidAssistantConfig
 
@@ -32,10 +34,18 @@ def default_config_path() -> Path:
 
 
 class TomlConfigLoader:
-    """`ConfigLoader` backed by a TOML file on the host."""
+    """`ConfigLoader` backed by a TOML file on the host, plus the managed mail overlay (ADR-0043).
 
-    def __init__(self, path: Path | None = None) -> None:
+    The user's file is read exactly as before and is never rewritten. When a managed
+    `mail-accounts.toml` exists beside it, its accounts are merged by id (the overlay wins), which
+    is the only thing the settings page can change without restarting anything. A host that has no
+    overlay behaves identically to v1.2, which is what makes this backward compatible rather than
+    a migration.
+    """
+
+    def __init__(self, path: Path | None = None, *, managed_overlay: bool = True) -> None:
         self._path = Path(path) if path is not None else default_config_path()
+        self._managed_overlay = managed_overlay
 
     @property
     def path(self) -> Path:
@@ -57,7 +67,14 @@ class TomlConfigLoader:
             ) from exc
         except OSError as exc:
             raise InvalidAssistantConfig(f"{self._path} could not be read: {exc}") from exc
-        return AssistantConfig.from_mapping(_expand_root_paths(data))
+        config = AssistantConfig.from_mapping(_expand_root_paths(data))
+        if not self._managed_overlay:
+            return config
+        managed = read_overlay(overlay_path(self._path))
+        if not managed:
+            return config
+        merged = merge_accounts(config.mail.accounts, managed)
+        return replace(config, mail=replace(config.mail, accounts=merged))
 
 
 def _expand_root_paths(data: Mapping[str, object]) -> Mapping[str, object]:
@@ -82,4 +99,3 @@ def _expand_root_paths(data: Mapping[str, object]) -> Mapping[str, object]:
 
 
 __all__ = ["APP_DIRECTORY", "CONFIG_FILENAME", "TomlConfigLoader", "default_config_path"]
-
