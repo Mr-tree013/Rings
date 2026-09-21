@@ -227,6 +227,37 @@ Clock + [planning].timezone ──► 用户自己的 [00:00, 24:00)
 - 邮件只出现元数据，绝不出现正文；
 - 概览不执行、不批准、不重试、不确认任何东西，也不产生任何持久化快照（无 migration、无 integrity 新 section）。
 
+### 4.7 浏览器对话页 Tree Web Chat（Phase 11A，ADR-0041）
+
+浏览器是**交互适配器**，不是第二套应用层：
+
+```text
+Browser (/chat + /api/chat/*)
+        │  session + CSRF（沿用 ADR-0026 的既有机制）
+        ▼
+ConversationRequestCoordinator ──► conversation_requests（durable queue）
+        │                                   │
+        └──► ConversationService ◄──────────┘  claim_next：一个 thread 同时只有一个 active
+                     │
+        capability registry / confirmations / external review / Approval / ExecutionRun（均不变）
+```
+
+硬性约束：
+
+- HTTP handler 只调用应用服务：它可以调用 `ConversationChatService`，**不得**直接调用 `ModelPort`、SQLite 或任何 executor；
+- 浏览器提交先入库（`QUEUED`）再执行；`UNIQUE(thread_id, client_request_id)` 让重试的 POST 是同一个请求，因此不会产生第二条消息、第二次模型调用或第二次写入；
+- 每个 thread 同时最多一个 `PROCESSING`（部分唯一索引强制）；不同 thread 相互独立；队列内消息保持 FIFO 顺序、不合并；
+- 重启时 `PROCESSING` **绝不盲目重放**：linked turn 已终态则镜像；turn 停在等待确认则视为已完成；其它一律 `INTERRUPTED`；只有 `QUEUED` 会被继续处理；
+- progress 只有粗粒度、应用自选的阶段（`UNDERSTANDING` / `READING_LOCAL_STATE` / `PLANNING` / `QUERYING_KNOWLEDGE` / `PREPARING_MAIL` / `UPDATING_LOCAL_STATE` / `WAITING_CONFIRMATION` / `EXTERNAL_EXECUTION` / `FINALIZING`），绝不含 prompt、provider 原始输出或推理过程；
+- SSE 只是**临时通知**：进程内广播、订阅队列有界（溢出即 `resync.required` 并断开），不落库、不重放、不是权威状态；权威状态只有数据库 snapshot，重连/刷新一律重新取 snapshot；
+- Stop 只在真正安全时提供：`QUEUED` 永远可取消；`UNDERSTANDING`（模型调用期间，尚未应用任何操作）可在 checkpoint 安全停止，模型迟到返回的结果被丢弃；进入写入或对外执行边界后返回 `CANNOT_CANCEL_SAFELY`，不谎称已停止，也不回滚已经开始的对外动作；
+- 确认卡片由持久状态确定性重建（`MAIL_SEND` / `PLAN_APPLY` / `RECURRING_SCHEDULE` / `FACT_CONFIRMATION`，closed enum），每张卡片带 `expected_revision`；状态变化后点击返回 `409 STALE_CONFIRMATION`，不产生任何效果；
+- 卡片按钮绕过 `ModelPort`，与终端短语走**同一个**确定性结算路径（`_settle_review` / `_answer_fact_confirmation` / `_answer_groups`），因此浏览器与终端产生等价的持久结果；`ApprovalChallenge` 明文永不进入浏览器；
+- 所有用户/模型/邮件/联系人文本只以文本渲染（`textContent`），静态资源本地打包、无 CDN、无 npm/React/Vite；没有通配 CORS，没有匿名 LAN 绕过；
+- 没有 `/execute`、`/tool`、`/action`、`/approval`、`/sql`、`/shell` 之类通用路由，也没有 generic action-creation endpoint；
+- `rings` 终端行为不变；`rings --web` 只负责在控制面可达时用标准库 `webbrowser` 打开 `/chat`，不会静默启动 daemon、不执行命令、不做浏览器自动化；
+- 没有 `[model]` 的主机不注册任何 chat 路由：宁可不出现，也不提供一个答不出话的壳。
+
 ## 5. 核心数据主线
 
 ### 5.1 v1 architecture snapshot（Phase 9B 冻结，ADR-0032）
@@ -235,7 +266,7 @@ v1.0 的实际结构就是下面这张图；任何一格之外的能力都不存
 
 ```text
 Interaction
-  CLI (pw)            LAN mobile control plane            MCP / VS Code (local stdio)
+  CLI (pw)     Tree Web Chat (/chat)   LAN mobile control plane   MCP / VS Code (local stdio)
 
 Observe
   IMAP (receive-only)   configured public HTTPS watcher   manual / QQ-forward text
@@ -586,3 +617,4 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0038 Conversational fact confirmation
 - ADR-0039 Deterministic today brief
 - ADR-0040 Interactive terminal line editing and pending confirmation groups
+- ADR-0041 Tree local chat UI, a durable turn queue and a non-authoritative event stream

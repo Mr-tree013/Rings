@@ -14,9 +14,27 @@ decides whether a proposal is allowed, whether it needs your confirmation, and w
 ## Start it
 
 ```bash
-uv run rings          # the primary conversational entry point
+uv run rings          # the terminal conversation: SSH, development and fallback
 uv run pw chat        # the same runtime, from the existing CLI
+uv run rings --web    # opens the browser chat page, when the control plane is running
 ```
+
+The most comfortable everyday surface is the browser one. It needs the same-LAN control plane to be
+enabled, which also means it needs a model:
+
+```toml
+[mobile]
+enabled = true
+bind = "loopback"     # this machine only; "lan" reaches the same trusted network
+port = 8791
+```
+
+```bash
+uv run assistantd     # serves /chat alongside everything else
+```
+
+Then open `http://127.0.0.1:8791/chat`. It is the same conversation runtime, the same database and
+the same confirmation semantics as the terminal — not a second implementation.
 
 Both build the same `ConversationService`; there is no second implementation to keep honest. What
 you need first:

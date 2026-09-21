@@ -887,6 +887,40 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
   邮件正文绝不出现。
 - 概览不得执行、批准、重试或确认任何东西；能力描述继续同源于 registry + config。
 
+### 6.8 浏览器对话规则（Phase 11A，ADR-0041）
+
+- **Web Chat 是 adapter，不是 application kernel。** `adapters/web/` 只负责把 HTTP 请求翻译成
+  `ConversationChatService` 调用并编码响应；HTTP handler 永不直接调用 `ModelPort`、SQLite 或任何
+  executor，也不得自己实现对话逻辑。
+- **HTTP handlers never call `ModelPort` directly.** 唯一入口是 `ConversationRequestCoordinator`
+  → 既有 `ConversationService`；确认路由调用确定性 interaction service，而不是 Interpreter。
+- **Browser code never decides authorization.** 前端只提交请求、渲染状态与显示按钮；`can_cancel`、
+  `expected_revision`、fingerprint 校验、Approval 全部在服务端决定。
+- **SSE is non-authoritative; snapshot/database state is authoritative.** 事件只是通知，不落库、
+  不重放、订阅队列必须有界（溢出即 `resync.required` 并断开）；重连/刷新一律重新取 snapshot。
+- **No chain-of-thought / progress reasoning exposure.** 进度只有粗粒度、应用自选的 stage，
+  绝不含 prompt、provider 原始输出、schema 内部或推理步骤。
+- **Confirmation cards settle exact durable targets.** 卡片带 `expected_revision`，状态变化后
+  返回 `409 STALE_CONFIRMATION` 且不产生任何效果；按钮绕过 ModelPort，与终端短语走同一套结算方法；
+  `ApprovalChallenge` 明文永不进入浏览器，`ActionRequest` fingerprint 必须重新校验。
+- **One active request per thread.** 领取工作只有 `claim_next`（单事务 select+update）；队列
+  FIFO、不合并消息；`UNIQUE(thread_id, client_request_id)` 保证重试的 POST 是同一个请求。
+- **Queued accepted input is durable.** 提交先入库再执行；`input_text` 仅在消息已持久化且请求终态后清除。
+- **Processing requests are never blindly replayed.** 重启时只有 `QUEUED` 会被继续；`PROCESSING`
+  一律按 linked turn fail-closed 解决（终态镜像 / 等待确认视为完成 / 其余 `INTERRUPTED`）。
+- **Stop is allowed only at safe checkpoints.** `QUEUED` 永远可取消；`UNDERSTANDING` 期间可在
+  checkpoint 停止并丢弃迟到的模型结果；进入写入或对外执行边界后必须返回
+  `CANNOT_CANCEL_SAFELY`，不得谎称已停止，也不得回滚已开始的对外动作。
+- **User/model/mail/contact content must be escaped as text.** 静态资源里禁止 `innerHTML`/
+  `outerHTML`/`insertAdjacentHTML`/`eval`/`new Function`；所有动态文本只经 `textContent`。
+- **No anonymous LAN bypass.** chat 路由复用既有 session + CSRF + private-client peer 判定；
+  不引入通配 CORS、不读 forwarding header、不因为“是本机”而免除鉴权。
+- **Terminal and web share one conversation runtime.** `rings` 行为不变；`rings --web` 只打开
+  已运行的 `/chat`，不静默启动 daemon、不 shell out、不做浏览器自动化。
+- **No generic capability route.** 不存在 `/execute`、`/tool`、`/action`、`/approval`、`/sql`、
+  `/shell`，也没有 generic action-creation endpoint；卡片 dispatch 是 closed enum 的映射。
+- 新 migration 只能追加（当前最新为 `0020_conversation_requests.sql`），不得改写既有 SQL。
+
 ## 7. 版本管理
 
 - 使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）。

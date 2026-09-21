@@ -26,6 +26,28 @@ uv run pw mobile pair     # prints a one-time pairing code, once
 
 Open `http://<LAN-IP>:8765/pair` on the phone and paste the pairing code by hand.
 
+### Tree Chat (`/chat`)
+
+The same host also serves the conversational surface at `http://<host>:<port>/chat`, under the same
+pairing, session and CSRF rules. It is a chat page rather than a dashboard: conversation history,
+thread switching, a queue for messages submitted while Tree is working, coarse activity updates over
+server-sent events, and confirmation cards that settle the same decisions the terminal phrases do.
+The review-and-approval page above is unchanged and still exists; `/chat` is an addition, not a
+replacement. `uv run rings --web` opens it if it is reachable.
+
+Some things to know while using it:
+
+* a message submitted while another one is running is queued, shown as 排队中, and becomes its own
+  message — it is never merged with the one before it;
+* queued messages survive a page reload and a daemon restart, and a message that was already being
+  processed when the process died is marked interrupted rather than replayed;
+* "Stop" is offered only while stopping is safe (queued, or before any write has happened); after
+  that the server says it cannot stop safely instead of pretending;
+* activity lines are coarse product stages — understanding, reading local state, planning, looking
+  things up, preparing mail, saving changes, executing a confirmed action — never reasoning;
+* confirmation cards carry a version: if the underlying state changed, the click is refused and the
+  page reloads the truth, so a stale card can never send, apply or remember anything.
+
 ## Common workflow
 
 ```bash
