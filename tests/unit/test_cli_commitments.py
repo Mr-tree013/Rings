@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -14,6 +15,17 @@ runner = CliRunner()
 MONDAY = "2026-09-21T10:00:00+08:00"
 WEDNESDAY = "2026-09-23T19:00:00+08:00"
 WEDNESDAY_END = "2026-09-23T21:00:00+08:00"
+
+
+def _soon(hours: int) -> str:
+    """An instant the "next N days" window certainly contains, whatever the wall clock says.
+
+    `pw calendar --days N` starts at the real current time, so a hard-coded morning timestamp is a
+    time bomb: once that morning has passed the listing no longer contains it, and the test fails
+    for a reason that has nothing to do with what it checks.
+    """
+    moment = datetime.now(UTC) + timedelta(hours=hours)
+    return moment.replace(minute=0, second=0, microsecond=0).isoformat()
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -187,12 +199,12 @@ def test_calendar_shows_events_and_plans_with_their_kind(tmp_path: Path) -> None
     task_id = _add_task(tmp_path)
     event = runner.invoke(
         app,
-        ["calendar", "add", "SE lecture", "--start", MONDAY, "--end", "2026-09-21T12:00:00+08:00"],
+        ["calendar", "add", "SE lecture", "--start", _soon(1), "--end", _soon(2)],
         env=_env(tmp_path),
     )
     runner.invoke(
         app,
-        ["plan", "add", task_id, "--start", WEDNESDAY, "--end", WEDNESDAY_END],
+        ["plan", "add", task_id, "--start", _soon(3), "--end", _soon(4)],
         env=_env(tmp_path),
     )
 
