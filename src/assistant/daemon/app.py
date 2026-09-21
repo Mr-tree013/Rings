@@ -8,6 +8,7 @@ is fatal (the user must fix it); a *service* failure is not (the supervisor retr
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -21,9 +22,14 @@ from assistant.adapters.runtime.instance_lock import (
     InstanceLockHeld,
     daemon_lock_path,
 )
+from assistant.daemon.conversation_queue import ConversationQueueService
 from assistant.daemon.supervisor import AsyncService, supervise
 from assistant.domain.config import AssistantConfig
-from assistant.domain.errors import InvalidAssistantConfig
+from assistant.domain.errors import (
+    InvalidAssistantConfig,
+    ModelCredentialsMissing,
+    ModelNotConfigured,
+)
 from assistant.ports.clock import Clock
 from assistant.ports.model import ModelPort
 from assistant.store.db import Database
@@ -81,7 +87,14 @@ def build_services(
     if config.watchers.enabled_targets:
         services.append(bootstrap.web_watch_service(config, clock, database))
     if config.mobile.enabled:
-        services.append(bootstrap.mobile_web_service(config, clock, database))
+        chat = None
+        with contextlib.suppress(ModelNotConfigured, ModelCredentialsMissing):
+            chat = bootstrap.conversation_chat_service(database, clock, config, model=model)
+        services.append(bootstrap.mobile_web_service(config, clock, database, chat=chat))
+        if chat is not None:
+            # The durable queue needs an owner that survives restarts: recovery on start, and only
+            # queued work resumed (ADR-0041 §10).
+            services.append(ConversationQueueService(chat.coordinator))
     if bootstrap.mail_analysis_available(config, model=model):
         services.append(bootstrap.mail_event_worker(config, clock, database, model=model))
     return services

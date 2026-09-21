@@ -21,9 +21,10 @@ clock. It imports no adapter, no SQLite, no SMTP and no eHall code, which is wha
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from assistant.application import conversation_render as render
 from assistant.application.conversation_capabilities.registry import (
@@ -38,6 +39,7 @@ from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
     PreparedReview,
 )
+from assistant.application.conversation_progress import TurnRuntime, stage_for_plan
 from assistant.application.conversation_prompt import CONFIRM_PHRASES, REJECT_PHRASES
 from assistant.application.conversation_recurring_intent import (
     declares_mutation,
@@ -45,6 +47,7 @@ from assistant.application.conversation_recurring_intent import (
 )
 from assistant.application.conversational_facts import (
     FACT_CONFIRMATION_INTENT_CANCEL,
+    FACT_CONFIRMATION_INTENT_CONFIRM,
     ConversationalFactService,
     PendingFactReview,
     fact_confirmation_intent,
@@ -78,6 +81,7 @@ from assistant.domain.conversation_plan import (
     NewMailRecipientKind,
     PlannedOperation,
 )
+from assistant.domain.conversation_request import ConversationProgressStage
 from assistant.domain.conversation_review import (
     ConversationExternalReview,
     ConversationExternalReviewStatus,
@@ -87,6 +91,7 @@ from assistant.domain.conversation_review import (
 from assistant.domain.errors import (
     ConversationCapabilityUnavailable,
     ConversationInterpretationFailed,
+    ConversationRequestCancelled,
     ConversationThreadNotFound,
     DomainError,
     InvalidConversationPlan,
@@ -119,6 +124,18 @@ FACT_REVIEW_NOTICE_LIMIT = 3
 
 CONFIRMATION_INTENT_CONFIRM = "confirm"
 CONFIRMATION_INTENT_REJECT = "reject"
+
+CARD_SEND_CONFIRM_PHRASE = "确认发送"
+CARD_FACT_CONFIRM_PHRASE = "确认记住"
+CARD_FACT_CANCEL_PHRASE = "不要记"
+CARD_LOCAL_CONFIRM_PHRASE = "可以"
+CARD_CANCEL_PHRASE = "取消"
+"""The deterministic phrases a card button records.
+
+A click is not a message, so the runtime writes down the exact sentence a terminal user would have
+typed to reach the same settlement. That is what keeps the browser and the terminal equivalent in
+durable history as well as in effect (ADR-0041 §21, §29, §49).
+"""
 
 _ACTIVITY_HINTS = {
     ConversationOperationType.MAIL_SYNC: "正在查看邮箱……",
@@ -387,8 +404,14 @@ class ConversationService:
         text: str,
         *,
         activity: Callable[[str], None] | None = None,
+        runtime: TurnRuntime | None = None,
     ) -> ConversationReply:
-        """Record one user message and do whatever the runtime is allowed to do about it."""
+        """Record one user message and do whatever the runtime is allowed to do about it.
+
+        `runtime` is the optional companion a browser-dispatched turn carries: where to report its
+        coarse stage, and how to notice that the user asked it to stop. The terminal passes
+        nothing, which is why `rings` behaves exactly as it did in v1.1.1 (ADR-0041 §3, §50).
+        """
         thread = await self._repository.get_thread(thread_id)
         if thread is None:
             raise ConversationThreadNotFound(thread_id)
@@ -408,8 +431,17 @@ class ConversationService:
             # the human actually typed (ADR-0034 §11, §23). A generic "可以" is not one of them.
             reviews = await self._external.waiting(thread.id)
             if reviews and matches_send_confirmation(text):
+                # Settling a reviewed send reaches an external effect, so this is where the turn
+                # stops being stoppable: the stage is recorded, and a stop that arrived while the
+                # turn was still being understood is honoured *before* the approval exists.
+                await self._prepare_settlement(
+                    runtime, ConversationProgressStage.EXTERNAL_EXECUTION
+                )
                 return await self._settle_external(thread, user_message.id, reviews)
             if reviews and matches_send_cancellation(text):
+                await self._prepare_settlement(
+                    runtime, ConversationProgressStage.UPDATING_LOCAL_STATE
+                )
                 for review in reviews:
                     await self._external.cancel(review)
                 return await self._finish(
@@ -417,6 +449,7 @@ class ConversationService:
                     await self._control_turn(thread, user_message.id),
                     ConversationTurnStatus.COMPLETED,
                     render.render_review_withdrawn(),
+                    runtime=runtime,
                 )
             # Only once the deterministically handled phrases are out of the way is an expired
             # review closed, so "确认发送" after the window answered, never a model call.
@@ -428,17 +461,25 @@ class ConversationService:
             if fact_intent is not None:
                 waiting = await self._facts.pending()
                 if waiting:
+                    await self._prepare_settlement(
+                        runtime, ConversationProgressStage.UPDATING_LOCAL_STATE
+                    )
                     return await self._answer_fact_confirmation(
                         thread, user_message.id, waiting, fact_intent[0], fact_intent[1]
                     )
         pending = await self._repository.operations_waiting_for_confirmation(thread.id)
         intent = _confirmation_intent(text)
         if pending and intent is not None:
+            await self._prepare_settlement(
+                runtime, ConversationProgressStage.UPDATING_LOCAL_STATE
+            )
             return await self._answer_confirmation(thread, user_message.id, pending, intent, text)
         if pending:
             # Say what is waiting, and keep waiting: a real request still gets interpreted below.
             await self._expire_stale(thread.id, pending)
-        return await self._interpret_and_run(thread, user_message.id, text, activity=activity)
+        return await self._interpret_and_run(
+            thread, user_message.id, text, activity=activity, runtime=runtime
+        )
 
     async def _interpret_and_run(
         self,
@@ -447,9 +488,12 @@ class ConversationService:
         text: str,
         *,
         activity: Callable[[str], None] | None = None,
+        runtime: TurnRuntime | None = None,
     ) -> ConversationReply:
-
-
+        # The stage is reported immediately; the first checkpoint deliberately comes *after* the
+        # turn row exists, so that a stop always leaves a durable, truthful record ("this turn was
+        # interrupted") rather than a user message with no answer at all.
+        await self._report(runtime, ConversationProgressStage.UNDERSTANDING)
         context = await self._context_builder.build(
             thread.id,
             confirmation_pending=bool(
@@ -467,7 +511,13 @@ class ConversationService:
             )
         )
         try:
-            plan = await self._interpreter.plan(text, context)
+            # The one long await before anything can happen: a stop during it abandons the model's
+            # answer rather than a mutation, which is what makes Stop safe here (ADR-0041 §30).
+            _checkpoint(runtime)
+            plan = await _guarded(runtime, self._interpreter.plan(text, context))
+            _checkpoint(runtime)
+        except ConversationRequestCancelled:
+            return await self._stopped(thread, turn)
         except ConversationCapabilityUnavailable as exc:
             return await self._finish(
                 thread,
@@ -545,9 +595,18 @@ class ConversationService:
                 else plan.clarification
             )
             return await self._finish(
-                thread, turn, ConversationTurnStatus.COMPLETED, (spoken or "").strip()
+                thread,
+                turn,
+                ConversationTurnStatus.COMPLETED,
+                (spoken or "").strip(),
+                runtime=runtime,
             )
-        return await self._run_plan(thread, turn, plan, text=text, activity=activity)
+        try:
+            return await self._run_plan(
+                thread, turn, plan, text=text, activity=activity, runtime=runtime
+            )
+        except ConversationRequestCancelled:
+            return await self._stopped(thread, turn)
 
     async def _run_plan(
         self,
@@ -557,6 +616,7 @@ class ConversationService:
         *,
         text: str = "",
         activity: Callable[[str], None] | None = None,
+        runtime: TurnRuntime | None = None,
     ) -> ConversationReply:
         unsupported = [
             operation.operation_type.value
@@ -597,7 +657,9 @@ class ConversationService:
                     error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
                 )
             if not declares_mutation(text):
-                return await self._hold_recurring_for_confirmation(thread, turn, recurring)
+                return await self._hold_recurring_for_confirmation(
+                    thread, turn, recurring, runtime=runtime
+                )
 
         claimed = _unproven_addresses(plan, text)
         if claimed:
@@ -638,6 +700,11 @@ class ConversationService:
                 error_code=ConversationErrorCode.UNSUPPORTED_SEMANTICS,
             )
 
+        # The plan is validated and nothing has run. This is the last checkpoint before any
+        # operation is stored or applied, and the stage recorded here is derived from the plan's
+        # own operation types — never from anything the model said (ADR-0041 §11, §30).
+        await self._report(runtime, stage_for_plan(plan))
+        _checkpoint(runtime)
         results: list[OperationResult] = []
         operation_types: list[str] = []
         waiting: ConversationOperation | None = None
@@ -669,6 +736,7 @@ class ConversationService:
                     status=ConversationOperationStatus.WAITING_CONFIRMATION,
                     expires_at=self._clock.now() + self._confirmation_ttl,
                 )
+                await self._report(runtime, ConversationProgressStage.WAITING_CONFIRMATION)
                 waiting = stored
                 operation_types.append(planned.operation_type.value)
                 break
@@ -758,6 +826,7 @@ class ConversationService:
                     status=ConversationOperationStatus.WAITING_CONFIRMATION,
                     expires_at=self._clock.now() + self._confirmation_ttl,
                 )
+                await self._report(runtime, ConversationProgressStage.WAITING_CONFIRMATION)
                 operation_types.append(ConversationOperationType.PLAN_APPLY_PROPOSAL.value)
                 offer_in_text = True
                 break
@@ -780,6 +849,7 @@ class ConversationService:
                 text_out,
                 operation_types=tuple(operation_types),
                 waiting=True,
+                runtime=runtime,
             )
         return await self._finish(
             thread,
@@ -787,6 +857,7 @@ class ConversationService:
             ConversationTurnStatus.COMPLETED,
             text_out,
             operation_types=tuple(operation_types),
+            runtime=runtime,
         )
 
     async def _answer_confirmation(
@@ -797,9 +868,18 @@ class ConversationService:
         intent: str,
         text: str,
     ) -> ConversationReply:
+        del text
+        turn = await self._confirmation_turn(thread, user_message_id)
+        groups = _confirmation_groups(pending)
+        return await self._answer_groups(thread, turn, groups, intent)
+
+    async def _confirmation_turn(
+        self, thread: ConversationThread, user_message_id: ConversationMessageId
+    ) -> ConversationTurn:
+        """The turn row for a message answered by the deterministic confirmation vocabulary."""
         context = await self._context_builder.build(thread.id, confirmation_pending=True)
         now = self._clock.now()
-        turn = await self._repository.add_turn(
+        return await self._repository.add_turn(
             ConversationTurn(
                 thread_id=thread.id,
                 user_message_id=user_message_id,
@@ -808,15 +888,26 @@ class ConversationService:
                 created_at=now,
             )
         )
-        groups = _confirmation_groups(pending)
+
+    async def _answer_groups(
+        self,
+        thread: ConversationThread,
+        turn: ConversationTurn,
+        groups: Sequence[Sequence[ConversationOperation]],
+        intent: str,
+    ) -> ConversationReply:
+        """Settle one group of pending local confirmations, or explain why it is not one group."""
+        now = self._clock.now()
         if len(groups) > 1:
             if intent == CONFIRMATION_INTENT_REJECT:
                 # "取消" is not a confirmation: withdrawing every outstanding question applies
                 # nothing, so it cannot fan out into anything and needs no target (ADR-0040 §15).
-                for operation in pending:
+                for operation in [item for group in groups for item in group]:
                     await self._repository.update_operation(
                         _replace_operation(
-                            operation, status=ConversationOperationStatus.REJECTED, at=now
+                            operation,
+                            status=ConversationOperationStatus.REJECTED,
+                            at=now,
                         )
                     )
                 return await self._finish(
@@ -896,6 +987,8 @@ class ConversationService:
         thread: ConversationThread,
         turn: ConversationTurn,
         recurring: Sequence[tuple[int, PlannedOperation]],
+        *,
+        runtime: TurnRuntime | None = None,
     ) -> ConversationReply:
         """Ask before a described weekly commitment becomes durable state (ADR-0036 §19).
 
@@ -960,6 +1053,7 @@ class ConversationService:
                 planned.operation_type.value for _, planned in recurring
             ),
             waiting=True,
+            runtime=runtime,
         )
 
     async def _answer_recurring_batch(
@@ -1046,20 +1140,30 @@ class ConversationService:
         reviews: Sequence[ConversationExternalReview],
     ) -> ConversationReply:
         """Handle one explicit send confirmation: deterministic, no model, no guessing."""
-        turn = await self._control_turn(thread, user_message_id)
-        external = self._external
-        if external is None:  # pragma: no cover - the caller only routes here when it exists
-            return await self._finish(
-                thread, turn, ConversationTurnStatus.FAILED, render.render_empty_turn()
-            )
         if len(reviews) > 1:
+            turn = await self._control_turn(thread, user_message_id)
             return await self._finish(
                 thread,
                 turn,
                 ConversationTurnStatus.COMPLETED,
                 render.render_review_ambiguous(len(reviews)),
             )
-        outcome = await external.confirm(reviews[0])
+        return await self._settle_review(thread, user_message_id, reviews[0])
+
+    async def _settle_review(
+        self,
+        thread: ConversationThread,
+        user_message_id: ConversationMessageId,
+        review: ConversationExternalReview,
+    ) -> ConversationReply:
+        """Settle exactly one reviewed send. Shared by the typed phrase and the card button."""
+        turn = await self._control_turn(thread, user_message_id)
+        external = self._external
+        if external is None:  # pragma: no cover - the caller only routes here when it exists
+            return await self._finish(
+                thread, turn, ConversationTurnStatus.FAILED, render.render_empty_turn()
+            )
+        outcome = await external.confirm(review)
         return await self._finish(
             thread, turn, ConversationTurnStatus.COMPLETED, _settlement_text(outcome)
         )
@@ -1094,6 +1198,176 @@ class ConversationService:
             return
         for review in await self._external.waiting(thread.id):
             await self._external.supersede(review)
+
+    # ------------------------------------------------------ card-targeted deterministic settlement
+
+    async def settle_external_card(
+        self, thread_id: ConversationThreadId, *, review_id: UUID, confirm: bool
+    ) -> ConversationReply:
+        """Confirm or withdraw exactly one reviewed send, identified by durable identity.
+
+        This is the browser's half of ADR-0041 §29: the card names its target, so no model and no
+        phrase-matching is involved — and the settlement below is the *same* `_settle_review` the
+        terminal phrase path reaches. The recorded user message is the phrase a terminal user would
+        have typed, which is what makes the browser and the terminal produce equivalent durable
+        results (§49).
+
+        Raises:
+            StaleConversationCard: the review is gone, settled, or belongs to another thread.
+        """
+        from assistant.domain.errors import StaleConversationCard
+
+        thread = await self._active_thread(thread_id)
+        if self._external is None:  # pragma: no cover - no external capability, no card
+            raise StaleConversationCard("this host has no reviewed external capability")
+        review = await self._external.get(review_id)
+        if (
+            review is None
+            or review.thread_id != thread.id
+            or not review.is_waiting
+        ):
+            raise StaleConversationCard("this confirmation is no longer waiting")
+        if not confirm:
+            message = await self._record_user_message(thread, CARD_CANCEL_PHRASE)
+            await self._external.cancel(review)
+            return await self._finish(
+                thread,
+                await self._control_turn(thread, message.id),
+                ConversationTurnStatus.COMPLETED,
+                render.render_review_withdrawn(),
+            )
+        message = await self._record_user_message(thread, CARD_SEND_CONFIRM_PHRASE)
+        return await self._settle_review(thread, message.id, review)
+
+    async def settle_fact_card(
+        self, thread_id: ConversationThreadId, *, candidate_id: UUID | str, confirm: bool
+    ) -> ConversationReply:
+        """Confirm or refuse exactly one pending long-term fact, with no model in the path."""
+        from assistant.domain.errors import StaleConversationCard
+
+        thread = await self._active_thread(thread_id)
+        if self._facts is None:  # pragma: no cover - no fact capability, no card
+            raise StaleConversationCard("this host has no conversational facts")
+        target = str(candidate_id)
+        matches = [
+            review
+            for review in await self._facts.pending()
+            if str(review.candidate.id) == target
+        ]
+        if not matches:
+            raise StaleConversationCard("this proposal is no longer waiting")
+        phrase = CARD_FACT_CONFIRM_PHRASE if confirm else CARD_FACT_CANCEL_PHRASE
+        message = await self._record_user_message(thread, phrase)
+        return await self._answer_fact_confirmation(
+            thread,
+            message.id,
+            matches,
+            FACT_CONFIRMATION_INTENT_CONFIRM if confirm else FACT_CONFIRMATION_INTENT_CANCEL,
+            None,
+        )
+
+    async def settle_group_card(
+        self, thread_id: ConversationThreadId, *, turn_id: ConversationTurnId, confirm: bool
+    ) -> ConversationReply:
+        """Apply or withdraw exactly one pending local confirmation group, by identity.
+
+        The group is the set of operations one turn put in front of the user — a weekly schedule's
+        rules, or one offer to apply a plan. Naming the turn is what makes the card's meaning exact;
+        the settlement itself is the same deterministic code the terminal reaches (§29).
+
+        Raises:
+            StaleConversationCard: the group is gone, superseded or belongs to another thread.
+        """
+        from assistant.domain.errors import StaleConversationCard
+
+        thread = await self._active_thread(thread_id)
+        target = await self._repository.get_turn(turn_id)
+        if target is None or target.thread_id != thread.id:
+            raise StaleConversationCard("this confirmation does not belong to this conversation")
+        operations = [
+            operation
+            for operation in await self._repository.list_operations(target.id)
+            if operation.status is ConversationOperationStatus.WAITING_CONFIRMATION
+        ]
+        groups = _confirmation_groups(operations)
+        if len(groups) != 1:
+            raise StaleConversationCard("this confirmation is no longer waiting")
+        phrase = CARD_LOCAL_CONFIRM_PHRASE if confirm else CARD_CANCEL_PHRASE
+        message = await self._record_user_message(thread, phrase)
+        turn = await self._confirmation_turn(thread, message.id)
+        return await self._answer_groups(
+            thread,
+            turn,
+            groups,
+            CONFIRMATION_INTENT_CONFIRM if confirm else CONFIRMATION_INTENT_REJECT,
+        )
+
+    async def _active_thread(self, thread_id: ConversationThreadId) -> ConversationThread:
+        """The thread a card action may settle, or the reason it may not."""
+        thread = await self._repository.get_thread(thread_id)
+        if thread is None:
+            raise ConversationThreadNotFound(thread_id)
+        if thread.status is not ConversationThreadStatus.ACTIVE:
+            raise InvalidConversationThread("this conversation is archived")
+        return thread
+
+    async def _record_user_message(
+        self, thread: ConversationThread, text: str
+    ) -> ConversationMessage:
+        """Store the deterministic confirmation phrase a card click stands for."""
+        return await self._repository.add_message(
+            ConversationMessage(
+                thread_id=thread.id,
+                role=ConversationMessageRole.USER,
+                text=text,
+                created_at=self._clock.now(),
+            )
+        )
+
+    # ------------------------------------------------------------------- progress / stopping
+
+    async def _report(
+        self, runtime: TurnRuntime | None, stage: ConversationProgressStage
+    ) -> None:
+        """Tell a browser-dispatched turn's caller which coarse stage it is in."""
+        if runtime is not None:
+            await runtime.report(stage)
+
+    async def _prepare_settlement(
+        self, runtime: TurnRuntime | None, stage: ConversationProgressStage
+    ) -> None:
+        """Record the boundary a deterministic settlement is about to cross.
+
+        Every one of these paths does something that cannot be undone by a browser button — it
+        approves and sends, or it writes a confirmed fact, or it applies a plan. Recording the
+        stage first is what makes `can_cancel` false from that instant, and the checkpoint is the
+        last moment a stop that arrived earlier is honoured with nothing written.
+        """
+        await self._report(runtime, stage)
+        _checkpoint(runtime)
+
+    async def _stopped(
+        self, thread: ConversationThread, turn: ConversationTurn
+    ) -> ConversationReply:
+        """Close a turn the user stopped, leaving no mutating operation behind."""
+        now = self._clock.now()
+        for operation in await self._repository.list_operations(turn.id):
+            if operation.status in (
+                ConversationOperationStatus.PROPOSED,
+                ConversationOperationStatus.APPLYING,
+                ConversationOperationStatus.WAITING_CONFIRMATION,
+            ):
+                await self._repository.update_operation(
+                    _replace_operation(
+                        operation, status=ConversationOperationStatus.REJECTED, at=now
+                    )
+                )
+        return await self._finish(
+            thread,
+            turn,
+            ConversationTurnStatus.INTERRUPTED,
+            render.render_stopped(),
+        )
 
     # ------------------------------------------------------------------- execution fence
 
@@ -1258,7 +1532,12 @@ class ConversationService:
         waiting: bool = False,
         error_code: ConversationErrorCode | None = None,
         debug_detail: str | None = None,
+        runtime: TurnRuntime | None = None,
     ) -> ConversationReply:
+        # The last stage before the reply is durable. There is deliberately no checkpoint here:
+        # by this point the turn has decided what happened, and a stop that arrived after the
+        # decision must not turn a real outcome into a claimed cancellation.
+        await self._report(runtime, ConversationProgressStage.FINALIZING)
         now = self._clock.now()
         assistant = await self._repository.add_message(
             ConversationMessage(
@@ -1544,6 +1823,26 @@ def _is_expired(operation: ConversationOperation, now: datetime) -> bool:
 
 def _fingerprint(context_json: str) -> str:
     return hashlib.sha256(context_json.encode("utf-8")).hexdigest()
+
+
+def _checkpoint(runtime: TurnRuntime | None) -> None:
+    """Refuse to go further when the user has stopped this request.
+
+    Every call site is chosen so that nothing irreversible has happened yet: before a model call,
+    after one returns, and between reading a plan and acting on it.
+
+    Raises:
+        ConversationRequestCancelled: the user asked to stop at a safe point.
+    """
+    if runtime is not None:
+        runtime.checkpoint()
+
+
+async def _guarded[V](runtime: TurnRuntime | None, awaitable: Awaitable[V]) -> V:
+    """Await something that may be abandoned if the user stops the request first."""
+    if runtime is None:
+        return await awaitable
+    return await runtime.guard(awaitable)
 
 
 __all__ = [

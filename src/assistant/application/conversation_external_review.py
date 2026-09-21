@@ -144,6 +144,10 @@ class ConversationExternalReviewService:
         """Live reviews of one conversation thread, oldest first."""
         return await self._reviews.waiting_for_thread(thread_id)
 
+    async def get(self, review_id: UUID) -> ConversationExternalReview | None:
+        """One review by identity, or `None` — how a card names its exact target."""
+        return await self._reviews.get_review(review_id)
+
     async def payload_of(self, review: ConversationExternalReview) -> dict[str, object] | None:
         """The exact payload of the reviewed action, or `None` when it is gone."""
         try:

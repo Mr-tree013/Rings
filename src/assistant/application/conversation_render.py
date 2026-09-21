@@ -719,6 +719,16 @@ def render_review_withdrawn() -> str:
     return "好，这封邮件没有发送。需要的时候再说一次，我会重新准备。"
 
 
+def render_stopped() -> str:
+    """A turn the user stopped at a safe checkpoint: nothing was applied.
+
+    The wording is deliberately about what did *not* happen. A stop is only ever offered where the
+    runtime can honestly say no operation ran, and this sentence is that promise in the user's own
+    language (ADR-0041 §32-§33).
+    """
+    return "已停止：这条消息没有执行任何操作。想继续的话，再说一次就好。"
+
+
 def render_review_expired() -> str:
     """The reviewed send waited too long."""
     return "这次确认已经过期了，我没有发送。重新说一下要回什么，我会再准备一份给你确认。"
@@ -1210,6 +1220,7 @@ __all__ = [
     "render_review_stale",
     "render_review_withdrawn",
     "render_send_result",
+    "render_stopped",
     "render_unknown_local",
     "render_unproven_address",
     "render_unsupported",

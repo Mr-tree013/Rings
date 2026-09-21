@@ -1571,6 +1571,46 @@ class ConversationInterpretationFailed(ConversationError):
         super().__init__(detail or "the answer could not be interpreted")
 
 
+# ------------------------------------------------- durable browser requests (ADR-0041)
+
+
+class InvalidConversationRequest(ConversationError):
+    """An accepted-input row would be stored in a state the domain does not allow."""
+
+
+class ConversationRequestNotFound(ConversationError):
+    """No such conversation request."""
+
+
+class ConversationRequestCancelled(ConversationError):
+    """The user asked to stop this request, and the runtime reached a safe checkpoint.
+
+    Raised inside a turn and caught by the runtime: it is a control signal, never a message shown
+    to the user. The turn it interrupts is recorded as `INTERRUPTED`, and no pending operation of
+    that turn is ever applied (ADR-0041 §30).
+    """
+
+
+class CannotCancelSafely(ConversationError):
+    """Stop was refused because the request has crossed a boundary that cannot be undone.
+
+    The refusal is the honest answer: local state or an external effect has already moved, and a
+    browser button cannot roll that back (ADR-0041 §31-§33).
+    """
+
+
+class StaleConversationCard(ConversationError):
+    """A confirmation card no longer describes the durable state it would settle.
+
+    Nothing is applied, approved or executed: the caller refreshes its snapshot and shows the
+    current card (ADR-0041 §24, §27).
+    """
+
+
+class UnknownConversationCard(ConversationError):
+    """The card id names a kind or a target this build does not settle."""
+
+
 __all__ = [
     "ActionExecutionUnknown",
     "ActionExecutionUnresolved",
@@ -1587,6 +1627,7 @@ __all__ = [
     "BackupSourceMissing",
     "CalendarEventNotActive",
     "CalendarEventNotFound",
+    "CannotCancelSafely",
     "CapabilityUnavailable",
     "CaseNotFound",
     "CaseNotOpen",
@@ -1602,6 +1643,8 @@ __all__ = [
     "ConversationNeedsClarification",
     "ConversationOperationNotFound",
     "ConversationOperationUnknown",
+    "ConversationRequestCancelled",
+    "ConversationRequestNotFound",
     "ConversationThreadNotFound",
     "ConversationTimezoneRequired",
     "ConversationTurnFailed",
@@ -1648,6 +1691,7 @@ __all__ = [
     "InvalidConversationMessage",
     "InvalidConversationOperation",
     "InvalidConversationPlan",
+    "InvalidConversationRequest",
     "InvalidConversationThread",
     "InvalidCorrection",
     "InvalidDeadline",
@@ -1754,6 +1798,7 @@ __all__ = [
     "RestoreDestinationRejected",
     "ScheduledJobNotFound",
     "StaleCaseUpdate",
+    "StaleConversationCard",
     "StaleEventClaim",
     "StaleMailDraftUpdate",
     "StalePlanProposal",
@@ -1767,6 +1812,7 @@ __all__ = [
     "TrigramTokenizerUnavailable",
     "UnexpectedEventStatus",
     "UnknownCatalogEntry",
+    "UnknownConversationCard",
     "UnknownStorageRoot",
     "UnsafeFilePath",
     "UnsafeStorageRoot",

@@ -7,8 +7,8 @@ The properties here are the ones a reviewer would otherwise have to keep in thei
 * the application layer reaches no store, no adapter, no SQLite and no provider client;
 * no approval, action, execution or mail service is reachable from a conversation;
 * the capability registry is a closed mapping, not reflection;
-* the daemon never starts a conversation operation on its own;
-* the migration set is pinned through 0016.
+* the daemon owns the durable queue's lifecycle and never the conversation's meaning;
+* the migration set is pinned through the reviewed set.
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ CONVERSATION_DOMAIN = (
 )
 CONVERSATION_APPLICATION = (
     "application/conversation_input.py",
+    "application/conversation_progress.py",
+    "application/conversation_request_coordinator.py",
+    "application/conversation_event_broker.py",
+    "application/conversation_cards.py",
+    "application/conversation_chat.py",
     "application/conversation_service.py",
     "application/conversation_context.py",
     "application/conversation_interpreter.py",
@@ -223,32 +228,74 @@ def test_the_capability_registry_is_a_closed_mapping() -> None:
     assert "self._by_type" in text
 
 
-def test_the_daemon_never_runs_conversation_operations() -> None:
-    daemon_sources = "\n".join(
-        _read(f"daemon/{name}") for name in ("app.py", "supervisor.py")
-    )
+def test_the_daemon_owns_the_queue_and_never_the_conversation_meaning() -> None:
+    """ADR-0041 §7: the daemon recovers and drains *accepted requests*, nothing more.
 
-    assert "conversation" not in daemon_sources.lower()
+    Phase 11A gave the daemon one conversation responsibility — run the recovery and let the queue
+    hand accepted input to the existing runtime — so this check is now about what the daemon still
+    may not do: interpret a plan, name a capability, or reach a provider.
+    """
+    sources = {
+        name: _read(f"daemon/{name}")
+        for name in ("app.py", "supervisor.py", "conversation_queue.py")
+    }
+    queue = sources["conversation_queue.py"]
+
+    assert "recover()" in queue and "shutdown()" in queue
+    for name, text in sources.items():
+        # `app.py` names `ModelPort` only to pass the host's adapter into the services it composes;
+        # what must stay absent everywhere is any conversation *meaning*.
+        assert "conversation_capabilities" not in text, name
+        assert "ConversationInterpreter" not in text, name
+        assert "conversation_interpreter" not in text, name
+        assert "ModelRequest" not in text, name
+    assert "ModelPort" not in queue
+
+
+MODEL_LOOP_FREE = tuple(
+    module
+    for module in CONVERSATION_APPLICATION
+    if module
+    not in (
+        # Phase 11A's queue machinery. The coordinator's one loop is over *accepted requests*
+        # (take the next queued message, hand it to the runtime, repeat) — it is not a model loop,
+        # and the assertion below pins that in the same breath.
+        "application/conversation_request_coordinator.py",
+        "application/conversation_chat.py",
+        "application/conversation_cards.py",
+        "application/conversation_event_broker.py",
+        "application/conversation_progress.py",
+    )
+)
+"""Everything the model's plan flows through, and nothing that merely queues or displays it."""
 
 
 def test_the_model_is_asked_exactly_once_per_turn() -> None:
-    """No `while model_requests_tool` shape exists anywhere in the runtime."""
-    for relative in CONVERSATION_APPLICATION:
+    """No `while model_requests_tool` shape exists anywhere the model's plan flows through."""
+    for relative in MODEL_LOOP_FREE:
         tree = ast.parse(_read(relative), filename=relative)
         for node in ast.walk(tree):
             if isinstance(node, ast.While):
                 raise AssertionError(f"{relative} contains a while loop")
     service = _read("application/conversation_service.py")
-    assert service.count("await self._interpreter.plan(") == 1
+    # The plan is asked for exactly once, and the call is wrapped so a Stop can abandon it.
+    assert service.count("self._interpreter.plan(") == 1
+    coordinator = _read("application/conversation_request_coordinator.py")
+    # Two loops, both over queued requests — drain one thread's queue, then wait for the workers —
+    # and no interpreter anywhere near them.
+    assert coordinator.count("while True") == 2
+    assert "interpreter" not in coordinator
 
 
-def test_the_migration_set_is_pinned_through_the_contacts_migration() -> None:
+def test_the_migration_set_is_pinned_through_the_request_queue() -> None:
+    """ADR-0041 §4: the accepted-input queue is migration 0020, and nothing after it exists."""
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0019_contacts_and_outbound_mail.sql"
+    assert names[-1] == "0020_conversation_requests.sql"
+    assert len([name for name in names if name.startswith("0020")]) == 1
     assert len([name for name in names if name.startswith("0019")]) == 1
-    assert "0020" not in "".join(names)
+    assert "0021" not in "".join(names)
 
 
 # ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)

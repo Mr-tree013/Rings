@@ -200,6 +200,62 @@ def _conversation_section(connection: sqlite3.Connection) -> IntegritySection:
         "AND (e.id IS NULL OR e.action_id <> r.action_request_id)"
     ).fetchall():
         critical.append(f"conversation review {row['review_id']} names another action's run")
+    # The durable accepted-input queue (Phase 11A). These are read-only checks over the queue's own
+    # invariants: a request belongs to a real thread, a correlated turn belongs to the same thread
+    # and to that request alone, no thread has two active requests, and no terminal row still claims
+    # to be live. Message text is deliberately never inspected.
+    for row in connection.execute(
+        "SELECT r.id AS request_id FROM conversation_requests AS r "
+        "LEFT JOIN conversation_threads AS t ON t.id = r.thread_id WHERE t.id IS NULL"
+    ).fetchall():
+        critical.append(f"conversation request {row['request_id']} has no thread")
+    for row in connection.execute(
+        "SELECT r.id AS request_id FROM conversation_requests AS r "
+        "LEFT JOIN conversation_turns AS t ON t.id = r.turn_id "
+        "WHERE r.turn_id IS NOT NULL AND (t.id IS NULL OR t.thread_id <> r.thread_id)"
+    ).fetchall():
+        critical.append(
+            f"conversation request {row['request_id']} names a turn of another thread"
+        )
+    for row in connection.execute(
+        "SELECT t.id AS turn_id FROM conversation_turns AS t "
+        "LEFT JOIN conversation_requests AS r ON r.id = t.request_id "
+        "WHERE t.request_id IS NOT NULL AND r.id IS NULL"
+    ).fetchall():
+        critical.append(f"conversation turn {row['turn_id']} names a missing request")
+    for row in connection.execute(
+        "SELECT thread_id FROM conversation_requests WHERE status = 'processing' "
+        "GROUP BY thread_id HAVING COUNT(*) > 1"
+    ).fetchall():
+        critical.append(f"thread {row['thread_id']} has more than one active request")
+    for row in connection.execute(
+        "SELECT id, status, stage, started_at, finished_at FROM conversation_requests"
+    ).fetchall():
+        status = str(row["status"])
+        started = row["started_at"]
+        finished = row["finished_at"]
+        terminal = status in ("completed", "failed", "cancelled", "interrupted")
+        if status not in (
+            "queued",
+            "processing",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+        ):
+            critical.append(f"conversation request {row['id']} has an unknown status")
+        if terminal != (finished is not None):
+            critical.append(
+                f"conversation request {row['id']} disagrees about being finished"
+            )
+        if status == "queued" and started is not None:
+            critical.append(f"conversation request {row['id']} started while queued")
+        if status == "processing" and (started is None or finished is not None):
+            critical.append(
+                f"conversation request {row['id']} is processing without a live start"
+            )
+        if status == "processing" and row["stage"] is None:
+            critical.append(f"conversation request {row['id']} is active with no stage")
     if critical:
         return IntegritySection(
             "conversation",

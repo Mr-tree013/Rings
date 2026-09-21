@@ -238,11 +238,15 @@ class SqliteConversationRepository:
         )
         parameters: tuple[object, ...] = (str(thread_id),)
         if limit is not None:
-            # Keep the newest `limit`, then restore reading order.
+            # Keep the newest `limit`, then restore reading order. The insertion order has to be
+            # carried out of the subquery explicitly: two messages written in the same instant (a
+            # fixed clock, or a turn whose reply lands in the same microsecond) would otherwise
+            # come back reversed, because the outer `rowid` would be the *result set's* order.
             query = (
-                f"SELECT * FROM (SELECT {MESSAGE_FIELDS} FROM conversation_messages "
-                "WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?) "
-                "ORDER BY created_at, rowid"
+                f"SELECT {MESSAGE_FIELDS} FROM (SELECT {MESSAGE_FIELDS}, rowid AS insertion_order "
+                "FROM conversation_messages WHERE thread_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?) "
+                "ORDER BY created_at, insertion_order"
             )
             parameters = (str(thread_id), limit)
         with self._database.connect() as connection:
@@ -303,9 +307,10 @@ class SqliteConversationRepository:
         parameters: tuple[object, ...] = (str(thread_id),)
         if limit is not None:
             query = (
-                f"SELECT * FROM (SELECT {TURN_FIELDS} FROM conversation_turns "
-                "WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?) "
-                "ORDER BY created_at, rowid"
+                f"SELECT {TURN_FIELDS} FROM (SELECT {TURN_FIELDS}, rowid AS insertion_order "
+                "FROM conversation_turns WHERE thread_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?) "
+                "ORDER BY created_at, insertion_order"
             )
             parameters = (str(thread_id), limit)
         with self._database.connect() as connection:

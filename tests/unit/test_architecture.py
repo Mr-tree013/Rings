@@ -520,6 +520,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0017_conversation_external_reviews.sql",
         "0018_recurring_calendar_rules.sql",
         "0019_contacts_and_outbound_mail.sql",
+        "0020_conversation_requests.sql",
     ]
 
 
@@ -2490,7 +2491,7 @@ def test_the_mcp_surface_adds_no_schema() -> None:
     """§49: MCP keeps no durable server state, so the migration set stays the reviewed one."""
     migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
 
-    assert migrations[-1] == "0019_contacts_and_outbound_mail.sql"
+    assert migrations[-1] == "0020_conversation_requests.sql"
     assert not [name for name in migrations if "mcp" in name]
 
 
@@ -2869,9 +2870,9 @@ def test_the_release_keeps_the_migration_set_closed() -> None:
     names = [path.name for path in migrations]
 
     assert names[0] == "0001_initial.sql"
-    assert names[-1] == "0019_contacts_and_outbound_mail.sql"
-    assert len(names) == 19
-    assert "0020" not in "".join(names)
+    assert names[-1] == "0020_conversation_requests.sql"
+    assert len(names) == 20
+    assert "0021" not in "".join(names)
     assert len(names) == REVIEWED_MIGRATION_COUNT
 
 

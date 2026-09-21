@@ -93,7 +93,10 @@ def test_the_backup_commands_round_trip(isolated: Path) -> None:
     assert "VALID" in verified.output
     assert inspected.exit_code == 0, inspected.output
     assert "Format version" in inspected.output
-    assert "0019_contacts_and_outbound_mail.sql" in inspected.output
+    # The manifest names the reviewed migration range it was built from, not a fixed version: the
+    # list is the runtime's own applied history, so the newest entry is the one worth pinning.
+    assert "0001_initial.sql" in inspected.output
+    assert "0020_conversation_requests.sql" in inspected.output
 
 
 def test_a_backup_is_never_overwritten(isolated: Path) -> None:
