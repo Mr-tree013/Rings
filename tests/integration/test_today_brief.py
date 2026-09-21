@@ -17,8 +17,8 @@ import pytest
 from assistant import bootstrap
 from assistant.application.calendar_service import CreateCalendarEvent
 from assistant.application.today_brief import (
+    ATTENTION_BRIEF_LIMIT,
     CALENDAR_LIMIT,
-    MAIL_ATTENTION_LIMIT,
     TodayBriefService,
 )
 from assistant.domain.config import AssistantConfig
@@ -261,7 +261,7 @@ async def test_the_brief_shows_attention_items_without_mail_bodies(tmp_path: Pat
 
 async def test_the_brief_bounds_mail_attention(tmp_path: Path) -> None:
     harness = await build_harness(tmp_path)
-    for index in range(MAIL_ATTENTION_LIMIT + 2):
+    for index in range(ATTENTION_BRIEF_LIMIT + 2):
         message = await harness.seed_mail(
             subject=f"邮件 {index}", uid=index + 1, message_id=f"m{index}@example.edu"
         )
@@ -269,9 +269,13 @@ async def test_the_brief_bounds_mail_attention(tmp_path: Path) -> None:
 
     brief = await harness.today_brief.build()
 
-    mail_items = [entry for entry in brief.attention if entry.kind == "mail_requires_reply"]
-    assert len(mail_items) == MAIL_ATTENTION_LIMIT
-    assert brief.overflow["mail"] == 2
+    # Phase 11B: one normalised inbox line per pending message, bounded by the brief's own limit and
+    # counted once, instead of a second, differently-bounded mail section beside it.
+    attention_items = [entry for entry in brief.attention if entry.kind == "attention"]
+    assert len(attention_items) == ATTENTION_BRIEF_LIMIT
+    # The inbox service reads one row past the bound, so the brief can say truthfully that there is
+    # more without reading the whole list to count it exactly.
+    assert brief.overflow["attention"] >= 1
 
 
 async def test_the_brief_shows_waiting_items_without_executing_them(
@@ -306,8 +310,13 @@ async def test_the_brief_shows_waiting_items_without_executing_them(
 
     brief = await harness.today_brief.build()
 
+    attention = " ".join(entry.label for entry in brief.attention)
+    assert "等待你确认" in attention
+    assert "profile.office" in attention, "the key is what tells the user which proposal is waiting"
+    assert "仙林校区" not in attention, (
+        "a candidate's value is never copied into an inbox line — only its key (ADR-0042 §15)"
+    )
     waiting = " ".join(entry.label for entry in brief.waiting)
-    assert "长期信息等待确认" in waiting
     assert "邮件等待你的发送确认" in waiting
     # Building the brief neither sends nor approves anything.
     assert harness.executor.calls == []
@@ -364,8 +373,12 @@ async def test_a_pending_plan_proposal_is_visible(tmp_path: Path) -> None:
 
     brief = await harness.today_brief.build()
 
-    labels = " ".join(entry.label for entry in brief.waiting)
+    # Phase 11B: the pending proposal is reported once, as one normalised attention line, rather
+    # than once here and once as a `plan_ready` reminder with an internal title.
+    labels = " ".join(entry.label for entry in brief.attention)
     assert "周计划" in labels
+    assert "plan_ready" not in labels
+    assert "Updated plan proposal is ready" not in labels
     assert _counts(harness.database)["plan_blocks"] == 0
 
 

@@ -100,6 +100,10 @@ class ConversationOperationType(StrEnum):
 
     BRIEF_TODAY = "brief.today"
 
+    ATTENTION_LIST = "attention.list"
+    ATTENTION_ACKNOWLEDGE = "attention.acknowledge"
+    ATTENTION_DISMISS = "attention.dismiss"
+
     SYSTEM_CAPABILITIES = "system.capabilities"
 
 
@@ -122,6 +126,7 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.FACT_LIST,
         ConversationOperationType.FACT_SHOW,
         ConversationOperationType.BRIEF_TODAY,
+        ConversationOperationType.ATTENTION_LIST,
         ConversationOperationType.SYSTEM_CAPABILITIES,
     }
 )
@@ -462,6 +467,42 @@ class BriefTodayArguments:
     operation_type: ConversationOperationType = field(
         default=ConversationOperationType.BRIEF_TODAY, init=False
     )
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionListArguments:
+    """The unified "what needs me" inbox, in product language."""
+
+    include_settled: bool = False
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.ATTENTION_LIST, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionSettleArguments:
+    """Settle one attention item: "I have seen it" or "stop reminding me about it"."""
+
+    reference: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.ATTENTION_ACKNOWLEDGE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.reference, "reference")
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionDismissArguments:
+    """Stop reminding about one attention item. The source object is untouched."""
+
+    reference: str
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.ATTENTION_DISMISS, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.reference, "reference")
 
 
 # ------------------------------------------------------------------ contact arguments
@@ -998,6 +1039,9 @@ ConversationOperationArguments = (
     | FactShowArguments
     | FactProposeArguments
     | BriefTodayArguments
+    | AttentionListArguments
+    | AttentionSettleArguments
+    | AttentionDismissArguments
     | SystemCapabilitiesArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
@@ -1423,6 +1467,20 @@ def build_arguments(
         )
     if kind is ConversationOperationType.BRIEF_TODAY:
         return BriefTodayArguments()
+    if kind is ConversationOperationType.ATTENTION_LIST:
+        return AttentionListArguments(
+            include_settled=_boolean(
+                payload.get("include_settled"), "include_settled", default=False
+            )
+        )
+    if kind is ConversationOperationType.ATTENTION_ACKNOWLEDGE:
+        return AttentionSettleArguments(
+            reference=_strings(payload.get("reference"), "reference")
+        )
+    if kind is ConversationOperationType.ATTENTION_DISMISS:
+        return AttentionDismissArguments(
+            reference=_strings(payload.get("reference"), "reference")
+        )
     if kind is ConversationOperationType.SYSTEM_CAPABILITIES:
         return SystemCapabilitiesArguments()
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
@@ -1554,6 +1612,9 @@ __all__ = [
     "MAX_OPERATION_TEXT_CHARS",
     "MAX_RECURRING_TITLE_CHARS",
     "READ_OPERATIONS",
+    "AttentionDismissArguments",
+    "AttentionListArguments",
+    "AttentionSettleArguments",
     "BriefTodayArguments",
     "CalendarCreateArguments",
     "CalendarListArguments",

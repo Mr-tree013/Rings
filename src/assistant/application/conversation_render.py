@@ -98,6 +98,10 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return render_fact_proposed(data)
     if result.kind == "today_brief":
         return _render_today_brief(data, timezone)
+    if result.kind == "attention":
+        return _render_attention(data, timezone)
+    if result.kind == "attention_settled":
+        return _render_attention_settled(data)
     if result.kind == "event_created":
         starts = _moment(data.get("starts_at"), timezone)
         ends = _moment(data.get("ends_at"), timezone)
@@ -523,6 +527,64 @@ def _render_facts(data: dict[str, Any]) -> str:
 def _render_fact(data: dict[str, Any]) -> str:
     fact = data.get("fact") or {}
     return f"{fact.get('key', '')}：{fact.get('value', '')}"
+
+
+_SEVERITY_WORDS: dict[str, str] = {
+    "high": "重要",
+    "normal": "",
+    "info": "提示",
+}
+"""Optional severity prefix per line. `normal` carries none, because most things are normal."""
+
+
+def _render_attention(data: dict[str, Any], timezone: str | None) -> str:
+    """The unified inbox, as a short list of product sentences.
+
+    Everything here comes from the attention projection, so an item can be named the same way
+    everywhere it appears — in the terminal, in the brief and in the browser. The user never has to
+    learn which subsystem noticed something.
+    """
+    items = data.get("items") or []
+    if not items:
+        return "现在没有需要你处理的事情。"
+    lines = [f"现在有 {data.get('total', len(items))} 项需要你处理："]
+    for item in items:
+        lines.append(_attention_line(item, timezone))
+    overflow = int(data.get("overflow") or 0)
+    if overflow:
+        lines.append(f"另有 {overflow} 项")
+    lines.append("回复「这个我知道了」标记已看过，或回复「这个不用再提醒我」让它先安静下来。")
+    return "\n".join(lines)
+
+
+def _attention_line(item: Mapping[str, Any], timezone: str | None) -> str:
+    """One inbox line: an optional severity word, the title, and a short reason."""
+    prefix = _SEVERITY_WORDS.get(str(item.get("severity", "normal")), "")
+    title = str(item.get("title", ""))
+    detail = item.get("summary")
+    since = _waiting_label(item.get("days_waiting"))
+    head = f"- {prefix}｜{title}" if prefix else f"- {title}"
+    parts = [part for part in (detail, since) if part]
+    return head if not parts else f"{head}（{'，'.join(str(part) for part in parts)}）"
+
+
+def _render_attention_settled(data: dict[str, Any]) -> str:
+    """What the user's own words just did, and what they deliberately did not do."""
+    title = str(data.get("title", ""))
+    if data.get("status") == "dismissed":
+        return f"好，我先不再提醒「{title}」。这件事本身没有变化。"
+    return f"好，我把「{title}」标记为已经看过了。"
+
+
+def _waiting_label(days: object) -> str | None:
+    """A coarse "how long has this been waiting", already counted by the handler's Clock.
+
+    The count arrives as data rather than being derived here, because this module has no Clock and
+    a renderer that read the wall clock would be a second, unreviewable time source.
+    """
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        return None
+    return "昨天起" if days == 1 else f"{days} 天前起"
 
 
 def _render_today_brief(data: dict[str, Any], timezone: str | None) -> str:

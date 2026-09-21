@@ -46,6 +46,7 @@ class ConversationEntityKind(StrEnum):
     CONTACT = "contact"
     CONFIRMED_FACT = "confirmed_fact"
     FACT_CANDIDATE = "fact_candidate"
+    ATTENTION_ITEM = "attention_item"
 
 
 @dataclass(frozen=True, slots=True)

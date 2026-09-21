@@ -14,6 +14,7 @@
   var SESSION_COOKIE = "ga_mobile_session";
   var CSRF_COOKIE = "ga_mobile_csrf";
   var RESYNC_EVENT = "resync.required";
+  var ATTENTION_EVENT = "attention.updated";
 
   var STAGE_LABELS = {
     queued: "已排队，等待 Tree 开始处理…",
@@ -73,27 +74,69 @@
     elements.send = document.getElementById("send");
     elements.stop = document.getElementById("stop");
     elements.newMessages = document.getElementById("new-messages");
+    elements.attentionButton = document.getElementById("attention-button");
+    elements.attentionCount = document.getElementById("attention-count");
+    elements.attentionDrawer = document.getElementById("attention-drawer");
+    elements.attentionList = document.getElementById("attention-list");
+    elements.attentionEmpty = document.getElementById("attention-empty");
+    elements.closeAttention = document.getElementById("close-attention");
+    elements.pairing = document.getElementById("pairing");
+    elements.pairingText = document.getElementById("pairing-text");
+    elements.pairingLink = document.getElementById("pairing-link");
 
     wireComposer();
     wireSidebar();
+    wireAttention();
     start();
   });
 
   // ------------------------------------------------------------------ startup
 
   function start() {
-    if (!csrfToken()) {
-      setConnection("未配对：请先在这台设备上完成配对。", "offline");
+    loadBootstrap().catch(reportStartupFailure);
+  }
+
+  /* Why a start failed is three different things, and v1.2 said the same sentence for all of
+   * them. Saying "无法连接主机" when the host is answering perfectly well and merely does not
+   * recognise this browser is simply false, and it sends the user to look at the wrong problem. */
+  function reportStartupFailure(error) {
+    if (error && error.status === 401) {
+      if (hasSessionCookie()) {
+        showPairing("配对状态已失效，请重新配对。", "重新配对");
+      } else {
+        showPairing("这个浏览器还没有与 Rings 配对。", "去配对");
+      }
+      return;
     }
-    loadBootstrap().catch(function () {
-      setConnection("无法连接主机，正在重试…", "offline");
-    });
+    setConnection("无法连接主机，正在重试…", "offline");
+  }
+
+  function showPairing(text, label) {
+    setConnection(text, "offline");
+    if (!elements.pairing) {
+      return;
+    }
+    elements.pairingText.textContent = text;
+    elements.pairingLink.textContent = label;
+    elements.pairing.hidden = false;
+  }
+
+  function hidePairing() {
+    if (elements.pairing) {
+      elements.pairing.hidden = true;
+    }
+  }
+
+  function hasSessionCookie() {
+    return new RegExp("(?:^|; )" + SESSION_COOKIE + "=").test(document.cookie);
   }
 
   function loadBootstrap() {
     return api("GET", "/api/chat/bootstrap").then(function (payload) {
+      hidePairing();
       renderThreadList(payload.threads || []);
       renderHome(payload.home);
+      loadAttention().catch(function () {});
       var current = payload.current_thread_id;
       if (!current) {
         return createThread();
@@ -154,7 +197,10 @@
       setConnection("已连接", "online");
     });
     stream.addEventListener("error", function () {
-      setConnection("连接中断，正在重新连接…", "offline");
+      // A live stream dropping is a transport problem, and it is the only thing this message ever
+      // means. An authentication problem never reaches here: the endpoint answers 401 with JSON,
+      // and EventSource reports that as a plain error, so the startup path owns that wording.
+      setConnection("实时连接中断，正在恢复…", "offline");
     });
     [
       "request.queued",
@@ -173,6 +219,9 @@
       stream.addEventListener(name, function (event) {
         handleEvent(name, event);
       });
+    });
+    stream.addEventListener(ATTENTION_EVENT, function () {
+      loadAttention().catch(function () {});
     });
     stream.addEventListener(RESYNC_EVENT, function () {
       setConnection("正在重新同步…", "connecting");
@@ -493,6 +542,103 @@
 
   // --------------------------------------------------------------- composer
 
+  function wireAttention() {
+    if (!elements.attentionButton) {
+      return;
+    }
+    elements.attentionButton.addEventListener("click", function () {
+      elements.attentionDrawer.hidden = false;
+      loadAttention().catch(function () {});
+    });
+    elements.closeAttention.addEventListener("click", function () {
+      elements.attentionDrawer.hidden = true;
+    });
+  }
+
+  /* The inbox is durable state, so the browser never derives it: every open, every SSE hint and
+   * every settle refetches it. A frame that never arrives costs a refresh, never correctness. */
+  function loadAttention() {
+    return api("GET", "/api/chat/attention").then(function (payload) {
+      renderAttention(payload);
+      return payload;
+    });
+  }
+
+  function renderAttention(payload) {
+    if (!elements.attentionButton) {
+      return;
+    }
+    var total = payload.total || 0;
+    elements.attentionCount.textContent = String(total);
+    elements.attentionButton.hidden = total === 0;
+    elements.attentionButton.dataset.severity = highestSeverity(payload.items || []);
+    clear(elements.attentionList);
+    elements.attentionEmpty.hidden = total !== 0;
+    (payload.items || []).forEach(function (item) {
+      elements.attentionList.appendChild(renderAttentionItem(item));
+    });
+    if (payload.overflow) {
+      var more = el("li", "muted small");
+      more.textContent = "另有 " + payload.overflow + " 项";
+      elements.attentionList.appendChild(more);
+    }
+  }
+
+  function highestSeverity(items) {
+    var worst = "info";
+    items.forEach(function (item) {
+      if (item.severity === "high") {
+        worst = "high";
+      } else if (item.severity === "normal" && worst !== "high") {
+        worst = "normal";
+      }
+    });
+    return worst;
+  }
+
+  function renderAttentionItem(item) {
+    var row = el("li", "attention-item");
+    row.dataset.severity = item.severity;
+    var title = el("p", "attention-title");
+    title.textContent = item.title;
+    row.appendChild(title);
+    if (item.summary) {
+      var summary = el("p", "muted small");
+      summary.textContent = item.summary;
+      row.appendChild(summary);
+    }
+    var actions = el("div", "attention-actions");
+    actions.appendChild(attentionAction(item, "知道了", "acknowledge"));
+    actions.appendChild(attentionAction(item, "不再提醒", "dismiss"));
+    row.appendChild(actions);
+    return row;
+  }
+
+  function attentionAction(item, label, verb) {
+    var button = el("button", verb === "dismiss" ? "" : "primary");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", function () {
+      button.disabled = true;
+      api("POST", "/api/chat/attention/" + item.id + "/" + verb)
+        .then(function () {
+          announce(verb === "dismiss" ? "好，先不再提醒这一条。" : "好，这一条已经标记为看过。");
+          return loadAttention();
+        })
+        .catch(function (error) {
+          if (error && error.status === 404) {
+            announce("这条提醒已经不在列表里了。");
+            return loadAttention();
+          }
+          reportError(error);
+        })
+        .then(function () {
+          button.disabled = false;
+        });
+    });
+    return button;
+  }
+
   function wireComposer() {
     elements.input.addEventListener("compositionstart", function () {
       state.composing = true;
@@ -651,8 +797,12 @@
       return;
     }
     if (error && error.status === 401) {
-      setConnection("未配对或会话已失效，请重新配对。", "offline");
-      announce("会话已失效，请重新配对。");
+      if (hasSessionCookie()) {
+        showPairing("配对状态已失效，请重新配对。", "重新配对");
+      } else {
+        showPairing("这个浏览器还没有与 Rings 配对。", "去配对");
+      }
+      announce("这个浏览器需要先配对才能继续。");
       return;
     }
     announce("这条消息暂时没有处理成功，你可以重试。");

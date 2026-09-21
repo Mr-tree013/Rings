@@ -288,14 +288,15 @@ def test_the_model_is_asked_exactly_once_per_turn() -> None:
 
 
 def test_the_migration_set_is_pinned_through_the_request_queue() -> None:
-    """ADR-0041 §4: the accepted-input queue is migration 0020, and nothing after it exists."""
+    """ADR-0041 §4, ADR-0042: the request queue is 0020 and attention is 0021 — and nothing more."""
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0020_conversation_requests.sql"
+    assert names[-1] == "0021_attention_items.sql"
     assert len([name for name in names if name.startswith("0020")]) == 1
     assert len([name for name in names if name.startswith("0019")]) == 1
-    assert "0021" not in "".join(names)
+    assert len([name for name in names if name.startswith("0021")]) == 1
+    assert "0022" not in "".join(names)
 
 
 # ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)

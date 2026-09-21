@@ -140,6 +140,116 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The attention badge is the only chrome the conversation gets: it says "something needs you"
+ * without turning the page into a dashboard. */
+.attention-button {
+  margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.attention-button[data-severity="high"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.attention-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pairing {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  font-size: 0.9rem;
+}
+
+.drawer {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: min(24rem, 92vw);
+  z-index: 20;
+  padding: 0.9rem 1rem 1.5rem;
+  background: var(--surface);
+  border-inline-start: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.drawer-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.drawer-head .icon-button {
+  margin-inline-start: auto;
+}
+
+.attention-list {
+  list-style: none;
+  margin: 0.5rem 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.attention-item {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--bubble-tree);
+}
+
+.attention-item[data-severity="high"] {
+  border-inline-start: 3px solid var(--danger);
+}
+
+.attention-title {
+  margin: 0 0 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.attention-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.attention-actions button {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+
 .scroller {
   flex: 1 1 auto;
   overflow-y: auto;

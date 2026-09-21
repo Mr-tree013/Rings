@@ -418,6 +418,31 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         "nothing; never answer these from memory.",
     ),
     _operation(
+        "attention.list",
+        "List the unified 'what needs me' inbox: overdue and approaching deadlines, mail that "
+        "asks for a reply, plans and confirmations waiting for the user, unresolved external "
+        "outcomes and observations worth a look. Use this for 有什么需要我处理的 / 有什么重要的 / "
+        "有什么提醒. It reads real local state and writes nothing; never answer it from memory or "
+        "from the conversation.",
+        {"include_settled": {"type": "boolean"}},
+        ("include_settled",),
+    ),
+    _operation(
+        "attention.acknowledge",
+        "Mark one attention item as seen, when the user says 这个我知道了 / 我看到了. Use the "
+        "attention item id or a distinctive phrase from its title as reference; the runtime "
+        "refuses an ambiguous reference instead of guessing.",
+        {"reference": {"type": "string", "minLength": 1, "maxLength": _MAX_TEXT_CHARS}},
+        ("reference",),
+    ),
+    _operation(
+        "attention.dismiss",
+        "Stop reminding about one attention item, when the user says 这个不用再提醒我 / 别再提醒这"
+        "个了. It never changes the underlying task, mail, plan or proposal.",
+        {"reference": {"type": "string", "minLength": 1, "maxLength": _MAX_TEXT_CHARS}},
+        ("reference",),
+    ),
+    _operation(
         "system.capabilities",
         "Describe what this build can currently do, from the runtime. Use this for any question "
         "about Tree's own abilities instead of answering from memory.",

@@ -521,6 +521,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0018_recurring_calendar_rules.sql",
         "0019_contacts_and_outbound_mail.sql",
         "0020_conversation_requests.sql",
+        "0021_attention_items.sql",
     ]
 
 
@@ -1618,6 +1619,12 @@ LEARNING_ALLOWED_MODULES = frozenset(
         "application/conversation_context.py",
         "application/conversation_render.py",
         "application/conversation_service.py",
+        # Phase 11B (ADR-0042 §13): the attention projector may *read* pending candidates, because
+        # "a candidate is waiting for you" is exactly the kind of live state an inbox has to show.
+        # It reads the key only — never the value — and it cannot confirm, reject or promote
+        # anything: `confirm_candidate` is still called in exactly one place, from the human's own
+        # turn, and that is asserted separately below.
+        "application/attention.py",
     }
 )
 
@@ -2491,7 +2498,7 @@ def test_the_mcp_surface_adds_no_schema() -> None:
     """§49: MCP keeps no durable server state, so the migration set stays the reviewed one."""
     migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
 
-    assert migrations[-1] == "0020_conversation_requests.sql"
+    assert migrations[-1] == "0021_attention_items.sql"
     assert not [name for name in migrations if "mcp" in name]
 
 
@@ -2870,9 +2877,9 @@ def test_the_release_keeps_the_migration_set_closed() -> None:
     names = [path.name for path in migrations]
 
     assert names[0] == "0001_initial.sql"
-    assert names[-1] == "0020_conversation_requests.sql"
-    assert len(names) == 20
-    assert "0021" not in "".join(names)
+    assert names[-1] == "0021_attention_items.sql"
+    assert len(names) == 21
+    assert "0022" not in "".join(names)
     assert len(names) == REVIEWED_MIGRATION_COUNT
 
 

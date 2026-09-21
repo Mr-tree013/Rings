@@ -22,6 +22,7 @@ from assistant.adapters.runtime.instance_lock import (
     InstanceLockHeld,
     daemon_lock_path,
 )
+from assistant.daemon.attention_service import AttentionRefreshService
 from assistant.daemon.conversation_queue import ConversationQueueService
 from assistant.daemon.supervisor import AsyncService, supervise
 from assistant.domain.config import AssistantConfig
@@ -78,9 +79,16 @@ def build_services(
     lost in the meantime, and a machine with no mail account at all still gets its manual input
     and page changes analyzed.
     """
+    broker = bootstrap.conversation_event_broker()
+    # One broker for the whole process, so an attention change reaches the pages the chat service
+    # is already serving instead of a second, parallel channel nobody is listening to.
     services: list[AsyncService] = [
         bootstrap.sync_service(config, clock, database),
         bootstrap.scheduler_service(database, clock, config),
+        AttentionRefreshService(
+            bootstrap.attention_projector(database, clock, config),
+            broker=broker,
+        ),
     ]
     if config.mail.enabled_accounts:
         services.append(bootstrap.mail_sync_service(config, clock, database))
@@ -89,7 +97,9 @@ def build_services(
     if config.mobile.enabled:
         chat = None
         with contextlib.suppress(ModelNotConfigured, ModelCredentialsMissing):
-            chat = bootstrap.conversation_chat_service(database, clock, config, model=model)
+            chat = bootstrap.conversation_chat_service(
+                database, clock, config, model=model, broker=broker
+            )
         services.append(bootstrap.mobile_web_service(config, clock, database, chat=chat))
         if chat is not None:
             # The durable queue needs an owner that survives restarts: recovery on start, and only

@@ -21,6 +21,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from assistant.domain.attention import (
+    LIVE_ATTENTION_STATUSES,
+    AttentionItem,
+)
 from assistant.domain.contact import Contact, ContactStatus
 from assistant.domain.conversation import ConversationMessage, ConversationThreadId
 from assistant.domain.conversation_context import (
@@ -43,6 +47,7 @@ from assistant.domain.recurring_calendar import (
     format_clock,
 )
 from assistant.domain.task import Task, TaskId, TaskPriority, TaskStatus
+from assistant.ports.attention_repository import AttentionRepository
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
 from assistant.ports.contact_repository import ContactRepository
@@ -89,6 +94,7 @@ class ConversationContextBuilder:
         contacts: ContactRepository | None = None,
         new_mail_drafts: NewMailDraftRepository | None = None,
         learning: LearningRepository | None = None,
+        attention: AttentionRepository | None = None,
         max_messages: int = MAX_CONTEXT_MESSAGES,
         max_history_chars: int = MAX_CONTEXT_HISTORY_CHARS,
         max_entities: int = MAX_CONTEXT_ENTITIES_PER_KIND,
@@ -109,6 +115,7 @@ class ConversationContextBuilder:
         self._contacts = contacts
         self._new_mail_drafts = new_mail_drafts
         self._learning = learning
+        self._attention = attention
         self._max_messages = max_messages
         self._max_history_chars = max_history_chars
         self._max_entities = max_entities
@@ -147,6 +154,28 @@ class ConversationContextBuilder:
             *await self._contact_entities(),
             *await self._new_mail_draft_entities(),
             *await self._fact_entities(now),
+            *await self._attention_entities(),
+        )
+
+    async def _attention_entities(self) -> tuple[ConversationEntityRef, ...]:
+        """The live inbox, so "这个" in "这个我知道了" has something bounded to point at.
+
+        Only the product-level title travels. An item's source identity, its fingerprint and
+        anything private behind it stay out of the model's context (ADR-0042 §14-15).
+        """
+        if self._attention is None:
+            return ()
+        items = await self._attention.list_items(
+            statuses=LIVE_ATTENTION_STATUSES, limit=self._max_entities
+        )
+        return tuple(
+            ConversationEntityRef(
+                kind=ConversationEntityKind.ATTENTION_ITEM,
+                id=str(item.id),
+                label=item.title,
+                detail=_attention_detail(item),
+            )
+            for item in items
         )
 
     async def _task_entities(self) -> tuple[ConversationEntityRef, ...]:
@@ -456,6 +485,15 @@ def _new_mail_draft_detail(draft: NewMailDraft) -> str:
         f"version={draft.version} "
         f"status=unsent"
     )
+
+
+def _attention_detail(item: AttentionItem) -> str:
+    """Why this item is waiting, in bounded product words.
+
+    No source id, no fingerprint and no private content: the model needs to recognise which item
+    the user means, and that is all it needs to do.
+    """
+    return f"severity={item.severity.value} status={item.status.value}"
 
 
 __all__ = ["CALENDAR_LOOKAHEAD_DAYS", "ConversationContextBuilder"]

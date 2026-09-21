@@ -44,6 +44,7 @@ SAFE_EVENT_NAMES = frozenset(
         "confirmation.required",
         "confirmation.updated",
         "thread.updated",
+        "attention.updated",
         RESYNC_REQUIRED,
     }
 )
@@ -142,6 +143,31 @@ class ConversationEventBroker:
         for subscription in list(self._subscribers.get(thread_id, ())):
             subscription.offer(event)
         return event
+
+    def broadcast(self, name: str, data: dict[str, object] | None = None) -> int:
+        """Offer one event to every live subscriber, whatever thread it is watching.
+
+        The inbox is not per-thread, so an attention update belongs to every open page. Like every
+        other frame here this is a *hint*: the browser refetches the count from durable state, and a
+        subscriber that missed the frame still sees the truth on its next read (ADR-0042 §20).
+
+        Returns how many subscribers the frame reached, which is all a caller can act on.
+        """
+        self._next_id += 1
+        payload = dict(data or {})
+        delivered = 0
+        for subscriptions in list(self._subscribers.values()):
+            for subscription in list(subscriptions):
+                subscription.offer(
+                    ConversationEvent(
+                        thread_id=subscription.thread_id,
+                        name=name,
+                        data=dict(payload),
+                        id=self._next_id,
+                    )
+                )
+                delivered += 1
+        return delivered
 
     def close(self, subscription: ConversationEventSubscription) -> None:
         """Ask one subscriber's stream to end after the events it already has."""

@@ -81,6 +81,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/assistant/application/recipient_resolution.py" = ["RUF001"]
 "src/assistant/application/conversational_facts.py" = ["RUF001"]
 "src/assistant/application/today_brief.py" = ["RUF001"]
+# The attention projector writes the product's own Chinese inbox wording, and the prompt that
+# asks a user to clarify which reminder they meant.
+"src/assistant/application/attention.py" = ["RUF001"]
 "src/assistant/application/contacts.py" = ["RUF001"]
 "src/assistant/domain/conversation_review.py" = ["RUF001"]
 "src/assistant/cli_chat.py" = ["RUF001"]

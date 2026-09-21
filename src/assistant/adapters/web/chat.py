@@ -10,6 +10,9 @@ POST /api/chat/threads/{id}/messages           accept input (idempotent, queued)
 POST /api/chat/requests/{id}/cancel            Stop, or refuse to lie about it
 POST /api/chat/threads/{id}/confirmations/{c}/confirm|cancel
 GET  /api/chat/threads/{id}/events             ephemeral SSE notifications
+GET  /api/chat/attention                       the unified inbox, most urgent first
+POST /api/chat/attention/{id}/acknowledge      settle one item: seen
+POST /api/chat/attention/{id}/dismiss          settle one item: stop reminding
 ```
 
 What makes this an adapter rather than a second application layer:
@@ -33,7 +36,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from assistant.application.conversation_chat import ConversationChatService
 from assistant.application.conversation_event_broker import RESYNC_REQUIRED
+from assistant.domain.attention import ATTENTION_LIMIT
 from assistant.domain.errors import (
+    AttentionItemNotFound,
     CannotCancelSafely,
     ConversationRequestNotFound,
     ConversationThreadNotFound,
@@ -61,6 +66,8 @@ def register_chat_routes(
     app: FastAPI,
     *,
     chat: Callable[[], ConversationChatService],
+    attention: Callable[[], object] | None = None,
+    attention_projector: Callable[[], object] | None = None,
     assets: object,
     require_session: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
     require_mutation: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
@@ -220,6 +227,48 @@ def register_chat_routes(
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
+    if attention is None:
+        return
+
+    @app.get("/api/chat/attention")
+    async def attention_inbox(request: Request) -> JSONResponse:
+        session = await require_session(request)
+        if isinstance(session, JSONResponse):
+            return session
+        if attention_projector is not None:
+            # Reconcile before reading, so a drawer opened right after a task went overdue is
+            # current instead of up to one daemon interval behind. Idempotent and bounded.
+            await attention_projector().refresh()  # type: ignore[attr-defined]
+        summary = await attention().list_live(limit=ATTENTION_LIMIT)  # type: ignore[attr-defined]
+        return JSONResponse(
+            {
+                "total": summary.total,
+                "overflow": summary.overflow,
+                "by_severity": dict(summary.by_severity),
+                "items": [item.to_payload() for item in summary.items],
+            }
+        )
+
+    @app.post("/api/chat/attention/{item_id}/acknowledge")
+    async def acknowledge_attention(item_id: str, request: Request) -> JSONResponse:
+        return await _settle_attention(
+            request,
+            item_id=item_id,
+            dismiss=False,
+            attention=attention,
+            require_mutation=require_mutation,
+        )
+
+    @app.post("/api/chat/attention/{item_id}/dismiss")
+    async def dismiss_attention(item_id: str, request: Request) -> JSONResponse:
+        return await _settle_attention(
+            request,
+            item_id=item_id,
+            dismiss=True,
+            attention=attention,
+            require_mutation=require_mutation,
+        )
+
 
 async def conversation_event_stream(
     chat: ConversationChatService,
@@ -295,6 +344,32 @@ async def _settle_card(
     except InvalidConversationThread as exc:
         return _json_error(409, str(exc))
     return JSONResponse(payload)
+
+
+async def _settle_attention(
+    request: Request,
+    *,
+    item_id: str,
+    dismiss: bool,
+    attention: Callable[[], object],
+    require_mutation: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
+) -> JSONResponse:
+    """Settle exactly one attention item. It never touches the thing the item points at."""
+    session = await require_mutation(request)
+    if isinstance(session, JSONResponse):
+        return session
+    identifier = _uuid(item_id)
+    if identifier is None:
+        return _json_error(404, "no such attention item")
+    service = attention()
+    try:
+        settle = service.dismiss if dismiss else service.acknowledge  # type: ignore[attr-defined]
+        item = await settle(identifier)
+    except AttentionItemNotFound:
+        return JSONResponse(
+            {"error": "这条提醒已经不在你的列表里了。", "code": "NOT_FOUND"}, status_code=404
+        )
+    return JSONResponse({"item": item.to_payload()})
 
 
 def _frame(name: str, data: dict[str, object], *, event_id: int | None) -> str:

@@ -53,6 +53,7 @@ from assistant.adapters.web_watch.snapshot_store import WebSnapshotStore
 from assistant.application.action_execution import ActionExecutionService
 from assistant.application.action_service import ActionService
 from assistant.application.approval_service import ApprovalService
+from assistant.application.attention import AttentionProjector, AttentionService
 from assistant.application.backup_service import MIGRATION_DIRECTORY, BackupService
 from assistant.application.calendar_service import CalendarService
 from assistant.application.case_service import CaseService
@@ -157,6 +158,7 @@ from assistant.ports.mail_source import MailSource
 from assistant.ports.model import ModelPort
 from assistant.ports.web_source import WebSource
 from assistant.store.actions import SqliteActionRepository
+from assistant.store.attention import SqliteAttentionRepository
 from assistant.store.backup import SqliteRuntimeBackup
 from assistant.store.cases import SqliteCaseRepository
 from assistant.store.catalog import SqliteCatalogRepository
@@ -550,6 +552,8 @@ def mobile_web_dependencies(
         deadlines=_deadline_lookup(database),
         clock=clock,
         chat=chat,
+        attention=attention_service(database, clock),
+        attention_projector=attention_projector(database, clock, config),
     )
 
 
@@ -632,19 +636,67 @@ def conversational_fact_service(
     return ConversationalFactService(learning_service(clock, database))
 
 
-def today_brief_service(
+def attention_repository(database: Database) -> SqliteAttentionRepository:
+    """Durable, derived user-facing attention items (ADR-0042)."""
+    return SqliteAttentionRepository(database)
+
+
+def attention_service(database: Database, clock: Clock) -> AttentionService:
+    """The bounded read/settle surface over the attention inbox."""
+    return AttentionService(items=attention_repository(database), clock=clock)
+
+
+def attention_projector(
     database: Database, clock: Clock, config: AssistantConfig | None
+) -> AttentionProjector:
+    """Deterministic reconciliation of the inbox with the durable sources behind it (ADR-0042).
+
+    The projector is purely local: no model, no socket, no executor. It reads bounded source
+    collections and writes at most one derived row per pending situation.
+    """
+    return AttentionProjector(
+        items=attention_repository(database),
+        commitments=commitment_repository(database),
+        planning=planning_repository(database),
+        scheduler=scheduler_repository(database),
+        conversations=conversation_repository(database),
+        reviews=conversation_review_repository(database),
+        clock=clock,
+        mail=mail_repository(database),
+        mail_intelligence=mail_intelligence_repository(database),
+        learning=learning_repository(database),
+        sends=mail_send_status_service(clock, database),
+        observations=web_watch_repository(database),
+        analyses=observation_analysis_repository(database),
+        planning_timezone=_planning_timezone_of(config),
+    )
+
+
+def today_brief_service(
+    database: Database,
+    clock: Clock,
+    config: AssistantConfig | None,
+    *,
+    refresh_attention: bool = True,
 ) -> TodayBriefService:
     """The deterministic today brief over existing local state (ADR-0039).
 
     `config=None` means "this command did not need host configuration", so there is no planning
     timezone — and the service then refuses to guess which day "today" is.
+
+    `refresh_attention=False` is for the one caller that already refreshes on its own schedule: the
+    chat home surface, which is rebuilt after every streamed event and would otherwise reconcile the
+    inbox again each time.
     """
     return TodayBriefService(
         commitments=commitment_repository(database),
         planning=planning_repository(database),
         scheduler=scheduler_repository(database),
         conversations=conversation_repository(database),
+        attention=attention_service(database, clock),
+        attention_projector=(
+            attention_projector(database, clock, config) if refresh_attention else None
+        ),
         mail=mail_repository(database),
         mail_intelligence=mail_intelligence_repository(database),
         sends=mail_send_status_service(clock, database),
@@ -1399,7 +1451,7 @@ def conversation_chat_service(
         conversations=conversation_repository(database),
         requests=conversation_request_repository(database),
         broker=channel,
-        brief=today_brief_service(database, clock, config),
+        brief=today_brief_service(database, clock, config, refresh_attention=False),
         clock=clock,
     )
 
@@ -1423,6 +1475,7 @@ def conversation_context_builder(
         contacts=contact_repository(database),
         new_mail_drafts=new_mail_draft_repository(database),
         learning=learning_repository(database),
+        attention=attention_repository(database),
     )
 
 
@@ -1506,6 +1559,7 @@ def conversation_capabilities(
         mail_drafts_repository=mail_draft_repository(database),
         capability_snapshot=snapshot,
         mail_accounts=() if config is None else config.mail.accounts,
+        attention=attention_service(database, clock),
     )
     return build_phase_10a_registry(handlers)
 

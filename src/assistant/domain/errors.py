@@ -441,6 +441,18 @@ class InvalidNotification(DomainError):
     """A `Notification` was built with values that break its invariants."""
 
 
+class InvalidAttentionItem(DomainError):
+    """An `AttentionItem` was built with values that break its invariants (ADR-0042)."""
+
+
+class AttentionItemNotFound(DomainError):
+    """No attention item has that identity."""
+
+
+class AmbiguousAttentionReference(DomainError):
+    """A reference matched more than one live attention item, so nothing was settled."""
+
+
 class InvalidModelRequest(DomainError):
     """A `ModelRequest`, `ModelMessage`, `ModelUsage` or `ModelResponse` is malformed."""
 

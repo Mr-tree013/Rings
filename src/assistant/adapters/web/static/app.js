@@ -208,8 +208,13 @@ async function setupPairing() {
     const code = document.getElementById("pair-code").value;
     const result = await api("POST", "/api/pair", { token: code });
     if (result.ok) {
-      status.textContent = "Paired. Redirecting…";
-      window.location.replace("/");
+      status.textContent = "配对成功。Paired. Redirecting…";
+      // The conversation surface is the primary product UI when this host can hold one. Ask it
+      // directly rather than guessing from the URL, so a host without a model still lands on the
+      // control plane instead of a chat shell that cannot answer anything. Nothing here redirects
+      // anywhere a caller supplied: both destinations are fixed local paths.
+      const chat = await api("GET", "/api/chat/bootstrap");
+      window.location.replace(chat.ok ? "/chat" : "/");
       return;
     }
     status.textContent = text(result.payload && result.payload.error);

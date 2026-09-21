@@ -36,7 +36,15 @@
             <h2 id="thread-title">新的对话</h2>
             <p class="muted small" id="connection" data-state="connecting">正在连接…</p>
           </div>
+          <button id="attention-button" class="attention-button" type="button" hidden>
+            需要处理 <span id="attention-count" class="attention-count">0</span>
+          </button>
         </header>
+
+        <p id="pairing" class="pairing" hidden>
+          <span id="pairing-text"></span>
+          <a id="pairing-link" class="primary" href="/pair">去配对</a>
+        </p>
 
         <div id="scroller" class="scroller">
           <section id="welcome" class="welcome" hidden>
@@ -74,6 +82,21 @@
         </div>
       </main>
     </div>
+
+    <aside id="attention-drawer" class="drawer" hidden aria-label="需要处理">
+      <div class="drawer-head">
+        <h2>需要处理</h2>
+        <button id="close-attention" class="icon-button" type="button" aria-label="收起需要处理">
+          ×
+        </button>
+      </div>
+      <p id="attention-empty" class="muted small" hidden>现在没有需要你处理的事情。</p>
+      <ul id="attention-list" class="attention-list"></ul>
+      <p class="muted small">
+        这里只列出需要你看一眼的事。标记为「知道了」或「不再提醒」不会改变它背后的任务、
+        邮件或计划。
+      </p>
+    </aside>
 
     <script src="/chat.js"></script>
   </body>

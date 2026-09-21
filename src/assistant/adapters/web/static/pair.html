@@ -1,28 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pair this phone</title>
+    <title>配对此浏览器 · Pair this browser</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header>
-      <h1>Pair this phone</h1>
+      <h1>配对此浏览器<br /><span class="muted">Pair this browser</span></h1>
       <p class="muted">
-        Paste the pairing code printed by <code>pw mobile pair</code> on the host. The code is
-        single-use and expires in ten minutes.
+        粘贴主机上 <code>pw mobile pair</code> 打印的配对码。配对码只能使用一次，十分钟后失效。
       </p>
     </header>
     <main>
       <form id="pair-form">
-        <input id="pair-code" type="text" inputmode="text" autocomplete="off" placeholder="pairing code" required />
-        <button type="submit">Pair</button>
+        <input id="pair-code" type="text" inputmode="text" autocomplete="off" placeholder="配对码 / pairing code" required />
+        <button type="submit">配对 · Pair</button>
       </form>
       <p id="pair-status" class="muted"></p>
       <p class="muted small">
-        The code is sent once, in this form, to the host on your local network. It is never put in
-        the page URL and never written to a log.
+        配对码只会通过这个表单发送到你局域网内的主机一次。它不会出现在页面地址里，也不会被写进日志。
       </p>
     </main>
     <script src="/app.js"></script>

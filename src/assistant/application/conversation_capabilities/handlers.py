@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import cast
 
+from assistant.application.attention import AttentionService, AttentionSummary
 from assistant.application.calendar_service import CalendarService, CreateCalendarEvent
 from assistant.application.case_service import CaseService
 from assistant.application.contacts import ContactService
@@ -50,6 +51,9 @@ from assistant.application.work_service import WorkService
 from assistant.domain.config import MailAccountConfig
 from assistant.domain.contact import Contact
 from assistant.domain.conversation_plan import (
+    AttentionDismissArguments,
+    AttentionListArguments,
+    AttentionSettleArguments,
     BriefTodayArguments,
     CalendarCreateArguments,
     CalendarListArguments,
@@ -161,6 +165,9 @@ CONTACT_LIST_LIMIT = 12
 FACT_LIST_LIMIT = 12
 """How many long-term facts one listing may carry, matching the recent-entity bound."""
 
+ATTENTION_LIST_LIMIT = 20
+"""How many attention items one `attention.list` answer may carry."""
+
 
 class ConversationHandlers:
     """Executes one allowed operation against the existing application services."""
@@ -194,6 +201,7 @@ class ConversationHandlers:
         capability_snapshot: CapabilitySnapshot | None = None,
         mail_accounts: tuple[MailAccountConfig, ...] = (),
         knowledge_limit: int = 8,
+        attention: AttentionService | None = None,
     ) -> None:
         self._tasks = tasks
         self._calendar = calendar
@@ -221,6 +229,7 @@ class ConversationHandlers:
         self._capability_snapshot = capability_snapshot
         self._mail_accounts = mail_accounts
         self._knowledge_limit = knowledge_limit
+        self._attention = attention
 
     # ------------------------------------------------------------------------- reads
 
@@ -814,6 +823,55 @@ class ConversationHandlers:
             kind="capabilities",
             data={"areas": snapshot.to_payload(), "operations": list(snapshot.operation_types)},
         )
+
+    # --------------------------------------------------------------------- attention
+
+    async def attention_list(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """The unified inbox: what the user's own state says needs them, in product language."""
+        arguments = _expect(AttentionListArguments, arguments)
+        service = self._require_attention()
+        summary = (
+            await service.list_all(limit=ATTENTION_LIST_LIMIT)
+            if arguments.include_settled
+            else await service.list_live(limit=ATTENTION_LIST_LIMIT)
+        )
+        return OperationResult(
+            kind="attention", data=_attention_payload(summary, self._clock.now())
+        )
+
+    async def attention_acknowledge(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Mark one item seen. It settles the reminder, never the thing it points at."""
+        arguments = _expect(AttentionSettleArguments, arguments)
+        item = await self._require_attention().settle_by_reference(
+            arguments.reference, dismiss=False
+        )
+        return OperationResult(
+            kind="attention_settled",
+            data={"title": item.title, "status": item.status.value},
+        )
+
+    async def attention_dismiss(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Stop reminding about one item. The source object is not touched."""
+        arguments = _expect(AttentionDismissArguments, arguments)
+        item = await self._require_attention().settle_by_reference(
+            arguments.reference, dismiss=True
+        )
+        return OperationResult(
+            kind="attention_settled",
+            data={"title": item.title, "status": item.status.value},
+        )
+
+    def _require_attention(self) -> AttentionService:
+        service = self._attention
+        if service is None:
+            raise ConversationCapabilityUnavailable(
+                "这台主机还不能汇总需要处理的事项"
+            )
+        return service
 
     # ------------------------------------------------------------------------ mail support
 
@@ -1492,6 +1550,21 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             handlers.brief_today,
         ),
         (
+            ConversationOperationType.ATTENTION_LIST,
+            ConfirmationPolicy.READ,
+            handlers.attention_list,
+        ),
+        (
+            ConversationOperationType.ATTENTION_ACKNOWLEDGE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.attention_acknowledge,
+        ),
+        (
+            ConversationOperationType.ATTENTION_DISMISS,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.attention_dismiss,
+        ),
+        (
             ConversationOperationType.SYSTEM_CAPABILITIES,
             ConfirmationPolicy.READ,
             handlers.system_capabilities,
@@ -1580,6 +1653,30 @@ def _fact_payload(
     elif now is not None:
         payload["state"] = fact.state_at(now).value
     return payload
+
+
+def _attention_payload(summary: AttentionSummary, now: datetime) -> dict[str, object]:
+    """One inbox as data: product words only, never a kind constant or a subsystem name."""
+    return {
+        "total": summary.total,
+        "overflow": summary.overflow,
+        "by_severity": dict(summary.by_severity),
+        "empty": summary.total == 0,
+        "items": [
+            {
+                "id": str(item.id),
+                "severity": item.severity.value,
+                "status": item.status.value,
+                "title": item.title,
+                "summary": item.summary,
+                "since": item.created_at.isoformat(),
+                # How long it has been waiting, decided here because this is where the Clock is.
+                # A renderer that read the wall clock would be a second time source (ADR-0039 §2).
+                "days_waiting": max(0, (now - item.created_at).days),
+            }
+            for item in summary.items
+        ],
+    }
 
 
 def _brief_payload(brief: TodayBrief) -> dict[str, object]:
