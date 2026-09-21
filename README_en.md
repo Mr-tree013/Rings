@@ -8,7 +8,7 @@ A local-first personal operations system that grows with you.
 
 **Language:** [中文](README.md) ｜ English
 
-**Version:** 1.1.1 · **Reference environment:** Linux / WSL + Python 3.13
+**Version:** 1.2.0 · **Reference environment:** Linux / WSL + Python 3.13
 
 Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
 SQLite database plus the files that database references, and reaches the outside world only through
@@ -47,6 +47,7 @@ lives in [docs/concepts/rings-language.md](docs/concepts/rings-language.md).
 | **Observation** | Configured public HTTPS watchers, plus manual and QQ-forwarded input. |
 | **Actions** | Exact `ActionRequest` → human `Approval` → `ExecutionRun`, bound to an immutable payload fingerprint. |
 | **eHall** | One narrow, approved NJU certificate workflow — no generic browser automation. |
+| **Chat** | Tree in the browser: conversation history, a message queue, progress and structured confirmation cards. |
 | **Mobile** | A trusted-LAN surface for review and approval. |
 | **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` confirmation, and reviewed non-executing playbooks. |
 | **MCP** | A controlled local stdio integration for VS Code. |
@@ -99,6 +100,43 @@ In a second terminal:
 uv run rings
 uv run pw status      # the advanced surface: a status overview
 ```
+
+## Tree Web Chat
+
+The most comfortable everyday entry point is Tree in the browser, served by `assistantd` and sharing
+one conversation runtime, one database and one set of confirmation semantics with the terminal.
+
+```toml
+[mobile]
+enabled = true
+bind = "loopback"     # this machine only; "lan" reaches the same trusted network
+port = 8791
+```
+
+Then open `http://127.0.0.1:8791/chat`, or let `rings --web` open it for you: it prints how to
+start the control plane when it is not running, and plain `rings` stays the terminal conversation.
+
+In the browser you can read the whole conversation, switch threads or start a new one, keep typing
+while Tree is working (extra messages queue, and each becomes its own message), see what Tree is
+doing in plain product language — coarse stages, never reasoning — and settle the things that need
+your decision with cards. A card's buttons mean exactly what typing the phrase in the terminal
+means:
+
+| Card | Buttons |
+| --- | --- |
+| Mail send preview (the bytes that would actually leave) | Confirm send / Cancel |
+| Weekly plan | Apply plan / Cancel |
+| Fixed arrangements | Save arrangements / Cancel |
+| Long-term information | Remember it / Do not remember |
+
+Card buttons never go through the model: they settle the one thing the card names, re-checking the
+`ActionRequest` fingerprint on the way. A card whose underlying state moved on is refused as stale
+and the page reloads the truth, so a stale card can never send anything.
+
+Stop is offered only when it is genuinely safe: a queued message can always be cancelled, and a
+request still being understood can be stopped before anything is written. Once a write or an external
+execution has begun, the button says so instead of pretending. The composer is IME-safe (Enter sends,
+Shift+Enter breaks the line) and the page works at phone width.
 
 The everyday entry point is a conversation, not a command:
 
@@ -165,7 +203,8 @@ the newest group. "What can you do?" is answered from the runtime's own configur
 
 | Entry point | What it is for |
 | --- | --- |
-| `uv run rings` | The conversational surface, for everyday use |
+| `uv run rings --web` | Opens the browser chat surface (needs the web control plane enabled and running) |
+| `uv run rings` | The terminal conversation: SSH, development and fallback |
 | `uv run pw chat` | The same runtime, from the existing CLI |
 | `pw …` | The advanced/admin surface: the full command set |
 
@@ -239,7 +278,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 | Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
 | System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.1.1) | [docs/releases/1.1.1.md](docs/releases/1.1.1.md) |
+| Release notes (current release: v1.2.0) | [docs/releases/1.2.0.md](docs/releases/1.2.0.md) |
 | Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 

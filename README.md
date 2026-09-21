@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.1.1 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.2.0 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -25,7 +25,7 @@ Rings 不是一个通用的 autonomous computer agent。它没有 shell、没有
 | **Branches** | Tree 可以调用的、受控的能力领域。Branches 是 capability modules，而不是 autonomous sub-agents。 |
 | **Leaves** | 每天进入系统的信息：邮件、observations、粘贴或转发的文本。Leaf 可以被解释，但不会自动变成 commitment 或 action。 |
 | **Rings** | 随时间累积的成长记录：work sessions、executions、fact history 和经过 review 的 playbooks。 |
-| **Tree** | 真正与你交互的协调者，你可以通过 CLI、mobile page 和编辑器与它沟通。它不是一个不受限制的 autonomous agent。 |
+| **Tree** | 真正与你交互的协调者，你可以通过浏览器对话页、终端、mobile page 和编辑器与它沟通。它不是一个不受限制的 autonomous agent。 |
 
 Tree 协调这一切，但永远不会绕过 `ActionRequest`、人类 `Approval`、`ExecutionRun`、fact confirmation、playbook review 或 capability registry。完整的概念说明见 [docs/concepts/rings-language.md](https://github.com/Mr-tree013/Rings/blob/main/docs/concepts/rings-language.md)。
 
@@ -39,6 +39,7 @@ Tree 协调这一切，但永远不会绕过 `ActionRequest`、人类 `Approval`
 | **Observation** | 观察你配置的公开 HTTPS 页面，以及手动输入和 QQ 转发内容。 |
 | **Actions** | 精确的 `ActionRequest` → 人类 `Approval` → `ExecutionRun`，并绑定不可变的 payload fingerprint。 |
 | **eHall** | 一个范围严格受限、需要 Approval 的 NJU certificate workflow；没有通用 browser automation。 |
+| **Chat** | 浏览器里的 Tree 对话页：对话历史、消息队列、进度提示、结构化确认卡片。 |
 | **Mobile** | 在可信 LAN 内提供 review 和 Approval 界面。 |
 | **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` 的人工确认流程，以及经过 review、不可执行的 Playbooks。 |
 | **MCP** | 面向 VS Code 的、受控的本地 stdio integration。 |
@@ -87,6 +88,50 @@ uv run assistantd
 uv run rings
 uv run pw status      # 高级接口：状态总览
 ```
+
+## 浏览器对话（Tree Web Chat）
+
+日常最顺手的入口是浏览器里的 Tree 对话页。它由 `assistantd` 提供，和终端共用同一套对话运行时、
+同一份对话数据库和同一套确认语义。
+
+```bash
+# config.toml 里启用网页控制面
+[mobile]
+enabled = true
+bind = "loopback"     # 只在本机；"lan" 则在同一可信局域网内可达
+port = 8791
+```
+
+然后打开 `http://127.0.0.1:8791/chat`，或直接让 `rings` 帮你打开：
+
+```bash
+uv run rings --web    # 打开 /chat；控制面没在运行时会告诉你该怎么启动
+uv run rings          # 默认仍然是终端对话，行为与 v1.1 一致
+```
+
+浏览器里可以做的事：看完整对话历史、切换会话或开一个新对话、在 Tree 还在工作时继续输入
+（新消息会排队，并且各自成为一条独立消息）、看到 Tree 当前在做什么（"正在理解你的请求…"
+这类粗粒度状态，不会看到模型推理过程）、以及用卡片确认需要你决定的事情。
+
+需要你确认的事情会以卡片出现，点按钮就等于在终端里说出那句话：
+
+| 卡片 | 按钮 |
+| --- | --- |
+| 邮件发送预览（就是实际会发出的内容） | 确认发送 / 取消 |
+| 周计划 | 应用计划 / 取消 |
+| 固定安排 | 保存固定安排 / 取消 |
+| 长期信息 | 确认记住 / 不要记 |
+
+卡片按钮不经过模型：它直接结算那张卡片指的那一件事，并且会重新校验 ActionRequest 的
+fingerprint。卡片过期（例如你已经改过内容）时，点击会被拒绝并刷新成最新状态，绝不会
+用旧内容做出新动作。想改内容就直接在输入框里说，Tree 会重新准备一份给你确认。
+
+在 Tree 工作时可以随时「停止」，但只在真正安全的时候：排队中的消息随时可以取消；
+Tree 还在理解你的请求、尚未写入任何东西时可以停止；一旦已经进入写入或对外执行阶段，
+按钮会如实告诉你不能安全停止，而不是假装停下来了。已经开始的对外动作不会被"停止"回滚。
+
+输入框对中文输入法友好：Enter 发送、Shift+Enter 换行，候选词选择时的 Enter 不会误发送。
+页面在手机宽度下可用；对话页和 v1.1 的 mobile review 页面并存，互不影响。
 
 日常入口是对话，不是命令：
 
@@ -148,7 +193,8 @@ Home/End、Backspace/Delete、上下键翻本次会话的输入历史都可以�
 
 | 入口 | 用途 |
 | --- | --- |
-| `uv run rings` | 对话式主入口，日常使用 |
+| `uv run rings --web` | 打开浏览器对话页（需要网页控制面已启用并运行） |
+| `uv run rings` | 终端对话式入口，SSH / 开发者 / 备用 |
 | `uv run pw chat` | 进入同一个对话运行时 |
 | `pw …` | 高级 / 管理员接口：完整命令集 |
 | `assistantd` | 后台运行时：索引、提醒、邮件、监控、手机页 |
@@ -224,7 +270,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.1.1） | [docs/releases/1.1.1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.1.1.md) |
+| Release Notes（当前版本：v1.2.0） | [docs/releases/1.2.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.2.0.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 
@@ -254,7 +300,11 @@ Rings 是公开的项目名称；为了保持 v1 compatibility，历史 identifi
 
 ## 已知限制
 
-- Mobile 是可信 LAN 内的 HTTP 页面，不是面向公网的服务。
+- 网页对话页和 Mobile 页面都只是可信 LAN 内的 HTTP 页面，不是面向公网的服务；它是 v1.1 同一套 session / CSRF 保护。
+- 发信邮箱的配置仍然是配置文件里的事，本版本没有网页配置向导，也不支持附件、抄送、多收件人或定时发送。
+- 固定安排只支持每周同一天、不跨夜；复杂重复规则还没有。
+- 对话里不能提交 eHall；eHall 仍然是 `pw` 下的同一条 typed pipeline。
+- 「停止」不能回滚已经开始的对外执行；SMTP 的 `UNKNOWN` 仍然需要人工对账，绝不自动重发。
 - SMTP 不保证 exactly-once；发送过程中断时，状态会变为 `UNKNOWN`。
 - eHall 页面发生变化时会 fail closed，而不是自动适配。
 - eHall 的 `UNKNOWN` 状态需要人工检查。

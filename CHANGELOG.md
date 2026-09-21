@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-22
+
+Tree Web Chat: the browser becomes the preferred daily surface for Tree, as an interaction adapter
+over the conversation runtime the terminal already uses. See `docs/releases/1.2.0.md` for the full
+notes and ADR-0041 for the decisions.
+
+### Added
+
+- **Tree Web Chat (`/chat`).** A self-contained, responsive chat page over the existing LAN control
+  plane: conversation history, thread switching, a new-conversation button, a multiline composer
+  that is safe with a Chinese IME (Enter sends, Shift+Enter breaks a line, Enter during composition
+  never sends), an activity line phrased in product language, and a deterministic home surface with
+  quick actions that submit ordinary messages through the same queue. The page is served by the
+  same session, CSRF and private-client rules as the v1.1 mobile control plane; a host without a
+  model registers none of its routes.
+- **A durable accepted-input queue.** `migrations/0020_conversation_requests.sql` plus a request
+  repository and coordinator: browser input is accepted, queued and only then handed to the
+  conversation runtime. `UNIQUE(thread_id, client_request_id)` makes a retried POST the same
+  request, a partial unique index gives one thread at most one active request, and
+  `conversation_turns.request_id` correlates the turn a request produced.
+- **Restart recovery that never replays.** At startup, requests left `PROCESSING` are resolved from
+  their linked turn: terminal turns are mirrored, a turn parked waiting for a human is accepted as
+  finished, and everything else becomes `INTERRUPTED`. Only `QUEUED` work is resumed.
+- **Safe Stop.** A queued request is always cancellable; a request being understood is cancellable
+  before any mutation; anything past that answers `CANNOT_CANCEL_SAFELY` instead of claiming a stop
+  it cannot perform. `can_cancel` is server-derived and never inferred by the page.
+- **An ephemeral SSE activity stream.** `GET /api/chat/threads/{id}/events` carries coarse stage
+  changes and safe notifications, with bounded per-subscriber queues that overflow into
+  `resync.required`. The stream is not authoritative: a reload or a reconnect always refetches a
+  durable snapshot.
+- **Structured confirmation cards.** Deterministic cards for `mail.send` (the exact preview, built
+  from the immutable `ActionRequest` payload), a plan proposal, a weekly-schedule group and a
+  pending long-term fact, each carrying an `expected_revision` so a stale card fails closed. The
+  buttons bypass `ModelPort` and settle the exact target through the same deterministic controllers
+  the terminal phrases use, so the browser and the terminal produce equivalent durable results.
+- **`rings --web`.** Opens the configured `/chat` URL with the standard library `webbrowser` when
+  the control plane is reachable, and otherwise prints how to start it. `rings` itself is unchanged.
+- **Integrity and backup coverage for the queue.** `pw integrity check` gains read-only checks over
+  `conversation_requests` (status, timestamps, thread and turn correlation, one active request per
+  thread), and a queued request survives a backup and comes back claimable.
+
+### Fixed
+
+- **Conversation history order under a limited read.** `list_messages`/`list_turns` with a `limit`
+  returned rows written in the same instant in reverse order, because the outer query's `rowid` was
+  the result set's. The insertion order is now carried out of the subquery explicitly.
+
 ## [1.1.1] - 2026-09-21
 
 A focused hotfix for two defects in the 1.1.0 conversation, with no new product capability and no
