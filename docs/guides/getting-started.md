@@ -162,6 +162,38 @@ root. A failure of the host runtime database is the only kind that is escalated 
 If you configure mail but have no model key, mail is still received and stored: events stay
 `RECEIVED` until a provider is configured, and they are analyzed afterwards.
 
+## One command to start (v1.4.0)
+
+```bash
+uv run rings up        # 起服务（或复用已在跑的）+ 自动配对 + 打开 /chat + 打印状态
+uv run rings down      # 优雅停止；进行中的对话被标为 interrupted，不重放
+uv run rings autostart install   # 可选：Windows 登录时自动常驻（一个 .cmd，删掉即撤销）
+```
+
+`rings up` 会：后台起 `assistantd`（日志在 `<runtime>/assistantd.log`，每次启动按 5 MB 轮转一次）、
+等锁与网页控制面就绪（上限 20 秒，超时打印日志尾部而不是谎报成功）、生成一枚一次性配对码并打开
+`/chat#pair=<token>`（fragment 不上服务器，页面读到后立刻 `replaceState` 抹掉；已配对的浏览器不会
+再建第二个 session），最后打印一张状态表：daemon / web / 配对 / 凭据（只列变量名）/ 邮件账号与就绪数 /
+eHall 状态。若 `[mobile] enabled = false`，它不打开浏览器、不配对，并打印该配置片段。
+
+凭据（邮箱应用专用密码、模型 key）可以放一份属于你自己的文件，避免每个终端 export：
+
+```bash
+chmod 600 ~/.config/growing-assistant/secrets.env
+```
+
+```ini
+DEEPSEEK_API_KEY=…
+GROWING_ASSISTANT_MAIL_<ID大写>_PASSWORD=…
+GROWING_ASSISTANT_MAIL_<ID大写>_SMTP_PASSWORD=…     # 只有要发信才需要
+```
+
+环境变量优先于文件；权限不是 `0600` 时文件会被拒绝并说明原因；出现这个集合以外的键（例如
+`password=`）整份文件被拒绝；项目从不写它、也从不打印或记录它的值。
+
+要调试可以 `uv run rings up --foreground`（前台运行 daemon，不自动配对），或在 CI 里用
+`uv run rings up --no-open`（不打开浏览器）。
+
 ## Commands
 
 ```text

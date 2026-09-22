@@ -56,6 +56,15 @@ Some things to know while using it:
   that submits a certificate: there is no execute, send or submit endpoint anywhere in the route
   table.
 
+### 自动配对（v1.4.0）
+
+`uv run rings up` 会替你完成配对：它生成一枚一次性配对码（和 `pw mobile pair` 打印的是同一种，
+600 秒、只存 hash），并打开 `http://127.0.0.1:<port>/chat#pair=<token>`。token 只在 URL fragment 里，
+永远不会发给服务器；页面读到后立刻用 `history.replaceState` 抹掉，然后**只在这台浏览器还没有 session
+时**（`/api/chat/bootstrap` 返回 401）才用它兑换。已经配对过的浏览器再打开一次不会新建 session。
+
+`/pair` 手工粘贴配对码的页面仍然保留，用于手机、另一台浏览器，或者你想重新配对的时候。
+
 ### Settings (`/settings`)
 
 The same host serves a settings page with three sections: 邮箱 (mail accounts and read-only

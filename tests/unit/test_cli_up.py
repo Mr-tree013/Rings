@@ -226,3 +226,28 @@ def test_a_refused_secrets_file_is_reported_not_hidden(tmp_path: Path) -> None:
     text = render_up(report)
 
     assert "0600" in text
+
+
+def test_the_status_block_reaches_the_terminal_with_its_brackets_intact(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """`[mobile]` is a config key, not a rich style tag: printing must not eat it."""
+    import io
+
+    from rich.console import Console
+
+    import assistant.cli_up as cli_up_module
+
+    buffer = io.StringIO()
+    monkeypatch.setattr(cli_up_module, "console", Console(file=buffer, width=200, no_color=True))
+    fake = _Fake(web=None)
+    deps = fake.deps(tmp_path)
+    try:
+        code = cli_up_module.main(["up", "--no-open"], deps=deps)
+    finally:
+        fake.restore()
+
+    assert code == 0
+    output = buffer.getvalue()
+    assert "[mobile]" in output
+    assert "enabled = true" in output

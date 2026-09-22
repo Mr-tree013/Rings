@@ -1,7 +1,7 @@
 # 0002 — One-command startup (`rings up` / `rings down` / autostart)
 
-**Status:** Proposed — this is the reviewed design for v1.4.0. Implementation starts after the
-author reads it back and approves.
+**Status:** Accepted — approved by the author, implemented in v1.4.0 (ADR-0046 records the
+decisions).
 
 **Related:** ADR-0026 (mobile control plane), ADR-0032 (runtime/upgrade contract), ADR-0041 (chat
 UI, queue, pairing UX), ADR-0043 (mail settings, environment-only credentials), ADR-0025 (eHall

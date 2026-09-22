@@ -8,7 +8,7 @@ A local-first personal operations system that grows with you.
 
 **Language:** [中文](README.md) ｜ English
 
-**Version:** 1.3.1 · **Reference environment:** Linux / WSL + Python 3.13
+**Version:** 1.4.0 · **Reference environment:** Linux / WSL + Python 3.13
 
 Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
 SQLite database plus the files that database references, and reaches the outside world only through
@@ -91,15 +91,15 @@ cp docs/examples/config.toml \
 
 uv run pw doctor
 uv run pw integrity check
-uv run assistantd
+uv run rings up        # start (or reuse), pair this browser, open /chat
+uv run rings down      # stop gracefully
+uv run rings autostart install   # optional: survive a Windows logon (remove undoes it)
 ```
 
-In a second terminal:
-
-```bash
-uv run rings
-uv run pw status      # the advanced surface: a status overview
-```
+Credentials can live in your own `~/.config/growing-assistant/secrets.env` (mode 0600, environment
+wins; never written or printed by the project). Details:
+[docs/guides/getting-started.md](docs/guides/getting-started.md). The terminal conversation is still
+`uv run rings`.
 
 ## Tree Web Chat
 
@@ -278,7 +278,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 | Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
 | System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.3.1) | [docs/releases/1.3.1.md](docs/releases/1.3.1.md) |
+| Release notes (current release: v1.4.0) | [docs/releases/1.4.0.md](docs/releases/1.4.0.md) |
 | Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 

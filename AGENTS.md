@@ -939,6 +939,17 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
   只能是 `mail.send` 或 `ehall.submit-certificate`（migration 0023 的 CHECK）；
   `ALLOWED_EXTERNAL_ACTION_TYPES`、确认词、preview dispatch、card kind 与 integrity section 必须同时
   移动，绝不改成任意 TEXT。
+- **启动/停止只有一条路：`rings up` / `rings down`。** `rings up` 用 `inspect_lock` 判断是否
+  在跑（不看 `ps`）、必要时 detached 启动、等锁与网页就绪（有上限）、生成一次性配对码并把 token
+  放进 URL fragment 打开 `/chat`；`rings down` 给锁持有者 SIGTERM 并等待释放。不要新增第二条起停路径。
+- **自动配对只能用既有 `POST /api/pair`，token 只走 fragment。** 页面读到 fragment 后立刻
+  `history.replaceState` 抹掉；已配对（非 401）的浏览器不得再建 session；不得把 token 放进 query string；
+  不得新增配对路由。
+- **凭据只来自环境变量或用户自有的 `secrets.env`（0600）。** 项目绝不写该文件、绝不打印或记录它的值
+  （只列变量名）；键集合封闭（模型 key + 派生的 mail 变量），出现其它键整份拒绝；环境变量优先。
+  模型 key 的变量名只由组合根提供，不要在新模块里再字面写一遍。
+- **autostart 只是一个可删除的 Windows Startup `.cmd`。** 不写服务、不需要管理员权限、不碰注册表；
+  生成的内容必须打印出来。
 - **Every refusal state keeps its own words.** NOT_CONFIGURED / AUTH_REQUIRED / CONNECTION_FAILED /
   CREDENTIAL_MISSING / UNSUPPORTED_CAPABILITY / AMBIGUOUS_REFERENCE / UNKNOWN_EXTERNAL_RESULT /
   STALE_CONFIRMATION / CANNOT_CANCEL_SAFELY 必须可区分；普通回复不得出现 traceback、schema 文本、

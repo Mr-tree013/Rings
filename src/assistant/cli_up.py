@@ -247,14 +247,14 @@ def run_autostart(action: str, *, repo: Path | None = None) -> int:
         console.print(f"启动项：{status.path}")
         console.print("状态：已安装" if status.installed else "状态：未安装")
         if status.content:
-            console.print(status.content.rstrip("\r\n"))
+            console.print(status.content.rstrip("\r\n"), markup=False)
         return 0
     if action == "remove":
         removed = remove_autostart(startup_dir=startup)
         console.print("已删除启动项。" if removed else "本来就没有安装启动项。")
         return 0
     if action != "install":
-        console.print("用法：rings autostart install|status|remove [--repo PATH]")
+        console.print("用法：rings autostart install|status|remove [--repo PATH]", markup=False)
         return 2
     checkout = Path(repo) if repo is not None else Path(bootstrap.__file__).resolve().parents[1]
     if not (checkout / "pyproject.toml").is_file():
@@ -273,7 +273,7 @@ def run_autostart(action: str, *, repo: Path | None = None) -> int:
     )
     path = install_autostart(spec, startup_dir=startup)
     console.print(f"已写入 {path}：")
-    console.print(render_autostart_cmd(spec).rstrip("\r\n"))
+    console.print(render_autostart_cmd(spec).rstrip("\r\n"), markup=False)
     console.print("删掉这个文件（或 `rings autostart remove`）即可撤销。")
     return 0
 
@@ -379,7 +379,9 @@ def main(arguments: Sequence[str], *, deps: UpDeps | None = None) -> int:
             console.print("日志的最后几行：")
             console.print(read_log_tail((deps or default_deps()).runtime_root()))
             return 1
-        console.print(render_up(report))
+        # `markup=False`: the block names config keys (`[mobile]`, `[ehall]`), and a key is not a
+        # rich style tag — without this the brackets are swallowed and the hint reads as noise.
+        console.print(render_up(report), markup=False)
         if foreground and report.daemon_action == "foreground":
             _exec_daemon()
         return 0

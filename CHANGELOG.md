@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-22
+
+One command to start. See `docs/releases/1.4.0.md` and ADR-0046.
+
+### Added
+
+- **`rings up` / `rings down`.** `up` finds or starts the daemon (detached, logging into the runtime
+  directory), waits for the lock and the control plane, mints one pairing token, opens
+  `/chat#pair=<token>` and prints an honest status block; `down` sends `SIGTERM` to the lock holder
+  and waits for the lock to free.
+- **Automatic pairing without a new route.** The chat page reads the fragment, strips it before
+  anything else observes the URL, and redeems the token through the existing `POST /api/pair` only
+  when its own session is refused — an already-paired browser creates no second session. Spent
+  pairing tokens are pruned when a new one is minted, so the table follows the TTL.
+- **A user-owned `secrets.env`** (`~/.config/growing-assistant/secrets.env`, mode 0600 or refused):
+  the provider key and the derived mail app passwords, with the environment still winning, a closed
+  key vocabulary, and no value ever printed, logged or written by the project.
+- **`rings autostart install|status|remove`**: one reversible `.cmd` in the Windows Startup folder.
+- **`--foreground`** for watching the daemon live.
+
+### Changed
+
+- The entry points (`pw`, `rings`, `assistantd`, `growing-assistant-mcp`) load the user's secrets file
+  at startup; diagnostics go to the logger, never to stdout.
+- `INVALID` is not a state: the daemon's instance lock remains the single authority for "is it
+  running", now read through the existing `inspect_lock` probe.
+
+### Security
+
+- No new HTTP route and no new capability. The pairing token stays one-time, 600 s and hash-only, and
+  travels in a URL fragment only.
+- The architecture gate that pins the provider key's variable name to two modules was left at full
+  strength: the secrets loader takes the name as a parameter.
+- Nothing about approvals, executions or the conversation's prepare-only boundary changed.
+
 ## [1.3.1] - 2026-09-22
 
 A patch release for two things a user meets in the first minutes. See `docs/releases/1.3.1.md`; no

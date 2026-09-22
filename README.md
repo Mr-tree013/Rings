@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.3.1 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.4.0 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -79,15 +79,14 @@ cp docs/examples/config.toml \
 
 uv run pw doctor
 uv run pw integrity check
-uv run assistantd
+uv run rings up        # 起服务（或复用）+ 自动配对 + 打开 /chat
+uv run rings down      # 优雅停止
+uv run rings autostart install   # 可选：Windows 登录时自动常驻（remove 撤销）
 ```
 
-然后在第二个终端中运行：
-
-```bash
-uv run rings
-uv run pw status      # 高级接口：状态总览
-```
+凭据（邮箱应用专用密码、模型 key）可以放一份属于你自己的 `~/.config/growing-assistant/secrets.env`
+（`0600`，环境变量优先，项目从不写它也不打印它的值）。细节见
+[docs/guides/getting-started.md](docs/guides/getting-started.md)。终端对话仍是 `uv run rings`。
 
 ## 浏览器对话（Tree Web Chat）
 
@@ -270,7 +269,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.3.1） | [docs/releases/1.3.1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.3.1.md) |
+| Release Notes（当前版本：v1.4.0） | [docs/releases/1.4.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.4.0.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 
