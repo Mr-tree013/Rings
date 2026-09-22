@@ -88,6 +88,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/assistant/application/mail_account_settings.py" = ["RUF001"]
 # The planning preferences service reports the resulting capacity in the user's words.
 "src/assistant/application/planning_preferences_service.py" = ["RUF001"]
+# The secrets-file loader explains a refusal in the user's words, including the permissions it saw.
+"src/assistant/adapters/config/secrets_env.py" = ["RUF001"]
 "src/assistant/application/contacts.py" = ["RUF001"]
 "src/assistant/domain/conversation_review.py" = ["RUF001"]
 "src/assistant/cli_chat.py" = ["RUF001"]
