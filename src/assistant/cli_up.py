@@ -38,6 +38,17 @@ from assistant.adapters.runtime.daemon_process import (
     spawn_daemon,
     stop_daemon,
 )
+from assistant.adapters.runtime.windows_autostart import (
+    AutostartSpec,
+    autostart_status,
+    current_distro,
+    current_user,
+    install_autostart,
+    remove_autostart,
+    render_autostart_cmd,
+    resolved_uv,
+    windows_startup_directory,
+)
 from assistant.application.paths import AppPaths
 from assistant.cli_support import console
 
@@ -223,6 +234,50 @@ def run_down(*, deps: UpDeps | None = None) -> int:
     return 1
 
 
+def run_autostart(action: str, *, repo: Path | None = None) -> int:
+    """`install` / `status` / `remove` the one Startup file, printing exactly what it did."""
+    startup = windows_startup_directory()
+    if startup is None:
+        console.print(
+            "没有找到 Windows 启动文件夹（这个环境看起来不是 WSL，或者 %APPDATA% 读不到）。"
+        )
+        return 1
+    if action == "status":
+        status = autostart_status(startup_dir=startup)
+        console.print(f"启动项：{status.path}")
+        console.print("状态：已安装" if status.installed else "状态：未安装")
+        if status.content:
+            console.print(status.content.rstrip("\r\n"))
+        return 0
+    if action == "remove":
+        removed = remove_autostart(startup_dir=startup)
+        console.print("已删除启动项。" if removed else "本来就没有安装启动项。")
+        return 0
+    if action != "install":
+        console.print("用法：rings autostart install|status|remove [--repo PATH]")
+        return 2
+    checkout = Path(repo) if repo is not None else Path(bootstrap.__file__).resolve().parents[1]
+    if not (checkout / "pyproject.toml").is_file():
+        console.print(f"{checkout} 看起来不是 Rings 仓库；用 --repo 指定仓库路径。")
+        return 2
+    distro = current_distro()
+    if distro is None:
+        console.print("读不到 WSL 发行版名（wsl.exe 不可用），无法生成启动项。")
+        return 1
+    spec = AutostartSpec(
+        distro=distro,
+        user=current_user(),
+        repo=checkout,
+        runtime_root=AppPaths.resolve().runtime,
+        uv=resolved_uv(),
+    )
+    path = install_autostart(spec, startup_dir=startup)
+    console.print(f"已写入 {path}：")
+    console.print(render_autostart_cmd(spec).rstrip("\r\n"))
+    console.print("删掉这个文件（或 `rings autostart remove`）即可撤销。")
+    return 0
+
+
 def read_log_tail(runtime_root: Path, *, lines: int = 8) -> str:
     """The last few lines of the daemon log, so a bounded failure says something useful."""
     path = daemon_log_path(Path(runtime_root))
@@ -330,6 +385,17 @@ def main(arguments: Sequence[str], *, deps: UpDeps | None = None) -> int:
         return 0
     if verb == "down":
         return run_down(deps=deps)
+    if verb == "autostart":
+        action = ""
+        repo: Path | None = None
+        pending = list(rest)
+        while pending:
+            item = pending.pop(0)
+            if item == "--repo" and pending:
+                repo = Path(pending.pop(0))
+            elif not action:
+                action = item
+        return run_autostart(action, repo=repo)
     console.print(
         "用法：rings up [--foreground] [--no-open] | rings down | "
         "rings autostart install|status|remove [--repo PATH]"
@@ -346,6 +412,7 @@ __all__ = [
     "main",
     "read_log_tail",
     "render_up",
+    "run_autostart",
     "run_down",
     "run_up",
 ]

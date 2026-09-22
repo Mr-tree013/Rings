@@ -382,11 +382,12 @@ def main() -> None:
     if arguments == [WEB_FLAG]:
         cli_up.load_secrets_for_entry_point()
         raise SystemExit(open_web_chat())
-    if arguments[0] in {"up", "down"}:
+    if arguments[0] in {"up", "down", "autostart"}:
         raise SystemExit(cli_up.main(arguments))
     error_console.print(f"无法识别的参数：{' '.join(arguments)}")
     error_console.print(
-        "用法：rings [--web] | rings up [--foreground] [--no-open] | rings down"
+        "用法：rings [--web] | rings up [--foreground] [--no-open] | rings down | "
+        "rings autostart install|status|remove"
     )
     raise SystemExit(2)
 
