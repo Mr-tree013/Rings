@@ -47,6 +47,22 @@ Some things to know while using it:
   things up, preparing mail, saving changes, executing a confirmed action — never reasoning;
 * confirmation cards carry a version: if the underlying state changed, the click is refused and the
   page reloads the truth, so a stale card can never send, apply or remember anything.
+* the attention drawer shows the same 需要处理 inbox the terminal and the Today brief show, and
+  settling an item there only settles the *item* — it never completes a task, sends a letter or
+  applies a plan;
+* a certificate preparation appears as its own card, showing every field that would be submitted,
+  with 确认提交 / 取消 buttons. Confirming it is the same `ApprovalService` +
+  `ActionExecutionService` path the terminal uses, and it is the only thing in the whole product
+  that submits a certificate: there is no execute, send or submit endpoint anywhere in the route
+  table.
+
+### Settings (`/settings`)
+
+The same host serves a settings page with three sections: 邮箱 (mail accounts and read-only
+connectivity tests), 规划 (the effective capacity rules and the read-only planning timezone) and
+系统状态 (what this build can actually do here, including the eHall certificate state). The page
+carries no password field and no secret; mutations need the same session and CSRF token as every
+other write.
 
 ## Common workflow
 

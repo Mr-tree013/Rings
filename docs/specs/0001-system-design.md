@@ -564,6 +564,7 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 | 13 | 开发者集成：受控本地 MCP（stdio）→ VS Code | 进行中：8B 已完成（official MCP Python SDK v2（`mcp>=2,<3`，`MCPServer`）、`[mcp]`（`enabled` 默认 false / `write_scope=none\|tasks` / `expose_knowledge` 默认 false，无 transport/port/host/trusted-client 键）、独立 stdio console script `growing-assistant-mcp`（不托管在 daemon、日志只走 stderr、disabled 时 stdout 为空并非零退出、未识别参数报错）、`adapters/mcp/`（唯一 import SDK 处）、`application/mcp_facade.py`（不 import SDK，只包装既有服务为 bounded DTO）、4 个固定 resource（status / tasks/open / cases/open / plan/current，只读且不含 mail/draft/fact/playbook/action）、2 个 read tool + 可选 `assistant_search_knowledge`（本地 deterministic 全文检索，单条 ≤1200 / 总 ≤6000，仅 logical URI + span + excerpt）+ 可选 `assistant_create_task` / `assistant_complete_task`（仅 `TaskService`，保留 reminder/replan/revision 语义）、typed tool error、`pw mcp status\|vscode-config`（只打印 snippet），ADR-0030）；**无 Approval/Execution/SMTP/eHall/Fact/Playbook 能力、无 filesystem/shell/HTTP/browser/sampling、无 migration**；Streamable HTTP/SSE transport、public 部署、MCP prompts/apps 属后续 Phase（当前无计划） |
 | 14 | 运行态加固：只读完整性检查、一致备份、staging-only 恢复、恢复时的授权失效 | **已完成（v1.0.0）**：9A 已完成（`domain/backup.py`（固定 archive layout / canonical manifest / 成员名·size·压缩比 bounds）、`domain/integrity.py`、port `RuntimeBackup` / `BackupArchive` / `IntegrityRepository` / `ContentObjectReader`、`store/backup.py`（`sqlite3.Connection.backup()` 一致快照 + 引用对象 hash 复核 + finalization 单事务失效 challenge/approval/pairing/session）、`store/integrity.py`（只读跨域审计）、`adapters/backup/archive.py`、`application/backup_service.py` + `application/integrity_service.py`、`Database.read_only()`、CLI `pw integrity check` 与 `pw backup create\|verify\|inspect\|restore --to`、`tests/acceptance/`，ADR-0031）；9B 已完成（ADR-0032：`adapters/runtime/instance_lock.py`（`flock` 单实例 + `pw daemon status`）、`adapters/runtime/permissions.py`（项目创建对象 `0700`/`0600`，只报告不重写既有权限）、`.gab` 严格 EOF（拒绝尾部附加字节 / ZIP comment / 追加归档）、`DatabaseMigrationIncompatible` + `require_compatible_history()`（未来 schema fail closed）、每个 migration prefix 的升级矩阵与 future-DB 测试、`docs/examples/config.toml` safe-by-default、wheel 内含 `assistant/migrations/` 与 web 静态资源、`pw --version` / `assistantd --version`、`tests/release/`（package smoke / 权限 / 压力 / 重启安全 / 能力冻结 / fresh & historical acceptance / 隐私扫描））；**无 migration（仍 0001–0015）、无新 production dependency、无新外部能力**；自动/后台/云端备份、就地恢复与 `--force`、外部副作用回滚声明、downgrade migration 均不在范围内 |
 
+| 15 | v1.3 capability sprint：主动的 attention inbox、邮件账号设置、Planning 2.0、对话里有界的 eHall 证明申请 | **已完成（v1.3.0）**：11B 已完成（migration 0021（`attention_items`，closed kind / source-type / status / severity、live 行 UNIQUE(dedupe_key)、SHA-256 fingerprint）、`domain/attention.py`、`AttentionProjector`（确定性、幂等、不持有 ModelPort/executor/approval）与 `AttentionService`、`attention.list|acknowledge|dismiss`、Today brief 的「需要处理」即同一 inbox、`/chat` attention drawer + `attention.updated`、daemon `AttentionRefreshService`，ADR-0042）；11C 已完成（managed mail overlay（原子写、同一 strict parser 读回、按 id 合并）、不保存密码的 settings DTO 与 credential reference、只读 IMAP/SMTP 连通性探针（不 MAIL FROM/RCPT TO/DATA）、`/settings` 邮箱页、`restart_required` 语义，ADR-0043）；11D 已完成（migration 0022（singleton `planning_preferences` + `plan_blocks.superseded_*` + `plan_proposals.mode`）、PlanningPreferences、规划日/每日上限/块长偏好、确定性任务拆分、`plan.replan_week` 的 REPLACE_FUTURE 只取代未来 `origin=planner` 块，ADR-0044）；11E 已完成（migration 0023 把 `conversation_external_reviews.action_type` 从单值 CHECK 放宽为 closed pair（`mail.send` / `ehall.submit-certificate`）且逐行保留历史 mail review、`ALLOWED_EXTERNAL_ACTION_TYPES` 同步放宽、每 capability 一套确认词与 preview、`ehall.status`（READ）与 `ehall.certificate.prepare`（LOCAL_WRITE）、准备只产生 immutable `ActionRequest` 与 deterministic preview（零 Approval / 零 ExecutionRun / 零点击）、每个提交值必须出现在用户自己的消息里、只有「确认提交」结算一份 review、browser card 不经 ModelPort、UNKNOWN 不自动重试，ADR-0045）；11F 已完成（跨 surface 的九种可区分 refusal 状态、external review 的 integrity section、backup/restore 覆盖 attention / planning preferences / superseded blocks / generalized review 且不重建 authority、隐私与内部用词 sweep、架构闭包测试、v1.3 假端到端验收与真实 Chromium 的安全 dogfood） |
 ## 13. 后续阶段的未决决策（明确不属于早期 Phase）
 
 以下问题在对应 Phase 开始前必须单独决策并落 ADR，早期 Phase 不做任何实现或假设：
@@ -573,7 +574,9 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - 邮箱授权码与模型 API key 的存放方式（0600 文件 / 系统 keyring）。
 - 邮件分类器的实现路径（规则优先还是模型优先，及其评测方式）。
 - Vault 文本抽取的格式支持范围与 OCR 是否纳入。
-- eHall pipeline 的具体注册机制与 capability 粒度。
+- ~~eHall pipeline 的具体注册机制与 capability 粒度~~ → 已由 ADR-0025 与 ADR-0045 决定：一条
+  白名单 certificate pipeline（`ehall.submit-certificate`），port 只有 `inspect_form` /
+  `submit_certificate`；对话侧只有 `ehall.status` 与 `ehall.certificate.prepare`，准备不提交。
 
 ## 14. 相关 ADR
 
@@ -618,3 +621,7 @@ Scheduler 与审批链，只有外部边界是 fake（Model / IMAP / SMTP / eHal
 - ADR-0039 Deterministic today brief
 - ADR-0040 Interactive terminal line editing and pending confirmation groups
 - ADR-0041 Tree local chat UI, a durable turn queue and a non-authoritative event stream
+- ADR-0042 Proactive attention, a unified inbox and a bounded Today brief
+- ADR-0043 Mail account settings without a secret store
+- ADR-0044 Planning capacity and replanning
+- ADR-0045 Conversational eHall certificate review

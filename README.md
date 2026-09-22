@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.2.0 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.3.0 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -38,7 +38,7 @@ Tree 协调这一切，但永远不会绕过 `ActionRequest`、人类 `Approval`
 | **Mail** | IMAP ingestion、deterministic threads、bounded analysis、本地 reply drafts，以及经过明确 Approval 的 SMTP delivery。 |
 | **Observation** | 观察你配置的公开 HTTPS 页面，以及手动输入和 QQ 转发内容。 |
 | **Actions** | 精确的 `ActionRequest` → 人类 `Approval` → `ExecutionRun`，并绑定不可变的 payload fingerprint。 |
-| **eHall** | 一个范围严格受限、需要 Approval 的 NJU certificate workflow；没有通用 browser automation。 |
+| **eHall** | 一个范围严格受限、需要 Approval 的 NJU certificate workflow（可以用 `ehall.status` 读表单、用 `ehall.certificate.prepare` 准备申请）；没有通用 browser automation。 |
 | **Chat** | 浏览器里的 Tree 对话页：对话历史、消息队列、进度提示、结构化确认卡片。 |
 | **Mobile** | 在可信 LAN 内提供 review 和 Approval 界面。 |
 | **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` 的人工确认流程，以及经过 review、不可执行的 Playbooks。 |
@@ -270,7 +270,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.2.0） | [docs/releases/1.2.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.2.0.md) |
+| Release Notes（当前版本：v1.3.0） | [docs/releases/1.3.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.3.0.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 
@@ -303,7 +303,9 @@ Rings 是公开的项目名称；为了保持 v1 compatibility，历史 identifi
 - 网页对话页和 Mobile 页面都只是可信 LAN 内的 HTTP 页面，不是面向公网的服务；它是 v1.1 同一套 session / CSRF 保护。
 - 发信邮箱的配置仍然是配置文件里的事，本版本没有网页配置向导，也不支持附件、抄送、多收件人或定时发送。
 - 固定安排只支持每周同一天、不跨夜；复杂重复规则还没有。
-- 对话里不能提交 eHall；eHall 仍然是 `pw` 下的同一条 typed pipeline。
+- 对话里只能准备 eHall 申请：`ehall.status` 读表单，`ehall.certificate.prepare` 准备一份精确的申请并给你确认，而且只有你亲口说「确认提交」才会提交；eHall 仍然是 `pw` 下的同一条 typed pipeline，没有通用 browser automation。
+- eHall 只支持 `证明书申请` 这一项服务；退课、撤销申请、退宿等能力在代码里不存在。
+- eHall 表单不会自动填充：每个提交的值都必须出现在你自己的消息里。
 - 「停止」不能回滚已经开始的对外执行；SMTP 的 `UNKNOWN` 仍然需要人工对账，绝不自动重发。
 - SMTP 不保证 exactly-once；发送过程中断时，状态会变为 `UNKNOWN`。
 - eHall 页面发生变化时会 fail closed，而不是自动适配。

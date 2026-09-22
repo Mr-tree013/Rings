@@ -493,3 +493,117 @@ async def test_a_review_in_another_thread_is_not_settled_by_this_one(tmp_path: P
         reviews = await stack.harness.reviews.waiting_for_thread(UUID(first))
         assert len(reviews) == 1
         assert reviews[0].status is ConversationExternalReviewStatus.WAITING
+
+
+# ------------------------------------------------------- the exact certificate card (11E §18-19)
+
+
+def _certificate(applicant: str = "张三", certificate: str = "在读证明") -> dict[str, object]:
+    return operation(
+        "ehall.certificate.prepare",
+        {
+            "fields": {"applicant-name": applicant, "certificate-type": certificate},
+            "case_id": None,
+        },
+    )
+
+
+async def test_the_certificate_card_shows_the_exact_payload_and_submits_once(
+    tmp_path: Path,
+) -> None:
+    """The browser half of the eHall boundary: exact preview, one approval, one click, no model."""
+    from tests.support.ehall import FakeEHallPage
+
+    page = FakeEHallPage()
+    stack = await build_chat(tmp_path, ehall_page=page)
+    with stack.client() as client:
+        tokens = await stack.pair(client)
+        thread = await _thread(client, stack, tokens)
+        stack.harness.queue(plan(_certificate()))
+        await _send(
+            stack,
+            client,
+            tokens,
+            thread,
+            "帮我申请在读证明，申请人姓名是张三，证明书类型是在读证明。",
+        )
+
+        cards = await _cards(client, thread)
+        assert [card["kind"] for card in cards] == ["ehall_certificate"]
+        card = cards[0]
+        assert card["confirm_label"] == "确认提交"
+        assert card["cancel_label"] == "取消"
+        assert card["severity"] == "high"
+        rendered = " ".join(
+            [field["value"] for field in card["fields"]]
+            + [str(item.get("value") or item) for item in card["items"]]
+        )
+        assert "张三" in rendered
+        assert "在读证明" in rendered
+        assert "身份证件" in rendered
+        # Nothing has happened yet: no approval, no run, no keystroke.
+        before = _counts(stack)
+        assert before["approvals"] == 0 and before["execution_runs"] == 0
+        assert page.fills == [] and page.clicks == []
+
+        confirmed = client.post(
+            f"/api/chat/threads/{thread}/confirmations/{card['id']}/confirm",
+            json={"expected_revision": card["expected_revision"]},
+            headers=stack.headers(tokens["csrf"]),
+        )
+
+        assert confirmed.status_code == 200, confirmed.text
+        assert "已提交" in confirmed.json()["text"]
+        assert page.clicks == ["certificate-submit"]
+        assert dict(page.fills) == {
+            "applicant-name": "张三",
+            "certificate-type": "在读证明",
+        }
+        after = _counts(stack)
+        assert after["approvals"] == 1
+        assert after["execution_runs"] == 1
+        # The click does not submit twice, and the card is gone.
+        assert await _cards(client, thread) == []
+        again = client.post(
+            f"/api/chat/threads/{thread}/confirmations/{card['id']}/confirm",
+            json={"expected_revision": card["expected_revision"]},
+            headers=stack.headers(tokens["csrf"]),
+        )
+        assert again.status_code == 409
+        assert again.json()["code"] == "STALE_CONFIRMATION"
+        assert page.clicks == ["certificate-submit"]
+        assert _counts(stack)["approvals"] == 1
+
+
+async def test_the_certificate_card_can_be_withdrawn_with_no_submission(
+    tmp_path: Path,
+) -> None:
+    from tests.support.ehall import FakeEHallPage
+
+    page = FakeEHallPage()
+    stack = await build_chat(tmp_path, ehall_page=page)
+    with stack.client() as client:
+        tokens = await stack.pair(client)
+        thread = await _thread(client, stack, tokens)
+        stack.harness.queue(plan(_certificate()))
+        await _send(
+            stack,
+            client,
+            tokens,
+            thread,
+            "帮我申请在读证明，申请人姓名是张三，证明书类型是在读证明。",
+        )
+        card = (await _cards(client, thread))[0]
+
+        cancelled = client.post(
+            f"/api/chat/threads/{thread}/confirmations/{card['id']}/cancel",
+            json={"expected_revision": card["expected_revision"]},
+            headers=stack.headers(tokens["csrf"]),
+        )
+
+        assert cancelled.status_code == 200, cancelled.text
+        assert "没有提交" in cancelled.json()["text"]
+        counts = _counts(stack)
+        assert counts["approvals"] == 0 and counts["execution_runs"] == 0
+        assert page.clicks == []
+        assert await stack.harness.waiting_reviews() == []

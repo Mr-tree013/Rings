@@ -412,12 +412,62 @@ prepared letter is shown as *waiting for your confirmation* and is not sent; a p
 applied; a fact is not confirmed; and an external outcome nobody can prove is reported as
 *uncertain* with an explicit "I will not retry automatically".
 
+## The inbox: what needs you
+
+```text
+You > 有什么需要我处理的？
+Tree > 现在有 3 件：
+       - 交软件工程报告（今天 18:00 截止）
+       - 邮件：teacher@example.edu —「SE 实验三」需要回复
+       - 有一份周计划提案等待你确认
+```
+
+The inbox is *derived* from your own local state — deadlines, mail that asks for a reply, plans and
+confirmations waiting for you, unresolved external outcomes, reminders and observations — and it is
+deduplicated, so one waiting thing is one line. `attention.list` reads it, `attention.acknowledge`
+marks one item as seen, and `attention.dismiss` stops reminding you about it.
+
+Settling an item is not doing the thing: a dismissed reminder never completes a task, sends a
+letter, applies a plan or answers a question, and an item whose source is gone simply disappears
+from the inbox. The same inbox is what the Today brief shows under 需要处理, and what `/chat` shows
+in its attention drawer.
+
+## Capacity and replanning
+
+```text
+You > 每天晚上十点以后不要安排任务。
+Tree > 已更新：规划日结束 22:00。……
+
+You > 这周太满了，重新安排一下。
+Tree > 这是一份新的周计划提案……回复「可以」我就写进计划，或回复「取消」。
+```
+
+Capacity rules are durable preferences, not conversation state: the planning day's start and end,
+the maximum planned minutes per day, the preferred sitting length and the maximum one. They are
+`planning.preferences.update` / `planning.preferences.show` in the vocabulary, and the planning
+*timezone* deliberately stays in the host configuration — one authority, not two.
+
+`plan.replan_week` proposes a replacement for what is left of the week: the remaining time is
+replanned, long tasks are split deterministically, and the plan it would replace stays authoritative
+until you apply the new one with a local "可以". Manual time blocks are never replaced by the
+planner, and applying a proposal is a local write: no `ActionRequest`, no approval, no execution.
+
+## Everything else external is prepared, never submitted
+
+Two errands can be prepared for you to review: one exact letter (`mail.compose_new` /
+`mail.prepare_new_send` / `mail.prepare_reply_send`) and one NJU certificate application
+(`ehall.status` / `ehall.certificate.prepare`, see [ehall.md](ehall.md)). Both show the exact
+payload that would leave the machine, both need your own action-specific phrase (`确认发送` /
+`确认提交`), and both then go through the same approval and execution services the CLI uses.
+
 ## What it will not do
 
-* **No eHall and no generic actions.** Mail is the only external capability a conversation can
-  prepare; submitting eHall forms, creating an approval and executing an arbitrary action are not
-  in the capability set. Ask anyway and Tree says so — in words, not by pointing you at six
-  commands.
+* **No submitting, ever.** Two external errands can be *prepared*: sending one exact letter and one
+  NJU certificate application (`ehall.status` / `ehall.certificate.prepare`). There is no
+  `ehall.submit`, no `approval.create`, no `action.execute`, no `browser.*` and no generic action;
+  an approval and a submission are yours, and only your own `确认发送` / `确认提交` reaches them.
+  Anything else external — dropping a course, withdrawing an application, an arbitrary web action —
+  is answered with words, not by pointing you at six commands.
 * **No automatic facts.** "记住我的办公室在仙林" is a statement in a conversation, not a human
   confirmation of a durable fact. Long-term facts keep their own confirmation flow, and Phase 10A
   does not wire the conversation into it.

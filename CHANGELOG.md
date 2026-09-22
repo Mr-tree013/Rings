@@ -5,6 +5,61 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-22
+
+The capability sprint: a proactive inbox, mail account settings, planning capacity and replanning,
+and a bounded conversational eHall certificate. See `docs/releases/1.3.0.md` for the full notes and
+ADR-0042 through ADR-0045 for the decisions.
+
+### Added
+
+- **The proactive inbox (`attention`).** `migrations/0021_attention_items.sql` plus
+  `domain/attention.py`, an attention repository and an `AttentionProjector` that derives one
+  deduplicated inbox from task deadlines, mail analyses requiring a reply, passed plan blocks,
+  pending plan proposals, pending fact candidates, awaiting recurring rules, waiting external
+  reviews, unresolved external executions, unread notifications and actionable observations. The
+  conversation gains `attention.list`, `attention.acknowledge` and `attention.dismiss`; the Today
+  brief's 需要处理 section is the same inbox; `/chat` shows it in a drawer with an
+  `attention.updated` event (ADR-0042).
+- **Mail account settings.** A managed overlay (`mail-accounts.toml`) written atomically with
+  read-back through the same strict parser, a safe settings DTO, read-only IMAP and SMTP
+  connectivity probes that never send, and authenticated `/settings` routes with CSRF protection
+  and no password field. Changes report `restart_required` honestly (ADR-0043).
+- **Planning 2.0.** Durable capacity preferences, a planning day, a daily minute budget, a
+  preferred and maximum block length, deterministic splitting of large tasks, and
+  `plan.replan_week`, which proposes a replacement for what is left of the week and supersedes only
+  the future automatically-planned blocks the user applies (ADR-0044).
+- **Conversational eHall certificate preparation.** `ehall.status` reads the live
+  certificate form and `ehall.certificate.prepare` freezes one exact
+  `ActionRequest("ehall.submit-certificate")` from the user's own values. The preview and the
+  browser card are rendered from that payload, every submitted value must appear in the user's own
+  message, and only `确认提交` settles exactly one review (ADR-0045).
+- **Nine distinguishable refusal states**, one sentence each, so not-configured, needs-a-login,
+  connection-failed, credential-missing, unsupported, ambiguous, unknown-external-result,
+  stale-confirmation and cannot-cancel-safely no longer collapse into one apology.
+
+### Changed
+
+- **`conversation_external_reviews` carries a closed pair of action types.**
+  `migrations/0023_conversation_review_expansion.sql` widens the one-value CHECK to
+  `('mail.send', 'ehall.submit-certificate')` and copies every historical mail review across
+  unchanged. `ALLOWED_EXTERNAL_ACTION_TYPES`, the confirmation vocabularies, the preview dispatch,
+  the card kinds and `pw integrity check` all name the same two capabilities.
+- **`pw integrity check` audits one more section:** the external review, its action, its payload
+  fingerprint, its lifecycle and its approval and execution relationships.
+- **`EHallCertificateService.prepare` accepts an already-taken read-only inspection**, so the
+  conversation inspects the live form once, validates the user's values against it, and opens the
+  required OPEN case only once the values are usable. The CLI path is unchanged.
+
+### Security
+
+- No model path can reach the eHall executor, create an approval or execute an action; the
+  conversation vocabulary cannot express a submission, a browser action or an arbitrary URL.
+- Every submitted certificate value must occur in the user's own message, so an invented name or
+  student number never reaches a form.
+- A backup keeps attention state, planning preferences, superseded plan blocks and pending reviews,
+  excludes credentials and the eHall browser profile, and never recreates an approval.
+
 ## [1.2.0] - 2026-09-22
 
 Tree Web Chat: the browser becomes the preferred daily surface for Tree, as an interaction adapter

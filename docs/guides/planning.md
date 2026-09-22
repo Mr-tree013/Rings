@@ -119,6 +119,52 @@ uv run pw plan cancel <BLOCK>
 - `pw plan show` re-displays the stored proposal instead of planning again, so what you review is
   what was decided at that moment.
 
+## Capacity: how much, and how long
+
+The planner is deterministic, and it works inside rules you own. Two kinds of rules exist, and they
+are deliberately different things:
+
+```toml
+[planning]
+timezone = "Asia/Shanghai"     # the one authority on what "today" means
+```
+
+```text
+You > 每天早上九点开始，晚上十点以后不要安排任务。
+You > 一天最多给我安排六小时。
+You > 一个任务最多一次排两个小时。
+```
+
+The second kind is a durable *preference*, stored in the runtime database and changeable from the
+conversation at any time: the planning day's start and end, the maximum planned minutes per day, the
+preferred sitting length and the maximum one. `planning.preferences.show` reports what is in effect;
+`planning.preferences.update` changes only what you named. The timezone is not one of those fields —
+it lives in the host configuration and has exactly one authority.
+
+Availability rules and fixed weekly commitments remain the outer bound: a preference narrows the
+day, it never overrides a class or an appointment.
+
+## Replanning what is left
+
+```text
+You > 这周太满了，重新安排一下。
+You > 今天没做完的往后排。
+```
+
+`plan.replan_week` proposes a replacement for the remaining week. It is still a proposal: the
+current plan stays authoritative until you apply the new one, and applying it is a local "可以".
+Three properties matter:
+
+- **Only future automatic blocks are replaced.** A replan supersedes `origin=planner` blocks it
+  overlaps from "now" forward; past blocks are history and manual blocks are yours — neither is ever
+  rewritten or removed.
+- **Superseded is recorded beside cancelled.** A replaced block keeps `cancelled_at` *and*
+  `superseded_at` / `superseded_by_proposal_id`, so "the user cancelled this" stays distinguishable
+  from "a later plan replaced it".
+- **Large estimates are split deterministically.** A five-hour task becomes sittings of the
+  preferred length, never longer than the maximum, and a remainder that does not fit is reported as
+  an unschedulable case rather than hidden.
+
 ## Reminders and rolling replans
 
 ```bash
@@ -188,4 +234,5 @@ guessed.
 - Planner: [ADR-0015](../adr/0015-deterministic-weekly-planner.md)
 - Scheduling and replanning: [ADR-0016](../adr/0016-durable-scheduler-and-replanning.md)
 - Weekly recurring rules: [ADR-0036](../adr/0036-weekly-recurring-calendar-rules.md)
+- Capacity preferences and replanning: [ADR-0044](../adr/0044-planning-capacity-and-replanning.md)
 - System design §6 and §7.2: [docs/specs/0001-system-design.md](../specs/0001-system-design.md)

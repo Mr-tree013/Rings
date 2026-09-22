@@ -655,6 +655,25 @@ def test_the_reviewed_action_types_are_a_closed_pair() -> None:
     assert {"mail.send", "ehall.submit-certificate"} == ALLOWED_EXTERNAL_ACTION_TYPES
 
 
+async def test_the_certificate_flow_logs_no_personal_value(
+    harness: ConversationHarness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """§privacy: a certificate application is personal content, and a log is not a place for it."""
+    import logging
+
+    with caplog.at_level(logging.DEBUG):
+        thread, _ = await _prepare_certificate(harness)
+        await harness.service.send(thread.id, "确认提交")
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert APPLICANT not in logged
+    assert CERTIFICATE_TYPE not in logged
+    # Nor any of the machinery behind the approval it produced.
+    for forbidden in ("token_hash", "token", "cookie", "session", "selector"):
+        assert forbidden not in logged.lower()
+    assert _page(harness).clicks == ["certificate-submit"]
+
+
 def test_a_review_of_an_unreviewed_capability_cannot_even_be_built() -> None:
     """The closed set is enforced in the domain, the table and the confirmation vocabulary."""
     from datetime import UTC, datetime

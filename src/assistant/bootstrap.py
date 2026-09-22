@@ -1467,6 +1467,7 @@ def conversation_chat_service(
     model: ModelPort | None = None,
     executors: Mapping[ActionType, ActionExecutor] | None = None,
     broker: ConversationEventBroker | None = None,
+    ehall: EHallCertificateService | None = None,
 ) -> ConversationChatService:
     """The application surface the browser adapter speaks to.
 
@@ -1478,7 +1479,7 @@ def conversation_chat_service(
         ModelCredentialsMissing: the environment holds no credential.
     """
     conversation = conversation_service(
-        database, clock, config, model=model, executors=executors
+        database, clock, config, model=model, executors=executors, ehall=ehall
     )
     channel = broker if broker is not None else conversation_event_broker()
     coordinator = conversation_request_coordinator(

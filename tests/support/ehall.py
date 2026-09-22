@@ -18,6 +18,7 @@ from assistant.domain.action import ActionRequest, ActionType
 from assistant.domain.ehall import (
     CERTIFICATE_SERVICE_NAME,
     EHallFieldDefinition,
+    EHallFieldKind,
     EHallFormSnapshot,
 )
 from assistant.domain.execution import ExecutionOutcome
@@ -34,12 +35,12 @@ def certificate_snapshot(**overrides: object) -> EHallFormSnapshot:
         "service_identity": "nju-ehall/证明书申请",
         "fields": (
             EHallFieldDefinition(
-                key=FIELD_KEY, label="申请人姓名", kind="text", required=True
+                key=FIELD_KEY, label="申请人姓名", kind=EHallFieldKind.TEXT, required=True
             ),
             EHallFieldDefinition(
                 key=SECOND_FIELD_KEY,
                 label="证明书类型",
-                kind="select",
+                kind=EHallFieldKind.SELECT,
                 required=True,
                 options=CERTIFICATE_TYPE_OPTIONS,
             ),

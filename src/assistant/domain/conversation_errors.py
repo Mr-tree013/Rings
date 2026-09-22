@@ -19,6 +19,48 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from assistant.domain.errors import (
+    ActionExecutionUnknown,
+    ActionExecutionUnresolved,
+    ActionNotExecutable,
+    AmbiguousAttentionReference,
+    AmbiguousId,
+    ApprovalChallengeConsumed,
+    ApprovalChallengeExpired,
+    ApprovalUnavailable,
+    CannotCancelSafely,
+    CapabilityUnavailable,
+    EHallBrowserUnavailable,
+    EHallDisabled,
+    EHallLoginRequired,
+    EHallServiceMismatch,
+    EHallUnexpectedOrigin,
+    EHallUnsupportedRequiredField,
+    MailAuthenticationError,
+    MailConfigurationError,
+    MailConnectionError,
+    MailCredentialsMissing,
+    MailSendNotConfigured,
+    McpDisabled,
+    McpToolUnavailable,
+    ModelAuthenticationError,
+    ModelCredentialsMissing,
+    ModelNotConfigured,
+    ModelRateLimited,
+    ModelTransientError,
+    ModelUnavailable,
+    PlanningNotConfigured,
+    PlanProposalNotPending,
+    PlaybookReplayUnsupported,
+    StaleCaseUpdate,
+    StaleConversationCard,
+    StaleMailDraftUpdate,
+    StalePlanProposal,
+    StaleTaskUpdate,
+    StorageRootOffline,
+    WebWatchRequestFailed,
+)
+
 
 class ConversationErrorCode(StrEnum):
     """Why a turn could not do what the user asked."""
@@ -55,4 +97,76 @@ class ConversationRefusalCode(StrEnum):
     MISSING_PARAMETERS = "missing_parameters"
 
 
-__all__ = ["ConversationErrorCode", "ConversationRefusalCode"]
+_NOT_CONFIGURED = (
+    ModelNotConfigured,
+    PlanningNotConfigured,
+    MailSendNotConfigured,
+    MailConfigurationError,
+    EHallDisabled,
+    McpDisabled,
+)
+_AUTH_REQUIRED = (ModelAuthenticationError, MailAuthenticationError, EHallLoginRequired)
+_CONNECTION_FAILED = (
+    MailConnectionError,
+    ModelUnavailable,
+    ModelTransientError,
+    ModelRateLimited,
+    EHallBrowserUnavailable,
+    WebWatchRequestFailed,
+    StorageRootOffline,
+)
+_CREDENTIAL_MISSING = (ModelCredentialsMissing, MailCredentialsMissing)
+_UNSUPPORTED_CAPABILITY = (
+    CapabilityUnavailable,
+    McpToolUnavailable,
+    PlaybookReplayUnsupported,
+    EHallServiceMismatch,
+    EHallUnsupportedRequiredField,
+    EHallUnexpectedOrigin,
+)
+_AMBIGUOUS_REFERENCE = (AmbiguousId, AmbiguousAttentionReference)
+_UNKNOWN_EXTERNAL_RESULT = (ActionExecutionUnknown, ActionExecutionUnresolved)
+_STALE_CONFIRMATION = (
+    StaleConversationCard,
+    StalePlanProposal,
+    PlanProposalNotPending,
+    StaleMailDraftUpdate,
+    StaleTaskUpdate,
+    StaleCaseUpdate,
+    ApprovalChallengeExpired,
+    ApprovalChallengeConsumed,
+    ApprovalUnavailable,
+    ActionNotExecutable,
+)
+
+
+def refusal_code_for(error: BaseException) -> ConversationRefusalCode | None:
+    """How one failure should be described to a person, or `None` when it is not a refusal.
+
+    A closed mapping over this project's own error types: the point of it is that "not configured",
+    "needs a login", "the network is down" and "an external result is unknown" stop collapsing into
+    one apology (ADR-0045 §4). An error outside this vocabulary is left to the caller, which
+    renders it without any internal text.
+    """
+    if isinstance(error, _NOT_CONFIGURED):
+        return ConversationRefusalCode.NOT_CONFIGURED
+    if isinstance(error, _AUTH_REQUIRED):
+        return ConversationRefusalCode.AUTH_REQUIRED
+    if isinstance(error, _CONNECTION_FAILED):
+        return ConversationRefusalCode.CONNECTION_FAILED
+    if isinstance(error, _CREDENTIAL_MISSING):
+        return ConversationRefusalCode.CREDENTIAL_MISSING
+    if isinstance(error, _UNSUPPORTED_CAPABILITY):
+        return ConversationRefusalCode.UNSUPPORTED_CAPABILITY
+    if isinstance(error, _AMBIGUOUS_REFERENCE):
+        return ConversationRefusalCode.AMBIGUOUS_REFERENCE
+    if isinstance(error, _UNKNOWN_EXTERNAL_RESULT):
+        return ConversationRefusalCode.UNKNOWN_EXTERNAL_RESULT
+    if isinstance(error, CannotCancelSafely):
+        return ConversationRefusalCode.CANNOT_CANCEL_SAFELY
+    if isinstance(error, _STALE_CONFIRMATION):
+        return ConversationRefusalCode.STALE_CONFIRMATION
+    return None
+
+
+__all__ = ["ConversationErrorCode", "ConversationRefusalCode", "refusal_code_for"]

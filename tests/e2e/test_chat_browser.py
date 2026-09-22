@@ -32,6 +32,14 @@ pytestmark = pytest.mark.e2e
 
 PLAYWRIGHT_CACHE = Path.home() / ".cache" / "ms-playwright"
 
+UI_TIMEOUT_MS = 60000
+"""How long the browser waits for one product step.
+
+Generous on purpose: this module runs at the very end of a full suite, on a machine that has
+just created a few thousand SQLite databases, and a slow *machine* is not a product bug. Every
+assertion below still fails if the step never happens.
+"""
+
 XSS_PAYLOAD = "<script>alert(1)</script>"
 
 
@@ -166,7 +174,7 @@ def test_the_browser_chat_surface_end_to_end(tmp_path: Path) -> None:
 def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     """The workflow the phase promises, one browser step at a time."""
     page.goto(f"{base}/chat")
-    page.wait_for_selector("#composer")
+    page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
 
     # 1. Send a message and watch it be understood and answered.
     stack.harness.queue(direct_reply("今天只有一件小事。"))
@@ -174,7 +182,7 @@ def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     page.click("#send")
     page.wait_for_function(
         "() => document.querySelectorAll('#messages .message.assistant').length === 1",
-        timeout=20000,
+        timeout=UI_TIMEOUT_MS,
     )
     assert "今天只有一件小事。" in page.inner_text("#messages")
 
@@ -184,7 +192,7 @@ def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     page.click("#send")
     page.wait_for_function(
         "() => document.querySelectorAll('#messages .message.assistant').length === 2",
-        timeout=20000,
+        timeout=UI_TIMEOUT_MS,
     )
     assert page.query_selector("#messages script") is None
     assert XSS_PAYLOAD in page.inner_text("#messages")
@@ -212,18 +220,18 @@ def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     )
     page.fill("#input", "记住我的办公室在浏览器测试地点")
     page.click("#send")
-    page.wait_for_selector(".card", timeout=20000)
+    page.wait_for_selector(".card", timeout=UI_TIMEOUT_MS)
     assert "浏览器测试地点" in page.inner_text(".card")
     page.click(".card button.primary")
     page.wait_for_function(
-        "() => document.querySelectorAll('.card').length === 0", timeout=20000
+        "() => document.querySelectorAll('.card').length === 0", timeout=UI_TIMEOUT_MS
     )
     assert _confirmed_facts(stack) == 1
 
     # 5. Reload reconstructs durable state instead of replaying anything.
     messages_before = page.inner_text("#messages")
     page.reload()
-    page.wait_for_selector("#messages .message", timeout=20000)
+    page.wait_for_selector("#messages .message", timeout=UI_TIMEOUT_MS)
     assert page.inner_text("#messages") == messages_before
     assert page.query_selector(".card") is None
 
@@ -232,7 +240,7 @@ def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     page.fill("#input", "第一条消息")
     page.click("#send")
     page.wait_for_function(
-        "() => !document.getElementById('activity').hidden", timeout=20000
+        "() => !document.getElementById('activity').hidden", timeout=UI_TIMEOUT_MS
     )
     assert "正在理解你的请求" in page.inner_text("#activity")
 
@@ -240,16 +248,16 @@ def _walk_the_product(stack: ChatStack, page, base: str) -> None:
     stack.harness.queue(direct_reply("不该出现的回答。"))
     page.fill("#input", "第二条消息")
     page.click("#send")
-    page.wait_for_selector(".queued", timeout=20000)
+    page.wait_for_selector(".queued", timeout=UI_TIMEOUT_MS)
     assert "排队中" in page.inner_text("#queue")
     assert "第二条消息" in page.inner_text("#queue")
     page.click(".queued button")
     page.wait_for_function(
-        "() => document.querySelectorAll('.queued').length === 0", timeout=20000
+        "() => document.querySelectorAll('.queued').length === 0", timeout=UI_TIMEOUT_MS
     )
     page.wait_for_function(
         "() => document.querySelectorAll('#messages .message.assistant').length === 4",
-        timeout=20000,
+        timeout=UI_TIMEOUT_MS,
     )
     assert "第二条消息" not in page.inner_text("#messages")
 
@@ -262,6 +270,104 @@ def _confirmed_facts(stack: ChatStack) -> int:
         return connection.execute("SELECT COUNT(*) FROM confirmed_facts").fetchone()[0]
     finally:
         connection.close()
+
+
+@requires_browser
+def test_the_browser_shows_the_certificate_preview_and_submits_nothing(
+    tmp_path: Path,
+) -> None:
+    """The v1.3 safe dogfood: a real browser, the real card, and no submission.
+
+    The certificate pipeline runs over a fake page, so this walks the product the way a person
+    would — look at what the certificate capability is, prepare one, read the exact preview, and
+    then withdraw it — while asserting that the outside world was never touched.
+    """
+    from playwright.sync_api import sync_playwright
+
+    from tests.support.ehall import FakeEHallPage
+
+    page_double = FakeEHallPage()
+    stack = asyncio.run(build_chat(tmp_path, ehall_page=page_double))
+    with _Server(build_app(stack.dependencies(), is_private=is_private_client)) as server:
+        session = asyncio.run(_issue_session(stack))
+        base = f"http://127.0.0.1:{server.port}"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, args=["--no-sandbox"])
+            context = browser.new_context(viewport={"width": 420, "height": 780})
+            context.add_cookies(
+                [
+                    _cookie(SESSION_COOKIE, session["session"]),
+                    _cookie(CSRF_COOKIE, session["csrf"]),
+                ]
+            )
+            page = context.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on(
+                "console",
+                lambda message: (
+                    errors.append(message.text) if message.type == "error" else None
+                ),
+            )
+
+            page.goto(f"{base}/chat")
+            page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
+            stack.harness.queue(plan(operation("ehall.status", {})))
+            page.fill("#input", "eHall 能用吗？")
+            page.click("#send")
+            page.wait_for_function(
+                "() => document.querySelectorAll('#messages .message.assistant').length === 1",
+                timeout=UI_TIMEOUT_MS,
+            )
+            status = page.inner_text("#messages")
+            assert "证明书申请" in status
+            assert "确认提交" in status
+
+            stack.harness.queue(
+                plan(
+                    operation(
+                        "ehall.certificate.prepare",
+                        {
+                            "fields": {
+                                "applicant-name": "张三",
+                                "certificate-type": "在读证明",
+                            },
+                            "case_id": None,
+                        },
+                    )
+                )
+            )
+            page.fill(
+                "#input",
+                "帮我申请在读证明，申请人姓名是张三，证明书类型是在读证明。",
+            )
+            page.click("#send")
+            page.wait_for_selector(".card", timeout=UI_TIMEOUT_MS)
+            card = page.inner_text(".card")
+            assert "证明申请提交预览" in card
+            assert "张三" in card
+            assert "在读证明" in card
+            assert "确认提交" in card
+
+            # Withdrawing it submits nothing, and no keystroke ever reached the page.
+            page.click(".card button:not(.primary)")
+            page.wait_for_function(
+                "() => document.querySelectorAll('.card').length === 0", timeout=UI_TIMEOUT_MS
+            )
+            assert "没有提交" in page.inner_text("#messages")
+            assert page_double.fills == []
+            assert page_double.clicks == []
+
+            # The settings shell is a real page, and it names what it is configured to do.
+            page.goto(f"{base}/settings")
+            page.wait_for_selector("main", timeout=UI_TIMEOUT_MS)
+            settings = page.inner_text("body")
+            assert "邮箱" in settings
+            assert "规划" in settings
+            assert "系统状态" in settings
+
+            assert errors == []
+            browser.close()
 
 
 def _cookie(name: str, value: str) -> dict[str, object]:

@@ -82,12 +82,16 @@ class ChatStack:
     def wire(self, *, delay: float = 0.0) -> ChatStack:
         """Build the chat surface over the harness's runtime, sharing its scripted provider."""
         self.model = DelayedModelAdapter(self.harness.model, delay=delay)
+        executors = {ActionType("mail.send"): self.harness.executor}
+        if self.harness.ehall_executor is not None:
+            executors[self.harness.ehall_executor.action_type] = self.harness.ehall_executor
         self.chat = bootstrap.conversation_chat_service(
             self.harness.database,
             self.harness.clock,
             self.harness.config,
             model=self.model,
-            executors={ActionType("mail.send"): self.harness.executor},
+            executors=executors,
+            ehall=self.harness.ehall_service,
         )
         return self
 

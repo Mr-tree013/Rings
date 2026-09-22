@@ -261,6 +261,35 @@ pw action execute <ACTION>
 pw action cancel <ACTION>
 ```
 
+## Account settings from the browser
+
+Account metadata — the label, the IMAP and SMTP hosts and ports, the TLS mode, the username and the
+from address — can be managed from `/settings` → 邮箱 instead of editing `config.toml` by hand:
+
+```text
+GET    /api/settings/mail/accounts
+POST   /api/settings/mail/accounts
+PATCH  /api/settings/mail/accounts/{id}
+POST   /api/settings/mail/accounts/{id}/test-imap
+POST   /api/settings/mail/accounts/{id}/test-smtp
+```
+
+Three things are deliberate, and the page says each of them plainly:
+
+- **The browser never holds a password.** Rings keeps a *credential reference* only; the secret
+  itself comes from the environment (`GROWING_ASSISTANT_MAIL_<ID>_PASSWORD`,
+  `..._SMTP_PASSWORD`). There is no password field, no secret can be posted, and no GET returns one.
+- **The connectivity tests are read-only.** The IMAP probe connects, authenticates and closes; the
+  SMTP probe connects, negotiates TLS, authenticates and sends `NOOP`. Neither sends a message
+  (there is no `MAIL FROM`, `RCPT TO` or `DATA`), and there is no "send a test mail" endpoint.
+- **A change needs a restart.** The accounts are read when the daemon composes its services, so the
+  settings page answers `restart_required` and says "配置已保存。重启 assistantd 后生效。" instead of
+  pretending the change is live.
+
+Everything written goes into a managed overlay (`mail-accounts.toml`) next to `config.toml`, written
+atomically with owner-only permissions and read back through the same strict parser as the primary
+file — so an unknown key (including any `password` or `secret`) is refused there too.
+
 ## Safety behavior
 
 - Raw received mail is content-addressed under the runtime data directory; attachments are stored as
@@ -287,5 +316,6 @@ pw action cancel <ACTION>
 - Ingestion: [ADR-0020](../adr/0020-durable-imap-ingestion.md)
 - Threading and analysis: [ADR-0021](../adr/0021-mail-threading-and-analysis.md)
 - Reply drafts: [ADR-0022](../adr/0022-durable-mail-reply-drafts.md)
+- Account settings without a secret store: [ADR-0043](../adr/0043-mail-account-settings.md)
 - Approval and execution boundary: [ADR-0023](../adr/0023-action-approval-execution-boundary.md)
 - Approved SMTP delivery: [ADR-0024](../adr/0024-approved-smtp-delivery.md)

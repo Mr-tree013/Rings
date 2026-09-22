@@ -70,6 +70,47 @@ pw action approve <ACTION> <TOKEN>
 pw action execute <ACTION>
 ```
 
+## From the conversation
+
+The same pipeline is reachable from Tree with two operations, and no way to submit:
+
+```text
+You > eHall 现在能用吗？
+Tree > 现在可以准备一份证明申请（服务：nju-ehall/证明书申请）。页面上的字段：
+       - 申请人姓名（applicant-name）：必填
+       - 证明书类型（certificate-type）：必填，可选：在读证明、成绩证明
+       需要准备的材料：身份证件、学号
+       …在你亲口说「确认提交」之前，什么都不会提交。
+
+You > 帮我申请在读证明，申请人姓名是张三，证明书类型是在读证明。
+Tree > 将要提交的证明申请（以下内容就是实际提交的内容）：
+       · 服务：nju-ehall/证明书申请
+       · 申请人姓名：张三
+       · 证明书类型：在读证明
+       · 需要准备的材料：身份证件、学号
+       · 页面契约指纹：<64 位十六进制>
+       …确认提交吗？回复「确认提交」我就提交，或回复「取消」。
+       回复「可以」不会提交。
+```
+
+What the conversation will and will not do:
+
+- `ehall.status` reads the live form (`not_configured`, `auth_required` and "the page is not the one
+  I know" are told apart, and it never asks for a password);
+- `ehall.certificate.prepare` prepares one exact `ActionRequest` for an OPEN case and shows the
+  preview **rendered from that payload** — there is no approval, no execution run and no keystroke
+  at this point;
+- every value must appear in your own message: a name, a student number or any other detail the
+  model produced is refused before anything is created, and there is no autofill from facts,
+  knowledge, mail or memory;
+- a missing required parameter is a question ("还缺少必要的信息"), never a default;
+- only your own `确认提交` (or the card's 确认提交 button) settles it — through the same
+  `ApprovalService` and `ActionExecutionService` the CLI uses — and `可以` submits nothing;
+- the browser card is settled by durable identity with no model in the path, and an ambiguous
+  result stays `UNKNOWN` and is never retried automatically.
+
+There is no `ehall.submit`, no `approval.create`, no `action.execute` and no `browser.*` operation.
+
 ## Safety behavior
 
 - `inspect` reads the live form and submits nothing. `prepare` validates locally and freezes the
@@ -103,4 +144,5 @@ pw action execute <ACTION>
 ## Implementation notes
 
 - Approved eHall certificate pipeline: [ADR-0025](../adr/0025-approved-ehall-certificate-pipeline.md)
+- Conversational certificate review: [ADR-0045](../adr/0045-conversational-ehall-certificate-review.md)
 - Approval and execution boundary: [ADR-0023](../adr/0023-action-approval-execution-boundary.md)

@@ -67,7 +67,11 @@ from assistant.domain.conversation import (
     ConversationTurnId,
     ConversationTurnStatus,
 )
-from assistant.domain.conversation_errors import ConversationErrorCode
+from assistant.domain.conversation_errors import (
+    ConversationErrorCode,
+    ConversationRefusalCode,
+    refusal_code_for,
+)
 from assistant.domain.conversation_plan import (
     CalendarRecurringCreateWeeklyArguments,
     ContactCreateArguments,
@@ -783,7 +787,11 @@ class ConversationService:
                     if results
                     else []
                 )
-                failure = render.render_failure(planned.operation_type.value, outcome.failure)
+                failure = render.render_operation_failure(
+                    planned.operation_type.value,
+                    outcome.failure,
+                    refusal=outcome.refusal,
+                )
                 return await self._finish(
                     thread,
                     turn,
@@ -1459,7 +1467,12 @@ class ConversationService:
                     planned.arguments, PreflightContext(preceding=preceding)
                 )
             except DomainError as exc:
-                return str(exc)
+                # A readiness check that fails in a named way says which state it is in; anything
+                # else is shown only if it carries no internal machinery (ADR-0035 §8, §32).
+                code = refusal_code_for(exc)
+                if code is not None:
+                    return render.render_refusal(code, subject=planned.operation_type.value)
+                return render.sanitise_detail(str(exc)) or "这一步现在不能执行"
             except Exception:
                 return f"我现在无法确认「{planned.operation_type.value}」是否可以执行"
             if refusal is not None:
@@ -1475,7 +1488,10 @@ class ConversationService:
         )
         outcome = await self._execute_existing(turn, stored)
         return _Execution(
-            result=outcome.result, failure=outcome.failure, operation=stored
+            result=outcome.result,
+            failure=outcome.failure,
+            operation=stored,
+            refusal=outcome.refusal,
         )
 
     async def _execute_existing(
@@ -1495,7 +1511,9 @@ class ConversationService:
                 applying, status=ConversationOperationStatus.FAILED, at=self._clock.now()
             )
             await self._repository.update_operation(failed)
-            return _Execution(result=None, failure=str(exc))
+            return _Execution(
+                result=None, failure=str(exc), refusal=refusal_code_for(exc)
+            )
         applied = _replace_operation(
             applying,
             status=ConversationOperationStatus.APPLIED,
@@ -1633,6 +1651,12 @@ class _Execution:
     result: OperationResult | None
     failure: str | None
     operation: ConversationOperation | None = None
+    refusal: ConversationRefusalCode | None = None
+    """How the failure should be described to a person, when this build has words for it.
+
+    The `failure` string stays for logs and debug output; this is what the user sees, so no
+    exception text — a config key, a path, a provider message — reaches the conversation.
+    """
 
 
 def _apply_arguments(proposal_id: str) -> ConversationOperationArguments:

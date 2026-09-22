@@ -22,6 +22,10 @@ import hashlib
 import json
 import sqlite3
 
+from assistant.domain.action import (
+    canonical_action_payload,
+    fingerprint_of_canonical_json,
+)
 from assistant.domain.contact import ContactStatus
 from assistant.domain.errors import DomainError
 from assistant.domain.integrity import IntegritySection, IntegritySeverity
@@ -59,6 +63,7 @@ class SqliteIntegrityRepository:
                     _contact_section(connection),
                     _mail_section(connection),
                     _outbound_section(connection),
+                    _external_review_section(connection),
                     _attention_section(connection),
                     _planning_preferences_section(connection),
                     _observation_section(connection),
@@ -464,6 +469,114 @@ def _outbound_section(connection: sqlite3.Connection) -> IntegritySection:
     if failing:
         return IntegritySection("outbound", IntegritySeverity.FAIL, summary, tuple(failing))
     return IntegritySection("outbound", IntegritySeverity.OK, summary)
+
+
+def _external_review_section(connection: sqlite3.Connection) -> IntegritySection:
+    """Conversational reviews of external actions (ADR-0034 §4, ADR-0045 §24-§25).
+
+    A review is a pointer to one immutable action, so every check here is about the pointer still
+    describing something real and reviewed:
+
+    * the action type is one of the two capabilities that have a conversational review — the closed
+      set the table's own CHECK enforces, audited again because a row also arrives through a
+      restore;
+    * the action it names still exists;
+    * the payload still hashes to the fingerprint the review recorded (re-derived here, never
+      trusted from the stored column alone);
+    * the lifecycle agrees with itself: only an execution attempt may name a run, that run must
+      belong to the action it decided, a review that claims a decision has an approval to show for
+      it, and a review still waiting points at an action that is still prepared.
+
+    Findings name identifiers and kinds, never a payload byte: a certificate application and a
+    letter are personal content, and an audit is not a place to reprint them.
+    """
+    critical: list[str] = []
+    failing: list[str] = []
+    total = 0
+    for row in connection.execute(
+        "SELECT r.id, r.action_type, r.action_fingerprint, r.status, r.execution_run_id, "
+        "r.action_request_id, a.fingerprint AS action_fingerprint, a.payload_json, "
+        "a.status AS action_status, e.action_id AS run_action_id, "
+        "(SELECT COUNT(*) FROM approvals ap WHERE ap.action_id = r.action_request_id) "
+        "AS approval_count "
+        "FROM conversation_external_reviews AS r "
+        "LEFT JOIN action_requests AS a ON a.id = r.action_request_id "
+        "LEFT JOIN execution_runs AS e ON e.id = r.execution_run_id "
+        "ORDER BY r.created_at, r.id"
+    ).fetchall():
+        total += 1
+        identifier = str(row["id"])[:8]
+        if str(row["action_type"]) not in REVIEWED_EXTERNAL_ACTION_TYPES:
+            critical.append(f"review {identifier} names an unreviewed action type")
+        recorded = str(row["action_fingerprint"])
+        if len(recorded) != 64 or any(char not in "0123456789abcdef" for char in recorded):
+            critical.append(f"review {identifier} does not carry a SHA-256 fingerprint")
+        if row["payload_json"] is None:
+            critical.append(f"review {identifier} points at an action that does not exist")
+            continue
+        derived = _stored_payload_fingerprint(str(row["payload_json"]))
+        if derived is None:
+            failing.append(f"review {identifier} points at an unreadable payload")
+        elif not _payload_text_is_canonical(str(row["payload_json"])):
+            critical.append(f"review {identifier} points at a payload that was rewritten")
+        elif derived != recorded or derived != str(row["action_fingerprint"]):
+            critical.append(f"review {identifier} no longer matches the payload it reviewed")
+        status = str(row["status"])
+        run = row["execution_run_id"]
+        if status in ("succeeded", "unknown"):
+            if run is None:
+                critical.append(f"review {identifier} claims {status} with no execution to show")
+            elif str(row["run_action_id"]) != str(row["action_request_id"]):
+                critical.append(f"review {identifier} names a run from another action")
+        elif run is not None:
+            critical.append(f"review {identifier} is {status} but names an execution run")
+        if status in ("approved", "succeeded", "failed", "unknown") and (
+            int(str(row["approval_count"])) < 1
+        ):
+            failing.append(f"review {identifier} claims {status} with no approval recorded")
+        if status == "waiting" and str(row["action_status"]) != "prepared":
+            failing.append(
+                f"review {identifier} is waiting on an action that is {row['action_status']}"
+            )
+    summary = f"{total} external review(s) checked"
+    if critical:
+        return IntegritySection(
+            "external_reviews", IntegritySeverity.CRITICAL, summary, tuple(critical)
+        )
+    if failing:
+        return IntegritySection(
+            "external_reviews", IntegritySeverity.FAIL, summary, tuple(failing)
+        )
+    return IntegritySection("external_reviews", IntegritySeverity.OK, summary)
+
+
+REVIEWED_EXTERNAL_ACTION_TYPES = frozenset({"mail.send", "ehall.submit-certificate"})
+"""The closed reviewed set, restated for the audit (ADR-0045 §24-§25)."""
+
+
+def _stored_payload_fingerprint(payload_json: str) -> str | None:
+    """The SHA-256 of one stored *canonical* payload, or `None` when it is not canonical JSON.
+
+    `payload_json` is written by the action store as canonical text, so re-hashing the stored bytes
+    is exactly what an execution re-validates: a payload that was edited outside the project either
+    changes the digest or stops being canonical JSON at all.
+    """
+    if not payload_json:
+        return None
+    try:
+        decoded = json.loads(payload_json)
+        canonical = canonical_action_payload(decoded)
+    except (DomainError, ValueError, TypeError):
+        return None
+    return fingerprint_of_canonical_json(canonical)
+
+
+def _payload_text_is_canonical(payload_json: str) -> bool:
+    """Whether stored text is exactly what this project writes for that payload."""
+    try:
+        return canonical_action_payload(json.loads(payload_json)) == payload_json
+    except (DomainError, ValueError, TypeError):
+        return False
 
 
 def _mail_section(connection: sqlite3.Connection) -> IntegritySection:

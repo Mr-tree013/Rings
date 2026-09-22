@@ -16,6 +16,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "assistant"
 
 CONVERSATION_DOMAIN = (
@@ -519,6 +521,96 @@ def test_no_generic_external_write_or_tool_capability_exists() -> None:
 
 
 # --------------------------------------- facts and the today brief (ADR-0038, ADR-0039)
+
+
+# ------------------------------- the conversational certificate boundary (ADR-0045 §2-§25)
+
+
+def test_the_conversation_can_only_prepare_a_certificate() -> None:
+    """Two operations exist over one capability, and nothing that could submit or browse."""
+    from assistant.domain.conversation_plan import ConversationOperationType
+
+    offered = {member.value for member in ConversationOperationType}
+
+    assert {value for value in offered if value.startswith("ehall.")} == {
+        "ehall.status",
+        "ehall.certificate.prepare",
+    }
+    for forbidden in (
+        "ehall.submit",
+        "approval.",
+        "action.",
+        "execution.",
+        "browser.",
+        "http.",
+        "shell.",
+        "filesystem.",
+        "case.",
+    ):
+        assert not [value for value in offered if value.startswith(forbidden)], forbidden
+
+
+def test_the_conversation_ehall_handler_cannot_reach_the_executor() -> None:
+    """The handler names the *preparation* service and nothing that could perform the effect."""
+    relative = "application/conversation_capabilities/handlers.py"
+    text = _read(relative)
+
+    for name in (
+        "EHallCertificateExecutor",
+        "EHallCertificateGateway",
+        "NjuCertificateGateway",
+        "PlaywrightEHallPage",
+        "playwright",
+        "submit_certificate",
+        "inspect_form",
+    ):
+        assert name not in text, f"{relative} names {name}"
+    modules = _imported_modules(relative)
+    assert "assistant.ports.ehall_certificate" not in modules
+    assert not [module for module in modules if module.startswith("assistant.adapters")]
+
+
+def test_the_card_settlement_is_a_closed_dispatch() -> None:
+    """A card names one kind and one target, and both reviewed kinds reach the same controller."""
+    from assistant.application.conversation_cards import (
+        ConfirmationCardKind,
+        parse_card_id,
+    )
+    from assistant.domain.errors import UnknownConversationCard
+
+    text = _read("application/conversation_cards.py")
+    assert "getattr" not in text
+    assert "importlib" not in text
+    assert "settle_external_card" in text
+    # The two reviewed capabilities settle through the same deterministic call, and an unknown
+    # kind is refused rather than guessed.
+    assert text.count("ConfirmationCardKind.EHALL_CERTIFICATE") >= 2
+    assert {kind.value for kind in ConfirmationCardKind} == {
+        "ehall_certificate",
+        "fact_confirmation",
+        "mail_send",
+        "plan_apply",
+        "recurring_schedule",
+    }
+    with pytest.raises(UnknownConversationCard):
+        parse_card_id("ehall.submit-certificate:abc")
+
+
+def test_no_autonomous_loop_or_tool_call_exists_in_the_conversation_path() -> None:
+    """A turn is one plan and one answer: no agent loop, no tool call, no shell."""
+    for relative in MODEL_FACING_APPLICATION:
+        text = _read(relative)
+        for forbidden in (
+            "subprocess",
+            "os.system",
+            "eval(",
+            "exec(",
+            "tool_call",
+            "function_call",
+            "AgentLoop",
+            "task_loop(",
+        ):
+            assert forbidden not in text, f"{relative} contains {forbidden}"
 
 FACT_CONVERSATION_MODULES = (
     "application/conversational_facts.py",

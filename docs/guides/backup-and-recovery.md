@@ -6,6 +6,18 @@ The runtime authority is one SQLite database plus the immutable objects it refer
 mail and normalized web snapshots. A backup takes a consistent copy of exactly those, and a restore
 puts them back into a **new** directory that you then point a runtime at.
 
+Since v1.3 that database also carries the derived-but-durable state of the release: the attention
+inbox (including which items you acknowledged or dismissed), the planning capacity preferences,
+superseded plan blocks and pending external reviews — a mail send or a certificate application
+waiting for your confirmation. All of it is ordinary rows, so `pw backup create` carries it with no
+extra step, and `pw backup inspect` reports the counts.
+
+What a restore *does not* carry is authority: every outstanding approval is superseded, every
+unconsumed challenge is invalidated, every pairing token is consumed and every session is revoked on
+the restored copy. A restored review is still a pointer, not a permission: confirming it afterwards
+means creating a fresh approval by hand. Credentials and the eHall browser profile live outside the
+archive and are never included.
+
 ```bash
 uv run pw integrity check
 

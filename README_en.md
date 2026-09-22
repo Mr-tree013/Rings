@@ -8,7 +8,7 @@ A local-first personal operations system that grows with you.
 
 **Language:** [中文](README.md) ｜ English
 
-**Version:** 1.2.0 · **Reference environment:** Linux / WSL + Python 3.13
+**Version:** 1.3.0 · **Reference environment:** Linux / WSL + Python 3.13
 
 Rings is a local-first personal operations system. It runs on your machine, keeps its state in one
 SQLite database plus the files that database references, and reaches the outside world only through
@@ -46,7 +46,7 @@ lives in [docs/concepts/rings-language.md](docs/concepts/rings-language.md).
 | **Mail** | IMAP ingestion, deterministic threads, bounded analysis, local reply drafts, explicitly approved SMTP delivery. |
 | **Observation** | Configured public HTTPS watchers, plus manual and QQ-forwarded input. |
 | **Actions** | Exact `ActionRequest` → human `Approval` → `ExecutionRun`, bound to an immutable payload fingerprint. |
-| **eHall** | One narrow, approved NJU certificate workflow — no generic browser automation. |
+| **eHall** | One narrow, approved NJU certificate workflow: `ehall.status` reads the form and `ehall.certificate.prepare` prepares one exact application — no generic browser automation. |
 | **Chat** | Tree in the browser: conversation history, a message queue, progress and structured confirmation cards. |
 | **Mobile** | A trusted-LAN surface for review and approval. |
 | **Learning** | `Correction` → `FactCandidate` → `ConfirmedFact` confirmation, and reviewed non-executing playbooks. |
@@ -278,7 +278,7 @@ The full mail approval chain, eHall, mobile pairing, facts and playbooks are in 
 | Upgrading an older runtime | [docs/upgrade-to-v1.md](docs/upgrade-to-v1.md) |
 | System architecture | [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
-| Release notes (current release: v1.2.0) | [docs/releases/1.2.0.md](docs/releases/1.2.0.md) |
+| Release notes (current release: v1.3.0) | [docs/releases/1.3.0.md](docs/releases/1.3.0.md) |
 | Contributing rules | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 
@@ -317,6 +317,9 @@ Read more: [docs/specs/0001-system-design.md](docs/specs/0001-system-design.md) 
 
 - Mobile is a trusted-LAN HTTP page, not a public Internet service.
 - SMTP is not exactly-once: an interrupted send becomes `UNKNOWN`.
+- The conversation can only *prepare* an eHall application: `ehall.status` reads the form, `ehall.certificate.prepare` prepares one exact application for review, and only the user's own 确认提交 submits it. The typed `pw` pipeline is unchanged.
+- eHall supports exactly one service, 证明书申请. Dropping a course, withdrawing or cancelling an application and dorm checkout do not exist in the code.
+- No certificate field is autofilled: every submitted value must occur in the user's own message.
 - eHall page changes fail closed instead of adapting.
 - eHall `UNKNOWN` requires manual inspection.
 - Watchers observe public, unauthenticated HTTPS pages only.

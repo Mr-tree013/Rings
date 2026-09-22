@@ -919,7 +919,30 @@ Notification 已实现；Case、Approval 等其余 domain entity 仍属后续 Ph
   已运行的 `/chat`，不静默启动 daemon、不 shell out、不做浏览器自动化。
 - **No generic capability route.** 不存在 `/execute`、`/tool`、`/action`、`/approval`、`/sql`、
   `/shell`，也没有 generic action-creation endpoint；卡片 dispatch 是 closed enum 的映射。
-- 新 migration 只能追加（当前最新为 `0020_conversation_requests.sql`），不得改写既有 SQL。
+- 新 migration 只能追加（当前最新为 `0023_conversation_review_expansion.sql`），不得改写既有 SQL。
+- **Proactive attention is derived state, never authority.** `attention_items` 只由确定性 projector
+  从真实来源投影；`acknowledge`/`dismiss` 只改 item，绝不完成 task、不发送邮件、不应用计划、
+  不确认事实；来源消失即消失（ADR-0042）。
+- **Mail account settings never hold a secret.** 网页只写 metadata 与 credential *reference*；
+  密码只来自环境变量，settings GET 永不返回 secret，也没有任何 send-test-message 路由；
+  连通性探针只做 connect/TLS/AUTH/NOOP/QUIT；配置变更一律 `restart_required`（ADR-0043）。
+- **Planning capacity is a durable preference; the timezone is not.** 规划日/每日上限/块长偏好存在
+  runtime SQLite，timezone 仍只有 `[planning].timezone` 一个 authority；replan 只取代未来
+  `origin=planner` 块，manual 与历史块永不被改写（ADR-0044）。
+- **The conversation may prepare a certificate application and nothing more.**
+  `ehall.status`（READ）与 `ehall.certificate.prepare`（LOCAL_WRITE）是两个也是仅有的对话侧 eHall
+  operation；没有 `ehall.submit`、`approval.*`、`action.*`、`browser.*`。准备只产生一条 immutable
+  `ActionRequest` 与 deterministic preview（零 Approval / 零 ExecutionRun / 零点击），每个提交值必须
+  出现在用户自己的消息里，模型不能凭空编造姓名或学号；只有用户自己的「确认提交」结算一份 review
+  （ADR-0045）。
+- **The reviewed external action set stays closed.** `conversation_external_reviews.action_type`
+  只能是 `mail.send` 或 `ehall.submit-certificate`（migration 0023 的 CHECK）；
+  `ALLOWED_EXTERNAL_ACTION_TYPES`、确认词、preview dispatch、card kind 与 integrity section 必须同时
+  移动，绝不改成任意 TEXT。
+- **Every refusal state keeps its own words.** NOT_CONFIGURED / AUTH_REQUIRED / CONNECTION_FAILED /
+  CREDENTIAL_MISSING / UNSUPPORTED_CAPABILITY / AMBIGUOUS_REFERENCE / UNKNOWN_EXTERNAL_RESULT /
+  STALE_CONFIRMATION / CANNOT_CANCEL_SAFELY 必须可区分；普通回复不得出现 traceback、schema 文本、
+  exception dump 或内部 identifiers。
 
 ## 7. 版本管理
 

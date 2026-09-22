@@ -188,3 +188,227 @@ def test_the_new_sections_are_always_present(tmp_path: Path) -> None:
 
     assert _section(database, "attention").summary
     assert _section(database, "planning").summary
+
+
+# ------------------------------------------- conversational external reviews (ADR-0045 §24-§25)
+
+_REVIEW_INSERT = (
+    "INSERT INTO conversation_external_reviews (id, conversation_operation_id, thread_id, "
+    "action_request_id, action_type, action_fingerprint, status, expires_at, execution_run_id, "
+    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def _seed_review(database: Database, **overrides: object) -> dict[str, str]:
+    """A real review row plus every row it points at, written the way the store writes them."""
+    from assistant.domain.action import action_payload_fingerprint
+
+    payload = {"schema_version": 1, "fields": [], "service_identity": "nju-ehall/证明书申请"}
+    fingerprint = action_payload_fingerprint(payload)
+    canonical = __import__("json").dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    identifiers = {
+        "thread": "22222222-2222-4222-8222-222222222222",
+        "message": "33333333-3333-4333-8333-333333333333",
+        "turn": "44444444-4444-4444-8444-444444444444",
+        "operation": "55555555-5555-4555-8555-555555555555",
+        "case": "66666666-6666-4666-8666-666666666666",
+        "action": "77777777-7777-4777-8777-777777777777",
+        "approval": "88888888-8888-4888-8888-888888888888",
+        "run": "99999999-9999-4999-8999-999999999999",
+        "review": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    }
+    action_status = str(overrides.pop("action_status", "prepared"))
+    _write(
+        database,
+        (
+            "INSERT INTO conversation_threads (id, title, status, created_at, updated_at, "
+            "archived_at) VALUES (?, 'Sprint', 'active', ?, ?, NULL)",
+            (identifiers["thread"], STAMP, STAMP),
+        ),
+        (
+            "INSERT INTO conversation_messages (id, thread_id, role, text, created_at) "
+            "VALUES (?, ?, 'user', 'apply', ?)",
+            (identifiers["message"], identifiers["thread"], STAMP),
+        ),
+        (
+            "INSERT INTO conversation_turns (id, thread_id, user_message_id, assistant_message_id,"
+            " interpreter_version, context_fingerprint, status, created_at, completed_at) "
+            "VALUES (?, ?, ?, NULL, 'v1', ?, 'planned', ?, NULL)",
+            (identifiers["turn"], identifiers["thread"], identifiers["message"], "f" * 64, STAMP),
+        ),
+        (
+            "INSERT INTO conversation_operations (id, turn_id, ordinal, operation_type, "
+            "arguments_json, operation_fingerprint, status, result_kind, result_ref, "
+            "confirmation_expires_at, created_at, updated_at) "
+            "VALUES (?, ?, 0, 'ehall.certificate.prepare', '{}', ?, 'applied', 'ehall_prepared', "
+            "'a', NULL, ?, ?)",
+            (identifiers["operation"], identifiers["turn"], "e" * 64, STAMP, STAMP),
+        ),
+        (
+            "INSERT INTO cases (id, title, status, created_at, updated_at, completed_at, "
+            "cancelled_at) VALUES (?, 'Certificate', 'open', ?, ?, NULL, NULL)",
+            (identifiers["case"], STAMP, STAMP),
+        ),
+        (
+            "INSERT INTO action_requests (id, case_id, action_type, payload_json, fingerprint, "
+            "status, created_at, executed_at, cancelled_at) "
+            "VALUES (?, ?, 'ehall.submit-certificate', ?, ?, ?, ?, NULL, NULL)",
+            (
+                identifiers["action"],
+                identifiers["case"],
+                canonical,
+                fingerprint,
+                action_status,
+                STAMP,
+            ),
+        ),
+    )
+    _write(
+        database,
+        (
+            _REVIEW_INSERT,
+            (
+                identifiers["review"],
+                identifiers["operation"],
+                identifiers["thread"],
+                identifiers["action"],
+                str(overrides.get("action_type", "ehall.submit-certificate")),
+                str(overrides.get("action_fingerprint", fingerprint)),
+                str(overrides.get("status", "waiting")),
+                str(overrides.get("expires_at", LATER)),
+                overrides.get("execution_run_id"),
+                STAMP,
+                STAMP,
+            ),
+        ),
+    )
+    identifiers["fingerprint"] = fingerprint
+    return identifiers
+
+
+def _ignore_constraints(database: Database, *statements: tuple[str, tuple[object, ...]]) -> None:
+    """Write a row the schema would refuse, the way a restore from another binary could."""
+    connection = sqlite3.connect(str(database.path))
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        for sql, parameters in statements:
+            connection.execute(sql, parameters)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_a_healthy_external_review_reports_ok(tmp_path: Path) -> None:
+    database = _runtime(tmp_path)
+    _seed_review(database)
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.OK
+    assert "1 external review(s) checked" in section.summary
+
+
+def test_a_review_that_names_an_unreviewed_capability_is_critical(tmp_path: Path) -> None:
+    """The closed set is audited, not assumed: a restored row can carry anything."""
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _ignore_constraints(
+        database,
+        (
+            "UPDATE conversation_external_reviews SET action_type = 'ehall.drop-course' "
+            "WHERE id = ?",
+            (identifiers["review"],),
+        ),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("unreviewed action type" in finding for finding in section.findings)
+
+
+def test_a_review_whose_payload_changed_is_critical(tmp_path: Path) -> None:
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _write(
+        database,
+        (
+            "UPDATE action_requests SET payload_json = ? WHERE id = ?",
+            ('{"a":1}', identifiers["action"]),
+        ),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("no longer matches the payload" in finding for finding in section.findings)
+
+
+def test_a_review_with_no_action_is_critical(tmp_path: Path) -> None:
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _write(
+        database,
+        ("DELETE FROM action_requests WHERE id = ?", (identifiers["action"],)),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("does not exist" in finding for finding in section.findings)
+
+
+def test_a_review_that_claims_a_decision_with_no_run_is_critical(tmp_path: Path) -> None:
+    """A succeeded review with no execution run is tampering: the run is the evidence."""
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _ignore_constraints(
+        database,
+        (
+            "UPDATE conversation_external_reviews SET status = 'succeeded' WHERE id = ?",
+            (identifiers["review"],),
+        ),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.CRITICAL
+    assert any("no execution to show" in finding for finding in section.findings)
+
+
+def test_a_review_that_claims_approval_without_one_is_reported(tmp_path: Path) -> None:
+    """An approved review with no approval row is a FAIL: inconsistent, not necessarily hostile."""
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _ignore_constraints(
+        database,
+        (
+            "UPDATE conversation_external_reviews SET status = 'approved' WHERE id = ?",
+            (identifiers["review"],),
+        ),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.FAIL
+    assert any("no approval recorded" in finding for finding in section.findings)
+
+
+def test_a_waiting_review_on_a_spent_action_is_reported(tmp_path: Path) -> None:
+    """Waiting on an action that already executed is a FAIL: nothing here is tampering."""
+    database = _runtime(tmp_path)
+    identifiers = _seed_review(database)
+    _write(
+        database,
+        (
+            "UPDATE action_requests SET status = 'executed', executed_at = ? WHERE id = ?",
+            (STAMP, identifiers["action"]),
+        ),
+    )
+
+    section = _section(database, "external_reviews")
+
+    assert section.severity is IntegritySeverity.FAIL
+    assert any("waiting on an action that is executed" in finding for finding in section.findings)

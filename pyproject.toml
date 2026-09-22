@@ -1,6 +1,6 @@
 [project]
 name = "growing-assistant"
-version = "1.2.0"
+version = "1.3.0"
 description = "A personal assistant that grows: mail, personal knowledge, eHall errands and mobile approval in one auditable loop."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -101,6 +101,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/integration/test_conversation_outbound_mail.py" = ["RUF001"]
 # The conversational eHall tests speak the same Chinese the certificate surface answers in.
 "tests/integration/test_conversation_ehall.py" = ["RUF001"]
+# The v1.3 backup tests seed the same Chinese sentence a user would have typed.
+"tests/integration/test_backup_v1_3_state.py" = ["RUF001"]
+# The v1.3 surface-language sweep types and reads the same Chinese the product answers in.
+"tests/integration/test_v1_3_surface_language.py" = ["RUF001"]
+# The v1.3 acceptance transcript types the same Chinese a person types.
+"tests/acceptance/test_v1_3_capability_flow.py" = ["RUF001"]
 "tests/integration/test_new_mail_send.py" = ["RUF001"]
 "tests/integration/test_conversation_runtime.py" = ["RUF001"]
 "tests/unit/test_cli_chat.py" = ["RUF001"]

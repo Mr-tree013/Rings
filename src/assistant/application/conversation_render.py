@@ -430,6 +430,27 @@ def render_failure(operation_type: str, message: str) -> str:
     return f"「{operation_type}」没有完成：{message}"
 
 
+def render_operation_failure(
+    operation_type: str,
+    detail: str | None,
+    *,
+    refusal: ConversationRefusalCode | None = None,
+) -> str:
+    """One failed operation, with the state named when this build has a word for it.
+
+    When the failure is one of the states a person can act on — not configured, needs a login, the
+    connection failed, a credential is missing, the capability is unsupported, a reference is
+    ambiguous, an external result is unknown, a confirmation went stale — the sentence comes from
+    the closed refusal vocabulary and the exception text is not shown at all. Otherwise the
+    sanitised detail is used, which already drops anything that looks like internal machinery
+    (ADR-0035 §8, §32).
+    """
+    if refusal is not None:
+        return render_refusal(refusal, subject=operation_type)
+    safe = None if detail is None else sanitise_detail(detail)
+    return render_failure(operation_type, safe or "这一步没有完成，我没有继续执行。")
+
+
 def render_unsupported(operation_types: Sequence[str]) -> str:
     """A plan that asked for something this build does not offer."""
     asked = "、".join(sorted(set(operation_types)))
@@ -841,7 +862,9 @@ _REFUSAL_SENTENCES: dict[ConversationRefusalCode, str] = {
         "缺少{subject}需要的凭据，所以我什么都没有做。"
     ),
     ConversationRefusalCode.UNSUPPORTED_CAPABILITY: "{subject}不在这一版能做的范围内。",
-    ConversationRefusalCode.AMBIGUOUS_REFERENCE: "有几个可能的对象，我不能替你猜是哪一个。",
+    ConversationRefusalCode.AMBIGUOUS_REFERENCE: (
+        "有几个可能的对象，我不能替你猜是哪一个。请说得具体一点，或者直接说出它的名字。"
+    ),
     ConversationRefusalCode.UNKNOWN_EXTERNAL_RESULT: (
         "{subject}的结果还不确定，我不会自动重试。"
     ),
@@ -1589,6 +1612,7 @@ __all__ = [
     "render_interpretation_refused",
     "render_mail_send_preview",
     "render_multiple_pending",
+    "render_operation_failure",
     "render_pending_withdrawn",
     "render_preflight_refused",
     "render_recurring_batch",
