@@ -273,3 +273,22 @@ async def test_an_ambiguous_session_prefix_is_refused(
 async def test_ttls_are_the_documented_values() -> None:
     assert pairing_ttl() == timedelta(seconds=600)
     assert session_ttl() == timedelta(seconds=30 * 24 * 3600)
+
+
+async def test_minting_a_pairing_code_prunes_the_spent_ones(
+    service: MobileAuthService, repository: SqliteMobileSessionRepository, clock: FakeClock
+) -> None:
+    """The token table is bounded by the TTL, not by how often the launcher ran."""
+    first = await service.create_pairing_token()
+    second = await service.create_pairing_token()
+
+    # A live, unconsumed code is never pruned: only spent or expired ones are.
+    assert await repository.get_pairing_token_by_id(first.pairing.id) is not None
+
+    await service.pair(second.token)
+    clock.advance(PAIRING_TTL_SECONDS + 1)
+    third = await service.create_pairing_token()
+
+    assert await repository.get_pairing_token_by_id(first.pairing.id) is None
+    assert await repository.get_pairing_token_by_id(second.pairing.id) is None
+    assert await repository.get_pairing_token_by_id(third.pairing.id) is not None

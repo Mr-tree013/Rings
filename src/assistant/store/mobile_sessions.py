@@ -89,6 +89,15 @@ class SqliteMobileSessionRepository:
     def _add_pairing_token_sync(self, pairing: MobilePairingToken) -> MobilePairingToken:
         try:
             with self._database.connect() as connection, transaction(connection):
+                # A pairing code is a 10-minute capability, not history: once it has been spent or
+                # its window has passed it has no reader, and `rings up` mints one per launch.
+                # Pruning here keeps the table's size a function of the TTL instead of the number
+                # of launches. A live, unconsumed code is never touched.
+                connection.execute(
+                    "DELETE FROM mobile_pairing_tokens "
+                    "WHERE consumed_at IS NOT NULL OR expires_at <= ?",
+                    (to_utc_iso(pairing.created_at),),
+                )
                 connection.execute(
                     f"INSERT INTO mobile_pairing_tokens ({_PAIRING_FIELDS}) "
                     "VALUES (?, ?, ?, ?, NULL)",
