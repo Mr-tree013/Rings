@@ -2908,10 +2908,11 @@ def test_only_the_store_implements_attention_persistence() -> None:
     offenders = [
         _relative(path)
         for path in _source_modules()
-        if _relative(path) not in {"store/attention.py"}
-        and "attention_items" in path.read_text(encoding="utf-8")
+        if _relative(path) not in {"store/attention.py", "store/integrity.py"}
         and _relative(path).endswith(".py")
-        # The migration file and the two tests that read the reviewed SQL are not Python modules.
+        and "attention_items" in path.read_text(encoding="utf-8")
+        # The migration runner and the read-only integrity audit are the two other legitimate
+        # readers: neither writes a row, and the audit proves the rows agree with themselves.
         and _relative(path) != "store/migrations.py"
     ]
 

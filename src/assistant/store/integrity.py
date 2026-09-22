@@ -59,6 +59,8 @@ class SqliteIntegrityRepository:
                     _contact_section(connection),
                     _mail_section(connection),
                     _outbound_section(connection),
+                    _attention_section(connection),
+                    _planning_preferences_section(connection),
                     _observation_section(connection),
                 )
                 return DatabaseAudit(
@@ -507,6 +509,110 @@ def _mail_section(connection: sqlite3.Connection) -> IntegritySection:
             tuple(findings),
         )
     return IntegritySection("mail", IntegritySeverity.OK, "messages, threads and drafts OK")
+
+
+def _attention_section(connection: sqlite3.Connection) -> IntegritySection:
+    """Attention: identity, lifecycle timestamps and source plausibility (ADR-0042 §72).
+
+    The checks are about *derived state agreeing with itself*. An attention row that claims to be
+    acknowledged without an acknowledgement moment, or that carries a fingerprint which is not a
+    SHA-256 digest, is a row no reader could trust — and one the projector will happily keep
+    updating, which is exactly why an audit has to look.
+    """
+    critical: list[str] = []
+    for row in connection.execute(
+        "SELECT id, status, acknowledged_at, dismissed_at, resolved_at, "
+        "source_fingerprint, generation, length(trim(dedupe_key)) AS key_length "
+        "FROM attention_items ORDER BY id"
+    ).fetchall():
+        identifier = row["id"]
+        status = str(row["status"])
+        stamps = (row["acknowledged_at"], row["dismissed_at"], row["resolved_at"])
+        expected = {
+            "open": (None, None, None),
+            "acknowledged": (stamps[0], None, None),
+            "dismissed": (None, stamps[1], None),
+            "resolved": (None, None, stamps[2]),
+        }[status]
+        disowned = any(
+            expected[index] is None and stamps[index] is not None for index in range(3)
+        )
+        if disowned:
+            critical.append(f"attention {identifier} carries a stamp its {status} state disowns")
+        elif status != "open" and all(stamp is None for stamp in stamps):
+            critical.append(f"attention {identifier} is {status} with no moment to show for it")
+        fingerprint = str(row["source_fingerprint"])
+        if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+            critical.append(f"attention {identifier} does not carry a SHA-256 fingerprint")
+        if int(row["generation"]) < 1:
+            critical.append(f"attention {identifier} has a generation below one")
+        if int(row["key_length"]) < 1:
+            critical.append(f"attention {identifier} has a blank dedupe key")
+    for row in connection.execute(
+        "SELECT dedupe_key FROM attention_items WHERE status <> 'resolved' "
+        "GROUP BY dedupe_key HAVING COUNT(*) > 1"
+    ).fetchall():
+        critical.append(f"dedupe key {row['dedupe_key']} is live more than once")
+    if critical:
+        return IntegritySection(
+            "attention",
+            IntegritySeverity.CRITICAL,
+            "derived attention rows disagree with their own lifecycle",
+            tuple(critical),
+        )
+    return IntegritySection("attention", IntegritySeverity.OK, "attention rows OK")
+
+
+def _planning_preferences_section(connection: sqlite3.Connection) -> IntegritySection:
+    """Planning preferences and plan-block supersession (ADR-0044 §72).
+
+    Preferences are user policy: a set that describes an impossible day would silently plan nothing,
+    so it is a `FAIL` rather than a warning. Supersession is `CRITICAL` when half-recorded, because
+    a block that names a replacing proposal without a moment (or the reverse) is an audit trail that
+    cannot be read.
+    """
+    findings: list[str] = []
+    warning = False
+    for row in connection.execute(
+        "SELECT id, day_start_local, day_end_local, max_daily_minutes, "
+        "preferred_block_minutes, max_block_minutes FROM planning_preferences"
+    ).fetchall():
+        identifier = row["id"]
+        start, end = int(row["day_start_local"]), int(row["day_end_local"])
+        daily = int(row["max_daily_minutes"])
+        preferred, maximum = int(row["preferred_block_minutes"]), int(row["max_block_minutes"])
+        if not (0 <= start < end <= 1440):
+            findings.append(f"planning preferences {identifier} describe an impossible day")
+        if not 1 <= daily <= 1440:
+            findings.append(f"planning preferences {identifier} have a daily limit outside a day")
+        if not 1 <= preferred <= maximum <= 1440:
+            findings.append(f"planning preferences {identifier} have inconsistent block lengths")
+    for row in connection.execute(
+        "SELECT id FROM plan_blocks "
+        "WHERE (superseded_at IS NULL) <> (superseded_by_proposal_id IS NULL)"
+    ).fetchall():
+        findings.append(f"plan block {row['id']} records half of a supersession")
+    for row in connection.execute(
+        "SELECT b.id AS block_id FROM plan_blocks AS b "
+        "LEFT JOIN plan_proposals AS p ON p.id = b.superseded_by_proposal_id "
+        "WHERE b.superseded_by_proposal_id IS NOT NULL AND p.id IS NULL"
+    ).fetchall():
+        findings.append(f"plan block {row['block_id']} names a proposal that is not stored")
+    for row in connection.execute(
+        "SELECT id FROM plan_blocks "
+        "WHERE superseded_at IS NOT NULL AND cancelled_at IS NULL"
+    ).fetchall():
+        findings.append(f"plan block {row['id']} is superseded but still current")
+    if findings:
+        return IntegritySection(
+            "planning",
+            IntegritySeverity.FAIL,
+            "planning preferences or plan-block history do not hold",
+            tuple(findings),
+        )
+    if warning:  # pragma: no cover - reserved for a future softer finding
+        return IntegritySection("planning", IntegritySeverity.WARN, "planning state is unusual")
+    return IntegritySection("planning", IntegritySeverity.OK, "planning preferences and history OK")
 
 
 def _observation_section(connection: sqlite3.Connection) -> IntegritySection:
