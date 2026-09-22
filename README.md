@@ -8,7 +8,7 @@
 
 **语言：** 中文 ｜ [English](README_en.md)
 
-**版本：** 1.3.0 · **参考运行环境：** Linux / WSL + Python 3.13
+**版本：** 1.3.1 · **参考运行环境：** Linux / WSL + Python 3.13
 
 Rings 是一个 local-first 的个人运营系统。它运行在你的机器上，将状态保存在一个 SQLite 数据库以及该数据库所引用的文件中；只有通过你明确配置的 integrations，它才会与外部世界交互。
 
@@ -270,7 +270,7 @@ uv run pw backup verify ~/assistant-backup.gab
 | 升级旧 runtime | [docs/upgrade-to-v1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/upgrade-to-v1.md) |
 | 系统架构 | [docs/specs/0001-system-design.md](https://github.com/Mr-tree013/Rings/blob/main/docs/specs/0001-system-design.md) |
 | Architecture Decisions | [docs/adr/](https://github.com/Mr-tree013/Rings/blob/main/docs/adr) |
-| Release Notes（当前版本：v1.3.0） | [docs/releases/1.3.0.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.3.0.md) |
+| Release Notes（当前版本：v1.3.1） | [docs/releases/1.3.1.md](https://github.com/Mr-tree013/Rings/blob/main/docs/releases/1.3.1.md) |
 | Contributing 规则 | [CONTRIBUTING.md](https://github.com/Mr-tree013/Rings/blob/main/CONTRIBUTING.md) |
 | Security Policy | [SECURITY.md](https://github.com/Mr-tree013/Rings/blob/main/SECURITY.md) |
 

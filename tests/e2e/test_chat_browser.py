@@ -351,10 +351,17 @@ def test_the_browser_shows_the_certificate_preview_and_submits_nothing(
 
             # Withdrawing it submits nothing, and no keystroke ever reached the page.
             page.click(".card button:not(.primary)")
+            # Wait for the answer itself, not only for the card to disappear: the card is rebuilt
+            # from a fresh snapshot, and a test that asserts the transcript first would race the
+            # two updates rather than checking the product's own promise.
+            page.wait_for_function(
+                "() => document.getElementById('messages')"
+                ".innerText.includes('没有提交')",
+                timeout=UI_TIMEOUT_MS,
+            )
             page.wait_for_function(
                 "() => document.querySelectorAll('.card').length === 0", timeout=UI_TIMEOUT_MS
             )
-            assert "没有提交" in page.inner_text("#messages")
             assert page_double.fills == []
             assert page_double.clicks == []
 

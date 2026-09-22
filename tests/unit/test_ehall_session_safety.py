@@ -92,15 +92,59 @@ def test_the_session_state_report_is_read_only(
     assert not (tmp_path / "browsers").exists()
 
 
-def test_chromium_detection_looks_for_a_chromium_build(
+def test_chromium_detection_looks_for_the_build_playwright_will_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A version-correct probe: an unrelated build in the cache is not "available".
+
+    The cache is shared and grows as Playwright is upgraded, so a stale `chromium-1234` sitting
+    next to the expected build is exactly what a user has after a dependency bump — and reporting
+    it as available is what produced a "Chromium runtime: available" status followed by a launch
+    failure.
+    """
     browsers = tmp_path / "browsers"
-    (browsers / "chromium-1234").mkdir(parents=True)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+    expected = [
+        build
+        for build in session_module.expected_chromium_builds()
+        if build.startswith("chromium-")
+    ]
+    assert expected, "the installed Playwright should declare a headed chromium build"
+    build = expected[0]
+
+    # An old build, complete with a binary, is still not the build this Playwright will launch.
+    stale = browsers / "chromium-9999" / "chrome-linux64"
+    stale.mkdir(parents=True)
+    (stale / "chrome").write_text("", encoding="utf-8")
+    assert session_module.chromium_runtime_available() is False
+    assert build in session_module.chromium_runtime_state().detail
+
+    # The expected build, with its binary, is.
+    current = browsers / build / "chrome-linux64"
+    current.mkdir(parents=True)
+    (current / "chrome").write_text("", encoding="utf-8")
 
     assert session_module.chromium_runtime_available() is True
+    assert build in session_module.chromium_runtime_state().detail
     assert playwright_installed() is True
+
+
+def test_a_partially_downloaded_build_is_reported_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted download leaves the directory behind; a directory is not a browser."""
+    browsers = tmp_path / "browsers"
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+    expected = [
+        build
+        for build in session_module.expected_chromium_builds()
+        if build.startswith("chromium-")
+    ]
+    assert expected
+    (browsers / expected[0]).mkdir(parents=True)
+
+    assert session_module.chromium_runtime_available() is False
+    assert "uv run playwright install chromium" in session_module.chromium_runtime_state().detail
 
 
 def test_the_login_path_cannot_type_a_credential() -> None:

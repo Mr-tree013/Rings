@@ -112,7 +112,7 @@ def test_the_readme_links_the_documentation_hub(page: Path) -> None:
         "docs/concepts/rings-language.md",
         "docs/specs/0001-system-design.md",
         "docs/adr/",
-        "docs/releases/1.3.0.md",
+        "docs/releases/1.3.1.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
     ):

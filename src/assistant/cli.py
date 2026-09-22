@@ -225,9 +225,9 @@ def _ehall_diagnostics(config: AssistantConfig) -> list[tuple[str, str]]:
         (
             "chromium runtime",
             (
-                "available"
+                state.chromium_detail
                 if state.chromium_available
-                else "[red]missing[/red] (uv run playwright install chromium)"
+                else f"[red]{state.chromium_detail}[/red]"
             ),
         ),
         ("ehall profile", str(state.profile_dir)),

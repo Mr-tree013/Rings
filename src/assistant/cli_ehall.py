@@ -164,10 +164,9 @@ def ehall_status() -> None:
     table.add_row("Enabled", "yes" if config.ehall.enabled else "no")
     table.add_row("Timeout", f"{config.ehall.timeout_seconds}s")
     table.add_row("Playwright package", "installed" if state.playwright_installed else "missing")
-    table.add_row(
-        "Chromium runtime",
-        "available" if state.chromium_available else "missing (uv run playwright install chromium)",
-    )
+    # The detail names the exact build this Playwright needs, and never reports a stale cache as
+    # usable: that is what "available" has to mean for a status command to be worth reading.
+    table.add_row("Chromium runtime", state.chromium_detail)
     table.add_row("Profile directory", str(state.profile_dir))
     table.add_row("Profile present", "yes" if state.profile_exists else "no")
     table.add_row("Production pipeline", f"certificate application ({CERTIFICATE_SERVICE_NAME})")

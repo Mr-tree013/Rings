@@ -22,6 +22,7 @@ Chromium at all.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -59,22 +60,98 @@ def ehall_profile_dir() -> Path:
     return AppPaths.resolve().runtime / PROFILE_DIR_NAME / PROFILE_NAME
 
 
-def chromium_runtime_available() -> bool:
-    """Whether a Chromium build looks installed. A filesystem probe, never a launch.
+@dataclass(frozen=True, slots=True)
+class ChromiumRuntime:
+    """Whether the browser this Playwright would launch is actually installed."""
 
-    Playwright keeps its browsers under `PLAYWRIGHT_BROWSERS_PATH` (by default
-    `~/.cache/ms-playwright`)
-    and the directory name carries the build number, so the check is a glob rather than a fixed
-    path. `pw doctor` must never download anything, and must never start a browser to find out.
+    available: bool
+    detail: str
+    """One local sentence, safe to print: no path outside the cache, no download attempt."""
+
+
+def expected_chromium_builds() -> tuple[str, ...]:
+    """The browser build *directories* this Playwright expects, from its own manifest.
+
+    Playwright ships `driver/package/browsers.json`, which is the same list its launcher resolves
+    against. Reading it is what makes the difference between "a Chromium of some version exists in
+    the cache" and "the Chromium *this* Playwright will launch is here" — the first is what a
+    stale cache looks like, and reporting it as available sends the user into a launch failure.
+
+    Returns an empty tuple when the manifest cannot be read; the caller then says so instead of
+    guessing. Nothing here downloads, launches or writes anything.
     """
+    try:
+        import playwright
+    except Exception:  # pragma: no cover - only on a broken installation
+        return ()
+    manifest = Path(playwright.__file__).parent / "driver" / "package" / "browsers.json"
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        entries = document["browsers"]
+    except (OSError, ValueError, KeyError, TypeError):  # pragma: no cover - defensive
+        return ()
+    builds: list[str] = []
+    if not isinstance(entries, list):  # pragma: no cover - defensive
+        return ()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", ""))
+        revision = str(entry.get("revision", ""))
+        if name.startswith("chromium") and revision:
+            # Playwright's cache uses an underscore for a hyphenated browser name:
+            # `chromium-headless-shell` → `chromium_headless_shell-1243`.
+            builds.append(f"{name.replace('-', '_')}-{revision}")
+    return tuple(builds)
+
+
+def _browsers_root() -> Path:
+    """Where Playwright keeps its browsers on this host."""
     override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    root = Path(override).expanduser() if override else Path.home() / ".cache" / "ms-playwright"
-    if not root.is_dir():
-        return False
-    return any(
-        child.is_dir() and child.name.startswith("chromium")
-        for child in root.iterdir()
-    )
+    return Path(override).expanduser() if override else Path.home() / ".cache" / "ms-playwright"
+
+
+def _chromium_executable(build: Path) -> Path | None:
+    """The browser binary inside one build directory, across Playwright's two layouts."""
+    if not build.is_dir():
+        return None
+    for pattern in ("chrome-linux*/chrome", "chrome-linux*/headless_shell"):
+        for candidate in sorted(build.glob(pattern)):
+            return candidate
+    return None
+
+
+def chromium_runtime_state() -> ChromiumRuntime:
+    """Whether the headed Chromium build this Playwright needs is installed.
+
+    A filesystem probe, never a launch: `pw doctor` and `pw ehall status` must be able to answer
+    without downloading anything and without starting a browser. It is a *version-correct* probe
+    though — an old build left in the cache is not "available", because launching it is exactly
+    what fails.
+    """
+    builds = expected_chromium_builds()
+    headed = [build for build in builds if build.startswith("chromium-")]
+    if not builds:
+        return ChromiumRuntime(
+            False,
+            "unknown (cannot read Playwright's browser manifest; "
+            "run `uv run playwright install chromium`)",
+        )
+    if not headed:  # pragma: no cover - Playwright always declares a headed build
+        return ChromiumRuntime(False, "missing (this Playwright declares no headed chromium)")
+    expected = headed[0]
+    executable = _chromium_executable(_browsers_root() / expected)
+    if executable is None:
+        return ChromiumRuntime(
+            False,
+            f"missing (expected {expected}; run `uv run playwright install chromium`)",
+        )
+    return ChromiumRuntime(True, f"available ({expected})")
+
+
+def chromium_runtime_available() -> bool:
+    """Whether the Chromium build this Playwright will launch is installed."""
+    return chromium_runtime_state().available
 
 
 def playwright_installed() -> bool:
@@ -106,16 +183,20 @@ class EHallSessionState:
     profile_exists: bool
     playwright_installed: bool
     chromium_available: bool
+    chromium_detail: str = ""
+    """The same answer in words, so a status table can say *which* build is missing."""
 
 
 def session_state() -> EHallSessionState:
     """Describe the local session state. Read-only: nothing is created or launched."""
     profile = ehall_profile_dir()
+    chromium = chromium_runtime_state()
     return EHallSessionState(
         profile_dir=profile,
         profile_exists=profile.is_dir(),
         playwright_installed=playwright_installed(),
-        chromium_available=chromium_runtime_available(),
+        chromium_available=chromium.available,
+        chromium_detail=chromium.detail,
     )
 
 

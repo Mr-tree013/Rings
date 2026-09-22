@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-22
+
+A patch release for two things a user meets in the first minutes. See `docs/releases/1.3.1.md`; no
+capability, migration or boundary changed.
+
+### Fixed
+
+- **Pairing survives a browser restart.** The session and CSRF cookies were set without `Max-Age`,
+  so the browser dropped them on exit while the server-side session stayed valid for 30 days: the
+  user was asked to pair again every time `/chat` or `/settings` was opened. Both cookies now carry
+  the session TTL, and a regression test pins the two lifetimes together. `HttpOnly`,
+  `SameSite=Strict` and the honest absence of `Secure` on LAN HTTP are unchanged.
+- **`pw ehall status` and `pw doctor` name the browser build Playwright will actually launch.**
+  The previous probe accepted any `chromium-*` directory in the cache, so a stale build left behind
+  by a dependency bump was reported as available and `pw ehall login` then failed. The probe reads
+  Playwright's own browser manifest, requires the expected build *and* its executable, and reports
+  which build is missing. A directory left by an interrupted download is reported as missing.
+
 ## [1.3.0] - 2026-09-22
 
 The capability sprint: a proactive inbox, mail account settings, planning capacity and replanning,
