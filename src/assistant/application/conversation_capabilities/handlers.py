@@ -32,6 +32,7 @@ from assistant.application.conversation_capabilities.registry import (
     PreflightContext,
 )
 from assistant.application.conversational_facts import ConversationalFactService
+from assistant.application.ehall_certificate import EHallCertificateService
 from assistant.application.grounded_answer import GroundedAnswerService
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_actions import MailSendActionService
@@ -49,8 +50,10 @@ from assistant.application.recurring_calendar_service import RecurringCalendarSe
 from assistant.application.task_service import CreateTask, EditTask, TaskService
 from assistant.application.today_brief import BriefEntry, TodayBrief, TodayBriefService
 from assistant.application.work_service import WorkService
+from assistant.domain.case import CaseStatus
 from assistant.domain.config import MailAccountConfig
 from assistant.domain.contact import Contact
+from assistant.domain.conversation_errors import ConversationRefusalCode
 from assistant.domain.conversation_plan import (
     AttentionDismissArguments,
     AttentionListArguments,
@@ -68,6 +71,8 @@ from assistant.domain.conversation_plan import (
     ContactRetireArguments,
     ConversationOperationArguments,
     ConversationOperationType,
+    EHallCertificatePrepareArguments,
+    EHallStatusArguments,
     FactListArguments,
     FactProposeArguments,
     FactShowArguments,
@@ -103,12 +108,26 @@ from assistant.domain.conversation_plan import (
     WorkRecordArguments,
 )
 from assistant.domain.deadline import Deadline
+from assistant.domain.ehall import (
+    CERTIFICATE_SERVICE_NAME,
+    EHallFieldDefinition,
+    EHallFormSnapshot,
+)
 from assistant.domain.errors import (
+    CaseNotFound,
+    CaseNotOpen,
     ContactNotFound,
     ConversationCapabilityUnavailable,
     DomainError,
+    EHallBrowserUnavailable,
+    EHallDisabled,
+    EHallLoginRequired,
+    EHallServiceMismatch,
+    EHallUnexpectedOrigin,
+    EHallUnsupportedRequiredField,
     ForbiddenFactKey,
     InvalidContact,
+    InvalidEHallForm,
     InvalidFactKey,
     InvalidTimeInterval,
     MailRecipientUnresolved,
@@ -207,6 +226,7 @@ class ConversationHandlers:
         knowledge_limit: int = 8,
         attention: AttentionService | None = None,
         planning_preferences: PlanningPreferencesService | None = None,
+        ehall: EHallCertificateService | None = None,
     ) -> None:
         self._tasks = tasks
         self._calendar = calendar
@@ -236,6 +256,7 @@ class ConversationHandlers:
         self._knowledge_limit = knowledge_limit
         self._attention = attention
         self._planning_preferences = planning_preferences
+        self._ehall = ehall
 
     # ------------------------------------------------------------------------- reads
 
@@ -828,6 +849,185 @@ class ConversationHandlers:
         return OperationResult(
             kind="capabilities",
             data={"areas": snapshot.to_payload(), "operations": list(snapshot.operation_types)},
+        )
+
+    # ------------------------------------------------------------------------ ehall
+
+    async def ehall_status(self, arguments: ConversationOperationArguments) -> OperationResult:
+        """Report what this host can do with the one whitelisted certificate pipeline.
+
+        Read-only, and honest about *which* kind of "cannot" applies: an unconfigured host is not
+        the same as a host whose session has expired, which is not the same as a page this build no
+        longer recognises (ADR-0045 §4). When the form can be read, its fields are reported so the
+        user (and the model) can see exactly what a preparation would have to fill — and nothing
+        here types, clicks or submits.
+        """
+        _expect(EHallStatusArguments, arguments)
+        service = self._ehall
+        if service is None or not service.enabled:
+            return _ehall_unavailable("not_configured")
+        try:
+            inspection = await service.inspect()
+        except EHallDisabled:
+            return _ehall_unavailable("not_configured")
+        except EHallLoginRequired:
+            return _ehall_unavailable("auth_required")
+        except EHallBrowserUnavailable:
+            return _ehall_unavailable("browser_unavailable")
+        except (
+            EHallServiceMismatch,
+            EHallUnsupportedRequiredField,
+            EHallUnexpectedOrigin,
+        ) as exc:
+            return _ehall_unavailable(*_ehall_refusal(exc))
+        except DomainError:
+            # A live read that failed in a way this build has no words for is still a refusal:
+            # nothing was typed, and the honest answer is that the form could not be read.
+            return _ehall_unavailable(
+                "unsupported", "我没能读到那一份证明书申请表，所以什么都没有做。"
+            )
+        snapshot = inspection.snapshot
+        return OperationResult(
+            kind="ehall_status",
+            data={
+                "state": "available",
+                "service_identity": snapshot.service_identity,
+                "page_contract_fingerprint": inspection.fingerprint,
+                "fields": [_ehall_field_payload(item) for item in snapshot.fields],
+                "required_materials": list(snapshot.required_materials),
+                "required_unsupported": [
+                    control.label for control in snapshot.required_unsupported
+                ],
+            },
+        )
+
+    async def ehall_certificate_prepare(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Prepare one exact certificate submission for review (ADR-0045 §5-§10).
+
+        This prepares and stops. No approval, no execution run and no submission happen here: the
+        conversation service opens the review, and the deterministic settlement path is the only
+        thing that ever reaches the approval boundary (ADR-0045 §9, §20).
+        """
+        asked = _expect(EHallCertificatePrepareArguments, arguments)
+        service = self._ehall
+        if service is None or not service.enabled:
+            return _ehall_unavailable("not_configured")
+        cases = self._cases
+        if cases is None:  # pragma: no cover - the composition root always supplies cases
+            return _ehall_unavailable(
+                "unsupported", "这台机器没有启用项目容器，所以我不能准备这份申请。"
+            )
+        field_values = dict(asked.fields)
+        case_id = asked.case_id
+        if case_id is not None:
+            # The OPEN-case rule is checked before the page is even read: a case that is finished
+            # cannot be given a new submission, and there is no reason to open a browser to say so.
+            detail = await cases.get_case(case_id)
+            if detail.case.status is not CaseStatus.OPEN:
+                return _ehall_unavailable(
+                    "unsupported",
+                    "这个申请所属的项目已经结束，所以我不能往里面加新的提交。",
+                )
+            case_id = detail.case.id
+        try:
+            # One live read-only inspection: it is what "a preparation happens against the page in
+            # front of us" means, and it is the same read the preparation is built from below.
+            inspection = await service.inspect()
+        except (
+            EHallDisabled,
+            EHallLoginRequired,
+            EHallBrowserUnavailable,
+            EHallServiceMismatch,
+            EHallUnsupportedRequiredField,
+            EHallUnexpectedOrigin,
+        ) as exc:
+            return _ehall_unavailable(*_ehall_refusal(exc))
+        except DomainError:  # pragma: no cover - defensive
+            return _ehall_unavailable(
+                "unsupported", "我没能读到那一份证明书申请表，所以什么都没有提交。"
+            )
+        snapshot = inspection.snapshot
+        problems = _certificate_problems(snapshot, field_values)
+        if problems:
+            # A missing required field, a value the page does not offer, or a key the page does not
+            # have: ask, and never fill it in with something the user did not say (ADR-0045 §5, §7).
+            # Nothing has been created at this point — not even a case.
+            return OperationResult(
+                kind="ehall_refused",
+                data={
+                    "code": ConversationRefusalCode.MISSING_PARAMETERS.value,
+                    "service_identity": snapshot.service_identity,
+                    "fields": problems,
+                    "required_materials": list(snapshot.required_materials),
+                },
+            )
+        if case_id is None:
+            # The one piece of case orchestration this phase exposes: open a bounded container for
+            # this errand through the existing service, exactly as the mail paths already do. There
+            # is no conversational case.create/complete/cancel, and the model cannot name a title.
+            case = await cases.create_case(
+                f"eHall certificate: {CERTIFICATE_SERVICE_NAME}"[:120]
+            )
+            case_id = case.id
+        try:
+            preparation = await service.prepare(
+                case_id=case_id, field_values=field_values, inspection=inspection
+            )
+        except EHallDisabled:  # pragma: no cover - the host cannot change mid-turn
+            return _ehall_unavailable("not_configured")
+        except CaseNotOpen:
+            return _ehall_unavailable(
+                "unsupported",
+                "这个申请所属的项目已经结束，所以我不能往里面加新的提交。",
+            )
+        except CaseNotFound:
+            return _ehall_unavailable("unsupported", "我没有找到这个申请所属的项目。")
+        except InvalidEHallForm:
+            # Defence in depth: the snapshot above was validated the same way, so this is the page
+            # disagreeing with itself rather than a missing parameter.
+            return OperationResult(
+                kind="ehall_refused",
+                data={
+                    "code": ConversationRefusalCode.MISSING_PARAMETERS.value,
+                    "service_identity": snapshot.service_identity,
+                    "fields": _certificate_problems(snapshot, field_values),
+                    "required_materials": list(snapshot.required_materials),
+                },
+            )
+        except (
+            EHallLoginRequired,
+            EHallBrowserUnavailable,
+            EHallServiceMismatch,
+            EHallUnsupportedRequiredField,
+            EHallUnexpectedOrigin,
+        ) as exc:
+            return _ehall_unavailable(*_ehall_refusal(exc))
+        except DomainError:  # pragma: no cover - defensive
+            return _ehall_unavailable(
+                "unsupported", "我没能准备这份证明申请，所以什么都没有提交。"
+            )
+        preview = preparation.preview
+        return OperationResult(
+            kind="ehall_prepared",
+            ref=str(preparation.action.id),
+            data={
+                "action_id": str(preparation.action.id),
+                "case_id": str(preparation.action.case_id),
+                "service_identity": preview.service_identity,
+                "page_contract_fingerprint": preview.page_contract_fingerprint,
+                "fields": [
+                    {
+                        "key": value.key,
+                        "label": value.label,
+                        "kind": value.kind.value,
+                        "value": value.value,
+                    }
+                    for value in preview.fields
+                ],
+                "required_materials": list(preview.required_materials),
+            },
         )
 
     # --------------------------------------------------------------------- attention
@@ -1641,6 +1841,19 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConfirmationPolicy.READ,
             handlers.system_capabilities,
         ),
+        # Phase 11E (ADR-0045): the status read is READ; preparing a certificate is LOCAL_WRITE and
+        # the *submission* stays behind the deterministic review, so there is no EXTERNAL policy
+        # here and no operation that could carry one.
+        (
+            ConversationOperationType.EHALL_STATUS,
+            ConfirmationPolicy.READ,
+            handlers.ehall_status,
+        ),
+        (
+            ConversationOperationType.EHALL_CERTIFICATE_PREPARE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.ehall_certificate_prepare,
+        ),
     )
     return ConversationCapabilityRegistry(
         ConversationCapability(
@@ -1662,6 +1875,86 @@ def _expect[ArgumentsT: ConversationOperationArguments](
             f"handler expected {expected.__name__}, got {type(arguments).__name__}"
         )
     return arguments
+
+
+def _ehall_field_payload(definition: EHallFieldDefinition) -> dict[str, object]:
+    """One live field definition, as the safe metadata a status answer may carry."""
+    return {
+        "key": definition.key,
+        "label": definition.label,
+        "kind": definition.kind.value,
+        "required": definition.required,
+        "options": list(definition.options),
+    }
+
+
+def _ehall_refusal(exc: DomainError) -> tuple[str, str]:
+    """One closed mapping from a live-read failure to a state and a local sentence.
+
+    The sentence is written here, from the exception *class*: an adapter's own message is never
+    shown to a user, so no URL, selector, path or page fragment can reach the conversation.
+    """
+    if isinstance(exc, EHallUnsupportedRequiredField):
+        return (
+            "unsupported",
+            "这份表格还需要我填不了的控件（比如上传文件），所以要你自己在网页里做。",
+        )
+    if isinstance(exc, EHallUnexpectedOrigin):
+        return "unsupported", "页面跳到了我不允许访问的地址，所以我停下了。"
+    if isinstance(exc, EHallServiceMismatch):
+        return "unsupported", "我没能确认这就是那一份证明书申请表，所以没有继续。"
+    if isinstance(exc, EHallLoginRequired):  # pragma: no cover - caught before this in practice
+        return "auth_required", ""
+    if isinstance(exc, EHallBrowserUnavailable):  # pragma: no cover - caught before this
+        return "browser_unavailable", ""
+    return "unsupported", "这次没有成功。"  # pragma: no cover - defensive
+
+
+def _ehall_unavailable(state: str, reason: str = "") -> OperationResult:
+    """One eHall capability report that is not "available", in the renderer's own vocabulary."""
+    data: dict[str, object] = {"state": state}
+    if reason:
+        data["reason"] = reason
+    return OperationResult(kind="ehall_unavailable", data=data)
+
+
+def _certificate_problems(
+    snapshot: EHallFormSnapshot, supplied: dict[str, str]
+) -> list[dict[str, object]]:
+    """Why one field map does not fit the live form, derived locally and deterministically.
+
+    Three diagnoses, each with the page's own words: a key the page does not have, a required field
+    the user has not supplied, and a value the page does not offer. Nothing here invents a value,
+    and nothing here echoes an exception string.
+    """
+    definitions = {item.key: item for item in snapshot.fields}
+    problems: list[dict[str, object]] = []
+    for key in sorted(set(supplied) - set(definitions)):
+        problems.append({"key": key, "label": key, "reason": "unknown", "options": []})
+    for definition in snapshot.fields:
+        raw = supplied.get(definition.key)
+        value = "" if raw is None else raw.strip()
+        if not value:
+            if definition.required:
+                problems.append(
+                    {
+                        "key": definition.key,
+                        "label": definition.label,
+                        "reason": "missing",
+                        "options": list(definition.options),
+                    }
+                )
+            continue
+        if definition.options and value not in definition.options:
+            problems.append(
+                {
+                    "key": definition.key,
+                    "label": definition.label,
+                    "reason": "not_allowed",
+                    "options": list(definition.options),
+                }
+            )
+    return problems
 
 
 def _task_reference(arguments: ConversationOperationArguments) -> TaskId | None:

@@ -16,7 +16,9 @@ CapabilitySnapshot = available operations (registry) + configuration (accounts, 
 Four states are distinguished on purpose (§13): `AVAILABLE` (configured and offered),
 `NOT_CONFIGURED` (offered, but this host has not set it up), `DISABLED` (a real, switchable
 feature that is switched off), and `UNAVAILABLE` (not part of this product at all — arbitrary
-outbound compose, eHall in a conversation).
+outbound compose, a generic browser action). Phase 11E moved the one whitelisted eHall certificate
+errand from `UNAVAILABLE` to a real area with a truthful configured/not-configured state, because
+that capability now exists and is bounded (ADR-0045).
 """
 
 
@@ -285,7 +287,33 @@ def build_capability_snapshot(
                 "model_writes_nothing": True,
             },
         ),
-        CapabilityArea("ehall", CapabilityState.UNAVAILABLE, {"reason": "not conversational"}),
+        CapabilityArea(
+            "ehall_certificate",
+            state(
+                offered=ConversationOperationType.EHALL_CERTIFICATE_PREPARE in available,
+                configured=config is not None and config.ehall.enabled,
+            ),
+            {
+                "operations": 2,
+                "service": "证明书申请 (NJU eHall)",
+                "read_only_status": True,
+                "exact_preview": True,
+                "explicit_phrase_required": True,
+                "submission_requires_approval": True,
+                "model_can_prepare": True,
+                "model_can_submit": False,
+                "autofill": False,
+                "login": "by hand in a headed browser (`pw ehall login`)",
+                "unsupported": [
+                    "any other university form",
+                    "dropping a course",
+                    "withdrawing an application",
+                    "cancelling an application",
+                    "arbitrary URLs or browser actions",
+                    "automatic retry after an ambiguous result",
+                ],
+            },
+        ),
     )
     return CapabilitySnapshot(
         areas=areas, operation_types=tuple(sorted(operation.value for operation in operations))

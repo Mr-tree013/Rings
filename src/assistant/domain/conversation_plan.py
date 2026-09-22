@@ -7,9 +7,11 @@ anywhere in it, so "call something I was not offered" is not a thing a model can
 schema violation, which is a rejected turn rather than an adventurous one.
 
 The vocabulary is deliberately the *daily local* surface: tasks, calendar, work sessions,
-planning, the notification inbox and grounded knowledge. No `case.*`, `action.*`, `approval.*`,
-`execution.*`, `mail.send`, `ehall.*`, `fact.*` or `playbook.*` operation exists in Phase 10A, and
-neither does any `http.*`, `browser.*`, `shell.*` or `filesystem.*` one.
+planning, the notification inbox, grounded knowledge and — since Phase 11E — exactly two eHall
+operations over the certificate pipeline that already exists. No `case.*`, `action.*`,
+`approval.*`, `execution.*`, `mail.send`, `fact.*` or `playbook.*` operation exists, and neither
+does any `http.*`, `browser.*`, `shell.*` or `filesystem.*` one. There is no `ehall.submit`: a
+submission is always an approval, and approvals are never conversational.
 
 Arguments are validated here, deterministically, before anything is executed: a dataclass cannot
 be constructed in an invalid state, so the runtime never has to re-check a value it just built.
@@ -27,6 +29,11 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from assistant.domain.ehall import (
+    FIELD_KEY_PATTERN,
+    MAX_FIELD_VALUE_CHARS,
+    MAX_FIELDS,
+)
 from assistant.domain.errors import InvalidConversationPlan
 from assistant.domain.task import TaskId, TaskPriority
 
@@ -110,6 +117,9 @@ class ConversationOperationType(StrEnum):
 
     SYSTEM_CAPABILITIES = "system.capabilities"
 
+    EHALL_STATUS = "ehall.status"
+    EHALL_CERTIFICATE_PREPARE = "ehall.certificate.prepare"
+
 
 READ_OPERATIONS = frozenset(
     {
@@ -133,6 +143,7 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.BRIEF_TODAY,
         ConversationOperationType.ATTENTION_LIST,
         ConversationOperationType.SYSTEM_CAPABILITIES,
+        ConversationOperationType.EHALL_STATUS,
     }
 )
 """Operations that only read. They execute immediately (ADR-0033 §10)."""
@@ -581,6 +592,91 @@ class AttentionDismissArguments:
 
     def __post_init__(self) -> None:
         _text(self.reference, "reference")
+
+
+# ------------------------------------------------------------- ehall arguments
+
+
+@dataclass(frozen=True, slots=True)
+class EHallStatusArguments:
+    """What this build can do with the certificate pipeline, and what it currently requires.
+
+    Read-only and local-first: it reports whether the pipeline is configured, whether a usable
+    session exists, and — when the host can inspect it — the live form's service, ordered fields,
+    allowed options, required materials and page-contract fingerprint. It never types anything and
+    never submits anything, and it takes no URL, service name or selector (ADR-0045 §4).
+    """
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.EHALL_STATUS, init=False
+    )
+
+
+MAX_CERTIFICATE_FIELDS = MAX_FIELDS
+"""One certificate form has at most this many fields; the domain pipeline says so."""
+
+MAX_CERTIFICATE_VALUE_CHARS = MAX_FIELD_VALUE_CHARS
+"""The same per-value bound the certificate payload enforces, so a plan cannot outgrow the store."""
+
+_CERTIFICATE_FIELD_KEY = re.compile(FIELD_KEY_PATTERN.pattern)
+"""The certificate pipeline's own key pattern, reused rather than re-invented."""
+
+
+@dataclass(frozen=True, slots=True)
+class EHallCertificatePrepareArguments:
+    """Prepare one exact certificate submission for human review (ADR-0045 §5-§10).
+
+    `fields` maps a *field key of this build's one whitelisted certificate form* to the value the
+    user gave for it. It is not a free-form payload: every key is checked against the live form by
+    the certificate service before anything exists, every value must occur in the user's own
+    message, and a required field that is missing is a question rather than a guess. The model can
+    name no other key, because `build_field_values()` refuses an unknown one.
+
+    `case_id` names the OPEN case the errand belongs to. It is optional: when it is absent the
+    runtime opens one bounded case through the existing `CaseService`, which is what the mail paths
+    already do. A case id is a full UUID — prefixes are never resolved here — and the case must be
+    OPEN, so this operation can *use* a case but can never create, complete or cancel one.
+
+    What this operation cannot do is submit. It prepares an immutable `ActionRequest` and stops;
+    the approval and the execution are the existing services, reached only by the human's own
+    confirmation.
+    """
+
+    fields: Mapping[str, str] = field(default_factory=dict)
+    case_id: UUID | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.EHALL_CERTIFICATE_PREPARE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if len(self.fields) > MAX_CERTIFICATE_FIELDS:
+            raise InvalidConversationPlan(
+                f"a certificate form has at most {MAX_CERTIFICATE_FIELDS} fields"
+            )
+        cleaned: dict[str, str] = {}
+        for key, value in self.fields.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise InvalidConversationPlan(
+                    "certificate fields must map a field key to a string value"
+                )
+            field_key = key.strip()
+            if not _CERTIFICATE_FIELD_KEY.match(field_key):
+                raise InvalidConversationPlan(f"{field_key!r} is not a certificate field key")
+            text = value.strip()
+            if not text:
+                raise InvalidConversationPlan(f"field {field_key!r} must not be blank")
+            if len(text) > MAX_CERTIFICATE_VALUE_CHARS:
+                raise InvalidConversationPlan(
+                    f"field {field_key!r} is at most {MAX_CERTIFICATE_VALUE_CHARS} characters"
+                )
+            cleaned[field_key] = text
+        if not cleaned:
+            raise InvalidConversationPlan(
+                "ehall.certificate.prepare needs at least one field value"
+            )
+        object.__setattr__(self, "fields", cleaned)
+        if self.case_id is not None and not isinstance(self.case_id, UUID):
+            raise InvalidConversationPlan("case_id must be a UUID or null")
 
 
 # ------------------------------------------------------------------ contact arguments
@@ -1124,6 +1220,8 @@ ConversationOperationArguments = (
     | AttentionSettleArguments
     | AttentionDismissArguments
     | SystemCapabilitiesArguments
+    | EHallStatusArguments
+    | EHallCertificatePrepareArguments
 )
 """The closed union of argument objects. Adding a member is a vocabulary change."""
 
@@ -1234,6 +1332,8 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.ATTENTION_ACKNOWLEDGE: frozenset({"reference"}),
     ConversationOperationType.ATTENTION_DISMISS: frozenset({"reference"}),
     ConversationOperationType.SYSTEM_CAPABILITIES: frozenset(),
+    ConversationOperationType.EHALL_STATUS: frozenset(),
+    ConversationOperationType.EHALL_CERTIFICATE_PREPARE: frozenset({"fields", "case_id"}),
 }
 """The exact argument keys each operation accepts. Anything else is rejected, not ignored."""
 
@@ -1273,6 +1373,12 @@ def _identifier(value: object, field_name: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise InvalidConversationPlan(f"{field_name} is not a UUID: {value!r}") from exc
+
+
+def _optional_identifier(value: object, field_name: str) -> UUID | None:
+    """An identity that may be absent. A prefix is never resolved here: the model supplies a UUID
+    or nothing (ADR-0018's rule about fabricating identities)."""
+    return None if value is None else _identifier(value, field_name)
 
 
 def _instant(value: object, field_name: str) -> datetime:
@@ -1324,6 +1430,27 @@ def _recipient_kind_value(value: object) -> NewMailRecipientKind | None:
     except ValueError as exc:
         allowed = ", ".join(member.value for member in NewMailRecipientKind)
         raise InvalidConversationPlan(f"recipient_kind must be one of: {allowed}") from exc
+
+
+def _certificate_fields(value: object) -> Mapping[str, str]:
+    """The field map of one certificate preparation, as untrusted data.
+
+    Shape only: the keys are checked against the live form by the certificate service, and the
+    values are checked against the user's own sentence by the runtime. This function's job is to
+    refuse anything that is not a flat string → string object.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise InvalidConversationPlan(
+            "fields must be an object mapping a field key to a string value"
+        )
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise InvalidConversationPlan(
+                "fields must map a string field key to a string value"
+            )
+    return {str(key): str(item) for key, item in value.items()}
 
 
 def _priority(value: object) -> TaskPriority:
@@ -1590,6 +1717,13 @@ def build_arguments(
         )
     if kind is ConversationOperationType.SYSTEM_CAPABILITIES:
         return SystemCapabilitiesArguments()
+    if kind is ConversationOperationType.EHALL_STATUS:
+        return EHallStatusArguments()
+    if kind is ConversationOperationType.EHALL_CERTIFICATE_PREPARE:
+        return EHallCertificatePrepareArguments(
+            fields=_certificate_fields(payload.get("fields")),
+            case_id=_optional_identifier(payload.get("case_id"), "case_id"),
+        )
     raise AssertionError(f"unhandled operation type: {kind}")  # pragma: no cover
 
 
@@ -1716,6 +1850,8 @@ class ConversationPlan:
 
 
 __all__ = [
+    "MAX_CERTIFICATE_FIELDS",
+    "MAX_CERTIFICATE_VALUE_CHARS",
     "MAX_OPERATIONS_PER_TURN",
     "MAX_OPERATION_TEXT_CHARS",
     "MAX_RECURRING_TITLE_CHARS",
@@ -1738,6 +1874,8 @@ __all__ = [
     "ConversationOperationType",
     "ConversationPlan",
     "ConversationPlanMode",
+    "EHallCertificatePrepareArguments",
+    "EHallStatusArguments",
     "FactListArguments",
     "FactProposeArguments",
     "FactShowArguments",

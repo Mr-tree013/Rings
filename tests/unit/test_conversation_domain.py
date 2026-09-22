@@ -96,16 +96,19 @@ def test_the_vocabulary_is_exactly_the_reviewed_set() -> None:
         "attention.acknowledge",
         "attention.dismiss",
         "system.capabilities",
+        "ehall.status",
+        "ehall.certificate.prepare",
     }
 
     assert {member.value for member in ConversationOperationType} == expected
 
 
 def test_no_external_or_privileged_operation_exists() -> None:
-    """The reviewed mail surface is the only external-adjacent vocabulary that exists.
+    """The reviewed mail and certificate surfaces are the only external-adjacent vocabulary.
 
-    `mail.send` itself is still absent: a conversation prepares a send and a deterministic
-    controller settles it, so the model never names the effect (ADR-0034 §2-4).
+    `mail.send` and `ehall.submit-certificate` themselves are still absent: a conversation prepares
+    an errand and a deterministic controller settles it, so the model never names the effect
+    (ADR-0034 §2-4, ADR-0045 §3).
     """
     reviewed_mail = {
         "mail.status",
@@ -120,9 +123,11 @@ def test_no_external_or_privileged_operation_exists() -> None:
         "mail.compose_new",
         "mail.prepare_new_send",
     }
+    reviewed_ehall = {"ehall.status", "ehall.certificate.prepare"}
     for member in ConversationOperationType:
         if (
             member.value in reviewed_mail
+            or member.value in reviewed_ehall
             or member.value == "system.capabilities"
             or member.value.startswith("contact.")
             or member.value
@@ -132,6 +137,14 @@ def test_no_external_or_privileged_operation_exists() -> None:
         assert not member.value.startswith(FORBIDDEN_OPERATION_PREFIXES), member.value
 
     assert "mail.send" not in {member.value for member in ConversationOperationType}
+    assert "ehall.submit-certificate" not in {
+        member.value for member in ConversationOperationType
+    }
+    assert not [
+        member.value
+        for member in ConversationOperationType
+        if member.value.startswith(("case.", "action.", "approval.", "execution.", "browser."))
+    ]
 
 
 def test_the_schema_offers_every_operation_and_nothing_generic() -> None:

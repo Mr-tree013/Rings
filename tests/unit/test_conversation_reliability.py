@@ -289,7 +289,10 @@ def test_the_snapshot_reports_configuration_not_prose() -> None:
     # New outbound compose is a real capability now; without configuration it is not usable.
     assert snapshot.area("mail_new_outbound_compose").state is CapabilityState.NOT_CONFIGURED
     assert snapshot.area("contacts").state is CapabilityState.AVAILABLE
-    assert snapshot.area("ehall").state is CapabilityState.UNAVAILABLE
+    # Phase 11E: the one whitelisted certificate errand is a real capability with a truthful state.
+    # On a host with no `[ehall]` section it is offered and not configured — never unavailable, and
+    # never silently usable (ADR-0045 §4).
+    assert snapshot.area("ehall_certificate").state is CapabilityState.NOT_CONFIGURED
     assert all(area.name != "credentials" for area in snapshot.areas)
 
 
@@ -372,8 +375,17 @@ def test_no_generic_tool_or_shell_capability_was_added() -> None:
     from assistant.domain.conversation_plan import ConversationOperationType
 
     for member in ConversationOperationType:
-        for forbidden in ("tool", "shell", "http.", "filesystem", "browser", "ehall", "memory."):
+        for forbidden in ("tool", "shell", "http.", "filesystem", "browser", "memory."):
             assert forbidden not in member.value, member.value
+    # Phase 11E adds the two bounded eHall operations over the existing certificate pipeline, and
+    # nothing that could submit, browse or name a URL (ADR-0045 §2-§3).
+    ehall_operations = {
+        member.value
+        for member in ConversationOperationType
+        if member.value.startswith("ehall.")
+    }
+    assert ehall_operations == {"ehall.status", "ehall.certificate.prepare"}
+    assert "ehall.submit" not in {member.value for member in ConversationOperationType}
     # Phase 10F adds three narrow fact reads/proposals and, deliberately, no way to confirm one:
     # the final confirmation is a deterministic response to the human's own turn (ADR-0038).
     fact_operations = {

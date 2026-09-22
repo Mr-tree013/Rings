@@ -99,6 +99,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/integration/test_conversation_attention.py" = ["RUF001"]
 "tests/integration/test_planning_preferences.py" = ["RUF001"]
 "tests/integration/test_conversation_outbound_mail.py" = ["RUF001"]
+# The conversational eHall tests speak the same Chinese the certificate surface answers in.
+"tests/integration/test_conversation_ehall.py" = ["RUF001"]
 "tests/integration/test_new_mail_send.py" = ["RUF001"]
 "tests/integration/test_conversation_runtime.py" = ["RUF001"]
 "tests/unit/test_cli_chat.py" = ["RUF001"]

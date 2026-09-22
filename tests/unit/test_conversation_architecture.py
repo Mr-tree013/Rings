@@ -73,19 +73,28 @@ FORBIDDEN_IN_APPLICATION = (
     "assistant.application.approval_service",
     "assistant.application.action_service",
     "assistant.application.action_execution",
-    "assistant.application.ehall_certificate",
 )
 """What the model-facing conversation path may not reach.
 
 The mail-send *preparation* service is allowed from Phase 10B on: it creates an immutable action
-and stops. The approval and execution services are not, from anywhere in the model-facing path.
+and stops. Phase 11E allows the certificate *preparation* service for the same reason (ADR-0045
+§9): it opens a read-only inspection, validates the user's own values locally, writes an immutable
+`ActionRequest` and stops. The approval and execution services are still forbidden everywhere in
+the model-facing path, and `assistant.adapters` still covers the eHall gateway, the Playwright page
+and the `ehall.submit-certificate` executor.
 """
 
 FORBIDDEN_NAMES = (
     "ApprovalService",
     "ActionExecutionService",
     "ActionExecutor",
-    "EHallCertificateService",
+    # Phase 11E: the *preparation* service is named by the eHall handler, exactly as
+    # `MailSendActionService` is named by the mail handlers. The capability that performs the
+    # effect stays unreachable — the executor, the gateway and the page type are all forbidden.
+    "EHallCertificateExecutor",
+    "EHallCertificateGateway",
+    "NjuCertificateGateway",
+    "PlaywrightEHallPage",
     "ModelTool",
     "ToolExecutor",
     "AgentToolLoop",
@@ -94,7 +103,10 @@ FORBIDDEN_NAMES = (
 """The authorities the model-facing path may not name.
 
 `MailSendActionService` is deliberately absent from this list: preparing an immutable action is
-what Phase 10B adds to the model's reach, and it stops there (ADR-0034 §5-6).
+what Phase 10B adds to the model's reach, and it stops there (ADR-0034 §5-6). The certificate
+*preparation* service is absent for the same reason from Phase 11E on (ADR-0045 §9), while the
+executor that would submit is present, so "the conversation prepares" cannot quietly become "the
+conversation submits".
 """
 
 
@@ -292,11 +304,11 @@ def test_the_migration_set_is_pinned_through_the_request_queue() -> None:
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0022_planning_preferences.sql"
+    assert names[-1] == "0023_conversation_review_expansion.sql"
     assert len([name for name in names if name.startswith("0020")]) == 1
     assert len([name for name in names if name.startswith("0019")]) == 1
     assert len([name for name in names if name.startswith("0021")]) == 1
-    assert "0023" not in "".join(names)
+    assert "0024" not in "".join(names)
 
 
 # ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)
@@ -483,9 +495,22 @@ def test_no_generic_external_write_or_tool_capability_exists() -> None:
     from assistant.domain.conversation_plan import ConversationOperationType
 
     assert "EXTERNAL_WRITE" not in {member.value for member in ConfirmationPolicy}
-    forbidden = ("shell.", "filesystem.", "browser.", "http.", "tool.", "ehall.", "memory.")
+    forbidden = ("shell.", "filesystem.", "browser.", "http.", "tool.", "memory.")
     for member in ConversationOperationType:
         assert not member.value.startswith(forbidden), member.value
+    # Phase 11E (ADR-0045 §2-§3) adds exactly two eHall operations over the certificate pipeline
+    # that already existed, and no way to submit: the effect is an approval, never a vocabulary.
+    ehall_operations = {
+        member.value
+        for member in ConversationOperationType
+        if member.value.startswith("ehall.")
+    }
+    assert ehall_operations == {"ehall.status", "ehall.certificate.prepare"}
+    assert not [
+        member.value
+        for member in ConversationOperationType
+        if "submit" in member.value or member.value.startswith(("case.", "action.", "approval."))
+    ]
     # Phase 10F (ADR-0038) adds exactly three fact operations, and no way to confirm one.
     fact_operations = {
         member.value for member in ConversationOperationType if member.value.startswith("fact.")

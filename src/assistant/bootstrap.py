@@ -1573,6 +1573,7 @@ def conversation_capabilities(
     config: AssistantConfig | None,
     *,
     model: ModelPort,
+    ehall: EHallCertificateService | None = None,
 ) -> ConversationCapabilityRegistry:
     """The frozen Phase 10A capability set, over the existing application services."""
     knowledge = grounded_context_builder(clock, database)
@@ -1611,6 +1612,10 @@ def conversation_capabilities(
         mail_accounts=() if config is None else config.mail.accounts,
         attention=attention_service(database, clock, config),
         planning_preferences=planning_preferences_service(database, clock, config),
+        # Phase 11E (ADR-0045): the certificate pipeline is always *named* in the vocabulary, so an
+        # unconfigured host answers NOT_CONFIGURED honestly instead of pretending the capability
+        # does not exist. Building this object opens no browser: the session is lazy.
+        ehall=ehall if ehall is not None else ehall_certificate_service(config, clock, database),
     )
     return build_phase_10a_registry(handlers)
 
@@ -1622,6 +1627,7 @@ def conversation_service(
     *,
     model: ModelPort | None = None,
     executors: Mapping[ActionType, ActionExecutor] | None = None,
+    ehall: EHallCertificateService | None = None,
 ) -> ConversationService:
     """The Tree conversation runtime — one service, used by `rings` and by `pw chat`.
 
@@ -1636,7 +1642,9 @@ def conversation_service(
     return ConversationService(
         repository=conversation_repository(database),
         interpreter=conversation_interpreter(config, model=adapter),
-        capabilities=conversation_capabilities(database, clock, config, model=adapter),
+        capabilities=conversation_capabilities(
+            database, clock, config, model=adapter, ehall=ehall
+        ),
         context_builder=conversation_context_builder(database, clock, config),
         clock=clock,
         planning_timezone=_planning_timezone_of(config),

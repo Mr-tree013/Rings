@@ -1,4 +1,4 @@
-"""Deterministic review and settlement of one exact external action (ADR-0034 §5, §19-20).
+"""Deterministic review and settlement of one exact external action (ADR-0034 §5, §19-20; ADR-0045).
 
 This component is the only place in the conversation feature where an external effect can happen,
 and it is deliberately the least clever code in the phase:
@@ -15,9 +15,11 @@ reaches it is a sentence the *human* typed, already matched against a fixed voca
 conversation service, plus a durable row that names exactly one action and one fingerprint.
 
 Everything it does on the way to an effect is a re-verification: the action still exists, is still
-`mail.send`, still hashes to the fingerprint the review recorded, and the draft behind it has not
-moved since the user read the preview. If any of that fails, the review goes `STALE` and nothing
-is approved.
+one of the two reviewed capabilities, still hashes to the fingerprint the review recorded, and is
+still exactly what the user was shown. That last check is *per capability* and it is closed —
+`mail.send` re-reads its draft version, `ehall.submit-certificate` re-parses the approved payload —
+so a third capability cannot reach the approval boundary by naming itself here. If any check fails
+the review goes `STALE` and nothing is approved.
 """
 
 from __future__ import annotations
@@ -32,11 +34,14 @@ from assistant.application.mail_send_status import MailSendStatusService
 from assistant.domain.action import ActionRequest, ActionRequestId
 from assistant.domain.conversation_review import (
     ALLOWED_EXTERNAL_ACTION_TYPES,
+    EHALL_CERTIFICATE_ACTION_TYPE,
     EXTERNAL_REVIEW_TTL_MINUTES,
+    MAIL_SEND_ACTION_TYPE,
     ConversationExternalReview,
     ConversationExternalReviewStatus,
 )
-from assistant.domain.errors import ActionExecutionUnknown, DomainError
+from assistant.domain.ehall import EHallCertificatePayload
+from assistant.domain.errors import ActionExecutionUnknown, DomainError, InvalidEHallForm
 from assistant.domain.execution import ExecutionRunStatus
 from assistant.ports.action_repository import ActionRepository
 from assistant.ports.clock import Clock
@@ -212,23 +217,14 @@ class ConversationExternalReviewService:
                 settled=False,
                 failure_reason="the action payload changed since it was reviewed",
             )
-        try:
-            status = await self._sends.status(action.id)
-        except Exception:
+        stale_reason = await self._stale_reason(action)
+        if stale_reason is not None:
             return ConfirmationOutcome(
                 review=await self._transition(
                     review, ConversationExternalReviewStatus.STALE, now
                 ),
                 settled=False,
-                failure_reason="the stored send could not be read",
-            )
-        if status.draft_version_changed:
-            return ConfirmationOutcome(
-                review=await self._transition(
-                    review, ConversationExternalReviewStatus.STALE, now
-                ),
-                settled=False,
-                failure_reason="the draft changed after it was reviewed",
+                failure_reason=stale_reason,
             )
         if not action.is_prepared:
             return ConfirmationOutcome(
@@ -324,9 +320,44 @@ class ConversationExternalReviewService:
         updated = review.with_status(status, at=at, execution_run_id=execution_run_id)
         return await self._reviews.update_review(updated)
 
+    async def _stale_reason(self, action: ActionRequest) -> str | None:
+        """Whether one reviewed action still means what the human was shown.
+
+        A closed per-capability check, in the same spirit as the card dispatch: a capability with no
+        branch here cannot be settled, because it never reaches the approval below.
+
+        `mail.send` has a second durable copy of the letter behind it — the draft — so a draft that
+        moved makes the review stale. A certificate action has no second copy: the frozen payload
+        *is* the errand, and the live page is re-verified by the gateway after the approval has been
+        consumed (a changed page is `EHallPageChanged`, and nothing is typed). What is checked here
+        is that the stored payload is still a usable certificate errand at all, so a corrupt row
+        cannot spend a human decision.
+        """
+        if action.action_type.value == MAIL_SEND_ACTION_TYPE:
+            try:
+                status = await self._sends.status(action.id)
+            except Exception:
+                return "the stored send could not be read"
+            if status.draft_version_changed:
+                return "the draft changed after it was reviewed"
+            return None
+        if action.action_type.value == EHALL_CERTIFICATE_ACTION_TYPE:
+            try:
+                EHallCertificatePayload.from_payload(action.payload)
+            except InvalidEHallForm:
+                return "the stored certificate payload is not usable"
+            return None
+        return "the action is no longer a reviewed capability"
+
     async def _latest_run(self, action_id: ActionRequestId) -> UUID | None:
-        status = await self._sends.status(action_id)
-        return None if status.execution is None else status.execution.id
+        """The most recent execution attempt for an action, whatever its capability.
+
+        Read from the action store rather than from the mail send status: an ambiguous certificate
+        submission is exactly as real as an ambiguous letter, and the run that recorded it is the
+        same kind of row.
+        """
+        run = await self._actions.latest_execution(action_id)
+        return None if run is None else run.id
 
 
 def _payload_of(action: ActionRequest) -> dict[str, object]:

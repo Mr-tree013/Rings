@@ -12,13 +12,17 @@ back into a service.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.application.conversation_capabilities.registry import OperationResult
-from assistant.domain.conversation_errors import ConversationErrorCode
+from assistant.domain.conversation_errors import ConversationErrorCode, ConversationRefusalCode
+from assistant.domain.conversation_review import (
+    EHALL_CERTIFICATE_ACTION_TYPE,
+    MAIL_SEND_ACTION_TYPE,
+)
 from assistant.domain.recurring_calendar import weekday_label
 from assistant.domain.task import TaskPriority
 from assistant.ports.learning_repository import FactConfirmation
@@ -153,6 +157,16 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         return _render_mail_accounts(data)
     if result.kind == "capabilities":
         return render_capabilities(data)
+    if result.kind == "ehall_status":
+        return _render_ehall_status(data)
+    if result.kind == "ehall_unavailable":
+        return _render_ehall_status(data)
+    if result.kind == "ehall_prepared":
+        # The exact preview is rendered by the service from the immutable `ActionRequest` payload;
+        # this path only exists so an unexpected direct render still says something true.
+        return "已准备好这份证明申请，正在给你确认预览。"
+    if result.kind == "ehall_refused":
+        return _render_ehall_refusal(data)
     raise AssertionError(f"unrendered operation result: {result.kind}")  # pragma: no cover
 
 
@@ -263,6 +277,16 @@ def render_capabilities(data: dict[str, Any]) -> str:
         )
     else:
         lines.append("· 发送邮件：需要先配置发信（SMTP）账号")
+    ehall = areas.get("ehall_certificate") or {}
+    if state_of("ehall_certificate") == "available":
+        lines.append(
+            "· 学校证明申请（eHall）：可以读当前申请表、准备一份证明申请并把要提交的每个字段"
+            "给你看；只有你明确回复「确认提交」才会提交"
+        )
+    else:
+        lines.append(
+            "· 学校证明申请（eHall）：这台机器还没有启用，启用后也需要你自己在浏览器里登录"
+        )
     lines.append("")
     if recurring.get("weekly_only"):
         lines.append("做不到的：单双周、每两周一次、每月或每年重复、节假日或考试周除外。")
@@ -270,7 +294,12 @@ def render_capabilities(data: dict[str, Any]) -> str:
         lines.append("邮件做不到的：附件、定时发送、自动发送、通讯录/网络查询收件人。")
     if facts.get("unsupported"):
         lines.append("长期信息做不到的：自动填表/自动写邮件、自动记住聊天内容。")
-    lines.append("做不到的：提交校外系统的手续（eHall）、创建审批或绕过确认执行外部动作。")
+    if ehall.get("unsupported"):
+        lines.append(
+            "eHall 做不到的：退课、撤销或取消申请、退宿，以及任何其它表格；"
+            "也没有任意网址或通用浏览器操作。"
+        )
+    lines.append("做不到的：创建审批、绕过确认执行外部动作、或替你在网页上任意点击。")
     return "\n".join(lines)
 
 
@@ -431,6 +460,20 @@ def render_unproven_address(address: str) -> str:
         f"「{address}」没有出现在你刚才那句话里，所以我什么都没有做，也没有创建草稿。\n"
         "请直接在消息里写出收件人的邮箱地址，例如「给 name@example.edu 发封邮件，"
         "主题“测试”，内容“你好”」。"
+    )
+
+
+def render_unproven_certificate_value(value: str) -> str:
+    """A model put a value into a certificate form that the human never wrote (ADR-0045 §8).
+
+    The refusal names the value so the user can see exactly what the model tried to fill in, and it
+    says what to do instead: write the value in the message. Nothing was prepared and nothing was
+    submitted.
+    """
+    return (
+        f"「{value}」没有出现在你刚才那句话里，所以我什么都没有提交，也没有准备申请。\n"
+        "请直接在消息里写出每个字段要填的内容，例如「申请人姓名写张三，证明书类型是在读证明」，"
+        "我会重新准备一份给你确认。"
     )
 
 
@@ -712,6 +755,216 @@ def _render_mail_send_preview(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def render_ehall_certificate_preview(payload: dict[str, object]) -> str:
+    return _render_ehall_certificate_preview(payload)
+
+
+def _render_ehall_certificate_preview(payload: dict[str, object]) -> str:
+    """The exact application that would be submitted, from the immutable action payload.
+
+    Derived from the stored `ActionRequest` payload and from nothing else — not from the live page,
+    not from the snapshot, not from the model's summary. Every human-relevant submitted field is
+    printed, because the point of the preview is that a person can read the whole errand. Nothing
+    that is *not* submitted (a session, a cookie, a selector, a credential, an internal URL) exists
+    in the payload in the first place.
+    """
+    service = _text_field(payload, "service_identity")
+    lines = [
+        "将要提交的证明申请（以下内容就是实际提交的内容）：",
+        f"· 服务：{service}",
+    ]
+    raw_fields = payload.get("fields")
+    fields = raw_fields if isinstance(raw_fields, list) else []
+    printed = 0
+    for item in fields:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("key") or "")
+        value = str(item.get("value") or "")
+        lines.append(f"· {label}：{value}")
+        printed += 1
+    if printed == 0:  # pragma: no cover - a payload without fields never gets stored
+        lines.append("· （没有可显示的字段）")
+    raw_materials = payload.get("required_materials")
+    materials = raw_materials if isinstance(raw_materials, list) else []
+    if materials:
+        lines.append(f"· 需要准备的材料：{'、'.join(str(item) for item in materials)}")
+    lines.append(f"· 页面契约指纹：{_text_field(payload, 'page_contract_fingerprint')}")
+    consequence = str(payload.get("consequence") or "")
+    if consequence:
+        lines += ["", consequence]
+    lines += [
+        "",
+        "确认提交吗？回复「确认提交」我就提交，或回复「取消」。",
+        "回复「可以」不会提交。如果内容还要改，直接说出改动，我会重新准备一份再给你确认。",
+    ]
+    return "\n".join(lines)
+
+
+_REVIEW_PREVIEW_RENDERERS: dict[str, Callable[[dict[str, object]], str]] = {
+    MAIL_SEND_ACTION_TYPE: _render_mail_send_preview,
+    EHALL_CERTIFICATE_ACTION_TYPE: _render_ehall_certificate_preview,
+}
+"""One exact-payload preview per reviewed capability. A third one cannot arrive by naming itself."""
+
+_REVIEW_SUBJECTS: dict[str, str] = {
+    MAIL_SEND_ACTION_TYPE: "邮件",
+    EHALL_CERTIFICATE_ACTION_TYPE: "证明申请",
+}
+"""How one reviewed capability is named in the sentences around its preview."""
+
+
+def render_review_preview(action_type: str, payload: dict[str, object]) -> str:
+    """The exact preview of one reviewed action, from its own payload (ADR-0045 §11-§12)."""
+    renderer = _REVIEW_PREVIEW_RENDERERS.get(action_type)
+    if renderer is None:
+        raise AssertionError(f"no review preview for {action_type!r}")  # pragma: no cover
+    return renderer(payload)
+
+
+def review_subject(action_type: str) -> str:
+    """The user-facing noun for one reviewed capability."""
+    return _REVIEW_SUBJECTS.get(action_type, "外部操作")
+
+
+_REFUSAL_SENTENCES: dict[ConversationRefusalCode, str] = {
+    ConversationRefusalCode.NOT_CONFIGURED: (
+        "这台机器还没有配置{subject}，所以我不能准备它。"
+    ),
+    ConversationRefusalCode.AUTH_REQUIRED: (
+        "要{subject}需要先登录学校系统，现在没有可用的登录状态。"
+    ),
+    ConversationRefusalCode.CONNECTION_FAILED: (
+        "连接学校系统时出错了，我没有提交任何东西。稍后再试一次通常就好。"
+    ),
+    ConversationRefusalCode.CREDENTIAL_MISSING: (
+        "缺少{subject}需要的凭据，所以我什么都没有做。"
+    ),
+    ConversationRefusalCode.UNSUPPORTED_CAPABILITY: "{subject}不在这一版能做的范围内。",
+    ConversationRefusalCode.AMBIGUOUS_REFERENCE: "有几个可能的对象，我不能替你猜是哪一个。",
+    ConversationRefusalCode.UNKNOWN_EXTERNAL_RESULT: (
+        "{subject}的结果还不确定，我不会自动重试。"
+    ),
+    ConversationRefusalCode.STALE_CONFIRMATION: (
+        "这次确认对应的内容已经变了，之前那份确认作废。请让我重新准备一份再确认。"
+    ),
+    ConversationRefusalCode.CANNOT_CANCEL_SAFELY: "这一步已经进入执行阶段，不能安全停止。",
+    ConversationRefusalCode.MISSING_PARAMETERS: "还缺少必要的信息，我什么都没有提交。",
+}
+"""One sentence per refusal state, so nothing collapses into a single unexplained apology."""
+
+
+def render_refusal(
+    code: ConversationRefusalCode,
+    *,
+    subject: str = "这项操作",
+    notes: Sequence[str] = (),
+) -> str:
+    """One actionable refusal: the state, then whatever the user has to supply or fix.
+
+    `subject` and `notes` come from local data — a capability name, a form's own field labels, a
+    command to run. No exception text, no schema, no traceback and no credential reaches here.
+    """
+    sentence = _REFUSAL_SENTENCES.get(
+        code, _REFUSAL_SENTENCES[ConversationRefusalCode.UNSUPPORTED_CAPABILITY]
+    ).format(subject=subject)
+    return "\n".join(part for part in [sentence, *notes] if part)
+
+
+def _render_ehall_status(data: dict[str, Any]) -> str:
+    """The eHall capability report: what can be done here, and what the form still needs."""
+    state = str(data.get("state", "not_configured"))
+    if state == "not_configured":
+        return render_refusal(
+            ConversationRefusalCode.NOT_CONFIGURED,
+            subject="eHall 证明申请",
+            notes=[
+                "配置后在电脑上运行 `pw ehall login` 自己完成登录，我就可以准备申请给你确认。",
+                "我任何时候都不需要、也不会保存你的学校密码。",
+            ],
+        )
+    if state == "auth_required":
+        return render_refusal(
+            ConversationRefusalCode.AUTH_REQUIRED,
+            subject="提交证明申请",
+            notes=[
+                "请在电脑上运行 `pw ehall login`，在弹出的浏览器里自己完成登录。",
+                "我不会、也不需要你的学校密码。",
+            ],
+        )
+    if state == "browser_unavailable":
+        return render_refusal(
+            ConversationRefusalCode.CONNECTION_FAILED,
+            subject="证明申请",
+            notes=["这台机器上还没有可用的浏览器运行时。"],
+        )
+    if state != "available":
+        return render_refusal(
+            ConversationRefusalCode.UNSUPPORTED_CAPABILITY,
+            subject="这次证明申请",
+            notes=[
+                str(
+                    data.get("reason")
+                    or "页面和我认识的那一份不一样，所以我没有继续。"
+                )
+            ],
+        )
+    lines = [
+        f"现在可以准备一份证明申请（服务：{data.get('service_identity', '')}）。",
+        "页面上的字段：",
+    ]
+    for field in data.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        required = "必填" if field.get("required") else "选填"
+        options = field.get("options") or []
+        suffix = f"，可选：{'、'.join(str(item) for item in options)}" if options else ""
+        lines.append(f"- {field.get('label', '')}（{field.get('key', '')}）：{required}{suffix}")
+    materials = data.get("required_materials") or []
+    if materials:
+        lines.append(f"需要准备的材料：{'、'.join(str(item) for item in materials)}")
+    unsupported = data.get("required_unsupported") or []
+    if unsupported:
+        lines.append(
+            f"这份表格还需要我填不了的控件（{'、'.join(str(item) for item in unsupported)}），"
+            "所以这一份要你自己在网页里做。"
+        )
+    lines += [
+        "",
+        "告诉我每个字段要填什么，我会准备一份给你确认；在你亲口说「确认提交」之前，"
+        "什么都不会提交。",
+    ]
+    return "\n".join(lines)
+
+
+def _render_ehall_refusal(data: dict[str, Any]) -> str:
+    """One refused certificate preparation, in the user's own terms."""
+    code = ConversationRefusalCode(str(data.get("code", "unsupported_capability")))
+    notes: list[str] = []
+    fields = data.get("fields") or []
+    if fields:
+        notes.append("还需要这些信息：")
+        for problem in fields:
+            if not isinstance(problem, dict):
+                continue
+            reason = str(problem.get("reason", "missing"))
+            label = str(problem.get("label") or problem.get("key") or "")
+            options = problem.get("options") or []
+            if reason == "not_allowed":
+                notes.append(f"- {label}：页面只接受 {'、'.join(str(item) for item in options)}。")
+            elif reason == "unknown":
+                notes.append(f"- {problem.get('key', '')}：这个页面没有这个字段。")
+            else:
+                suffix = (
+                    f"（可选：{'、'.join(str(item) for item in options)}）" if options else ""
+                )
+                notes.append(f"- {label}：必填，还没有提供{suffix}。")
+    materials = data.get("required_materials") or []
+    if materials:
+        notes.append(f"这份申请需要准备的材料：{'、'.join(str(item) for item in materials)}")
+    return render_refusal(code, subject="证明申请", notes=notes)
+
+
 def render_send_result(status: str | None, failure_reason: str | None = None) -> str:
     """What happened to one reviewed send, in the words the user needs."""
     if status == "succeeded":
@@ -788,8 +1041,21 @@ def sanitise_detail(detail: str) -> str | None:
     return trimmed[:300] or None
 
 
-def render_review_withdrawn() -> str:
-    """The user withdrew the pending send."""
+PENDING_REVIEW_SENTENCES: dict[str, str] = {
+    MAIL_SEND_ACTION_TYPE: (
+        "上次有一封尚未发送的邮件在等待确认，我把它的内容重新给你看一遍。"
+    ),
+    EHALL_CERTIFICATE_ACTION_TYPE: (
+        "上次有一份尚未提交的证明申请在等待确认，我把它的内容重新给你看一遍。"
+    ),
+}
+"""How a review that survived a restart is reintroduced, per capability."""
+
+
+def render_review_withdrawn(action_type: str = MAIL_SEND_ACTION_TYPE) -> str:
+    """The user withdrew the pending external action."""
+    if action_type == EHALL_CERTIFICATE_ACTION_TYPE:
+        return "好，这份证明申请没有提交。需要的时候再说一次，我会重新准备。"
     return "好，这封邮件没有发送。需要的时候再说一次，我会重新准备。"
 
 
@@ -803,28 +1069,69 @@ def render_stopped() -> str:
     return "已停止：这条消息没有执行任何操作。想继续的话，再说一次就好。"
 
 
-def render_review_expired() -> str:
-    """The reviewed send waited too long."""
-    return "这次确认已经过期了，我没有发送。重新说一下要回什么，我会再准备一份给你确认。"
-
-
-def render_review_stale(reason: str | None = None) -> str:
-    """The reviewed action no longer matches what was shown."""
-    detail = "" if not reason else f"（{reason}）"
-    return f"这封邮件的内容已经变了，之前那份确认作废{detail}。请让我重新准备一份再确认。"
-
-
-def render_review_ambiguous(count: int) -> str:
-    """More than one send is waiting; the runtime refuses to guess."""
+def render_review_expired(action_type: str = MAIL_SEND_ACTION_TYPE) -> str:
+    """The reviewed external action waited too long."""
+    subject = review_subject(action_type)
     return (
-        f"现在有 {count} 封邮件在等待确认，我不能从一句话里决定发哪一封。"
-        "请先让我把要发的那一封重新给你看一遍，再确认发送。"
+        f"这次确认已经过期了，这份{subject}没有执行。"
+        "重新说一下要做什么，我会再准备一份给你确认。"
     )
 
 
-def render_review_pending_notice() -> str:
-    """A restart found a reviewed send still waiting for the human."""
-    return "上次有一封尚未发送的邮件在等待确认，我把它的内容重新给你看一遍。"
+def render_review_stale(
+    reason: str | None = None, *, action_type: str = MAIL_SEND_ACTION_TYPE
+) -> str:
+    """The reviewed action no longer matches what was shown."""
+    subject = review_subject(action_type)
+    detail = "" if not reason else f"（{reason}）"
+    return (
+        f"这次确认对应的内容已经变了，之前那份{subject}的确认作废{detail}。"
+        "请让我重新准备一份再确认。"
+    )
+
+
+def render_review_ambiguous(
+    count: int, action_type: str = MAIL_SEND_ACTION_TYPE
+) -> str:
+    """More than one reviewed action is waiting; the runtime refuses to guess."""
+    subject = review_subject(action_type)
+    return (
+        f"现在有 {count} 份{subject}在等待确认，我不能从一句话里决定是哪一份。"
+        "请先让我把其中一份重新给你看一遍，再确认。"
+    )
+
+
+def render_review_pending_notice(action_type: str = MAIL_SEND_ACTION_TYPE) -> str:
+    """A restart found a reviewed external action still waiting for the human."""
+    return PENDING_REVIEW_SENTENCES.get(
+        action_type, "上次有一份外部操作在等待确认，我把它的内容重新给你看一遍。"
+    )
+
+
+def render_submission_result(status: str | None, failure_reason: str | None = None) -> str:
+    """What happened to one reviewed certificate submission, in the words the user needs."""
+    if status == "succeeded":
+        return "已提交。学校系统已经接受了这份证明申请。"
+    if status == "unknown":
+        return (
+            "提交结果不确定：点击提交之后我无法确认学校系统有没有接受它。\n"
+            "我不会自动重试，以免重复提交。请到 eHall 里自己确认一下这次申请。"
+        )
+    detail = "" if not failure_reason else f"（{failure_reason}）"
+    return f"提交失败，没有确认产生提交结果。{detail}"
+
+
+def render_review_outcome(
+    action_type: str, status: str | None, failure_reason: str | None = None
+) -> str:
+    """What happened to one reviewed external action, in the words of that capability.
+
+    Closed per capability: a third action type has no sentence here, and it cannot reach this
+    function because it cannot open a review in the first place (ADR-0045 §16, §25).
+    """
+    if action_type == EHALL_CERTIFICATE_ACTION_TYPE:
+        return render_submission_result(status, failure_reason)
+    return render_send_result(status, failure_reason)
 
 
 def render_confirmation_request(operation_type: str) -> str:
@@ -1268,6 +1575,7 @@ __all__ = [
     "render_confirmation_expired",
     "render_confirmation_rejected",
     "render_confirmation_request",
+    "render_ehall_certificate_preview",
     "render_empty_turn",
     "render_error",
     "render_fact_confirmed",
@@ -1286,17 +1594,23 @@ __all__ = [
     "render_recurring_batch",
     "render_recurring_confirmation_request",
     "render_recurring_rule_line",
+    "render_refusal",
     "render_result",
     "render_results",
     "render_review_ambiguous",
     "render_review_expired",
+    "render_review_outcome",
     "render_review_pending_notice",
+    "render_review_preview",
     "render_review_stale",
     "render_review_withdrawn",
     "render_send_result",
     "render_stopped",
+    "render_submission_result",
     "render_unknown_local",
     "render_unproven_address",
+    "render_unproven_certificate_value",
     "render_unsupported",
     "render_unsupported_recurrence",
+    "review_subject",
 ]

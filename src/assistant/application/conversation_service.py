@@ -76,6 +76,7 @@ from assistant.domain.conversation_plan import (
     ConversationOperationType,
     ConversationPlan,
     ConversationPlanMode,
+    EHallCertificatePrepareArguments,
     MailComposeNewArguments,
     MailPrepareNewSendArguments,
     NewMailRecipientKind,
@@ -83,10 +84,11 @@ from assistant.domain.conversation_plan import (
 )
 from assistant.domain.conversation_request import ConversationProgressStage
 from assistant.domain.conversation_review import (
+    EHALL_CERTIFICATE_ACTION_TYPE,
     ConversationExternalReview,
     ConversationExternalReviewStatus,
-    matches_send_cancellation,
-    matches_send_confirmation,
+    matches_cancellation,
+    matches_confirmation,
 )
 from assistant.domain.errors import (
     ConversationCapabilityUnavailable,
@@ -126,6 +128,7 @@ CONFIRMATION_INTENT_CONFIRM = "confirm"
 CONFIRMATION_INTENT_REJECT = "reject"
 
 CARD_SEND_CONFIRM_PHRASE = "确认发送"
+CARD_SUBMIT_CONFIRM_PHRASE = "确认提交"
 CARD_FACT_CONFIRM_PHRASE = "确认记住"
 CARD_FACT_CANCEL_PHRASE = "不要记"
 CARD_LOCAL_CONFIRM_PHRASE = "可以"
@@ -302,9 +305,12 @@ class ConversationService:
             return None
         payload = await self._external.payload_of(reviews[0])
         if payload is None:
-            return render.render_review_stale()
+            return render.render_review_stale(action_type=reviews[0].action_type)
         return "\n".join(
-            (render.render_review_pending_notice(), render.render_mail_send_preview(payload))
+            (
+                render.render_review_pending_notice(reviews[0].action_type),
+                render.render_review_preview(reviews[0].action_type, payload),
+            )
         )
 
     async def waiting_external_reviews(
@@ -429,26 +435,34 @@ class ConversationService:
         if self._external is not None:
             # An external review is settled before anything is interpreted, and only by the words
             # the human actually typed (ADR-0034 §11, §23). A generic "可以" is not one of them.
+            # Each review is matched against *its own* capability's vocabulary, so one sentence can
+            # never settle two different external actions (ADR-0045 §16-§17).
             reviews = await self._external.waiting(thread.id)
-            if reviews and matches_send_confirmation(text):
+            confirmed = [
+                review for review in reviews if matches_confirmation(review.action_type, text)
+            ]
+            if confirmed:
                 # Settling a reviewed send reaches an external effect, so this is where the turn
                 # stops being stoppable: the stage is recorded, and a stop that arrived while the
                 # turn was still being understood is honoured *before* the approval exists.
                 await self._prepare_settlement(
                     runtime, ConversationProgressStage.EXTERNAL_EXECUTION
                 )
-                return await self._settle_external(thread, user_message.id, reviews)
-            if reviews and matches_send_cancellation(text):
+                return await self._settle_external(thread, user_message.id, confirmed)
+            withdrawing = [
+                review for review in reviews if matches_cancellation(review.action_type, text)
+            ]
+            if withdrawing:
                 await self._prepare_settlement(
                     runtime, ConversationProgressStage.UPDATING_LOCAL_STATE
                 )
-                for review in reviews:
+                for review in withdrawing:
                     await self._external.cancel(review)
                 return await self._finish(
                     thread,
                     await self._control_turn(thread, user_message.id),
                     ConversationTurnStatus.COMPLETED,
-                    render.render_review_withdrawn(),
+                    render.render_review_withdrawn(withdrawing[0].action_type),
                     runtime=runtime,
                 )
             # Only once the deterministically handled phrases are out of the way is an expired
@@ -681,6 +695,27 @@ class ConversationService:
                 error_code=ConversationErrorCode.MODEL_INVALID_OUTPUT,
             )
 
+        invented = _unproven_certificate_values(plan, text)
+        if invented:
+            # The same rule for the certificate form (ADR-0045 §8): a value the model produced is
+            # accepted only when the human wrote the same value themselves. No name, student number
+            # or profile field can be filled in from the model's own memory or from the user's
+            # general knowledge. Nothing has run at this point, and nothing will.
+            for ordinal, operation in enumerate(plan.operations):
+                await self._store_operation(
+                    turn, ordinal, operation, status=ConversationOperationStatus.REJECTED
+                )
+            return await self._finish(
+                thread,
+                turn,
+                ConversationTurnStatus.FAILED,
+                render.render_unproven_certificate_value(invented[0]),
+                operation_types=tuple(
+                    operation.operation_type.value for operation in plan.operations
+                ),
+                error_code=ConversationErrorCode.MODEL_INVALID_OUTPUT,
+            )
+
         refusal = await self._preflight(plan)
         if refusal is not None:
             # Nothing has run yet, and nothing will: a plan that cannot be carried out in full
@@ -763,6 +798,7 @@ class ConversationService:
                 in (
                     ConversationOperationType.MAIL_PREPARE_REPLY_SEND,
                     ConversationOperationType.MAIL_PREPARE_NEW_SEND,
+                    ConversationOperationType.EHALL_CERTIFICATE_PREPARE,
                 )
                 and outcome.result is not None
                 and outcome.operation is not None
@@ -771,7 +807,7 @@ class ConversationService:
                     thread, outcome.operation, outcome.result.ref
                 )
                 if prepared is not None:
-                    # The user is shown the payload, not a summary of it (ADR-0034 §7-8).
+                    # The user sees the payload, not a summary of it (ADR-0034 §7-8, ADR-0045 §11).
                     text_out = "\n".join(
                         part
                         for part in (
@@ -779,7 +815,9 @@ class ConversationService:
                                 _without_compose_echo(results[:-1]),
                                 timezone=self._planning_timezone,
                             ),
-                            render.render_mail_send_preview(prepared.payload),
+                            render.render_review_preview(
+                                prepared.review.action_type, prepared.payload
+                            ),
                         )
                         if part
                     )
@@ -1146,7 +1184,7 @@ class ConversationService:
                 thread,
                 turn,
                 ConversationTurnStatus.COMPLETED,
-                render.render_review_ambiguous(len(reviews)),
+                render.render_review_ambiguous(len(reviews), reviews[0].action_type),
             )
         return await self._settle_review(thread, user_message_id, reviews[0])
 
@@ -1234,9 +1272,16 @@ class ConversationService:
                 thread,
                 await self._control_turn(thread, message.id),
                 ConversationTurnStatus.COMPLETED,
-                render.render_review_withdrawn(),
+                render.render_review_withdrawn(review.action_type),
             )
-        message = await self._record_user_message(thread, CARD_SEND_CONFIRM_PHRASE)
+        # The recorded message is the phrase a terminal user would have typed to reach this exact
+        # settlement, so the browser and the terminal agree in durable history as well as in effect.
+        phrase = (
+            CARD_SUBMIT_CONFIRM_PHRASE
+            if review.action_type == EHALL_CERTIFICATE_ACTION_TYPE
+            else CARD_SEND_CONFIRM_PHRASE
+        )
+        message = await self._record_user_message(thread, phrase)
         return await self._settle_review(thread, message.id, review)
 
     async def settle_fact_card(
@@ -1721,6 +1766,25 @@ def _unproven_addresses(plan: ConversationPlan, text: str) -> tuple[str, ...]:
     return tuple(claimed)
 
 
+def _unproven_certificate_values(plan: ConversationPlan, text: str) -> tuple[str, ...]:
+    """Certificate field values a model supplied that the human never wrote (ADR-0045 §8).
+
+    The certificate form asks for a name, a student number and other personal details, so this
+    check is the one that keeps a hallucinated identity out of an application: a value the model
+    produced is accepted only when the raw user message contains it. It runs before the first
+    mutation, so a refused preparation costs nothing and creates no action.
+    """
+    invented: list[str] = []
+    for planned in plan.operations:
+        arguments = planned.arguments
+        if not isinstance(arguments, EHallCertificatePrepareArguments):
+            continue
+        for value in arguments.fields.values():
+            if value not in text:
+                invented.append(value)
+    return tuple(invented)
+
+
 def _bind_new_mail_draft(
     planned: PlannedOperation, draft_reference: str | None
 ) -> PlannedOperation:
@@ -1749,17 +1813,19 @@ def _without_compose_echo(results: Sequence[OperationResult]) -> tuple[Operation
 
 
 def _settlement_text(outcome: ConfirmationOutcome) -> str:
-    """One settled review, in the words the user needs (ADR-0034 §19)."""
-    status = outcome.review.status
+    """One settled review, in the words the user needs (ADR-0034 §19, ADR-0045 §23)."""
+    review = outcome.review
+    status = review.status
+    action_type = review.action_type
     if status is ConversationExternalReviewStatus.SUCCEEDED:
-        return render.render_send_result("succeeded")
+        return render.render_review_outcome(action_type, "succeeded")
     if status is ConversationExternalReviewStatus.UNKNOWN:
-        return render.render_send_result("unknown")
+        return render.render_review_outcome(action_type, "unknown")
     if status is ConversationExternalReviewStatus.FAILED:
-        return render.render_send_result("failed", outcome.failure_reason)
+        return render.render_review_outcome(action_type, "failed", outcome.failure_reason)
     if status is ConversationExternalReviewStatus.EXPIRED:
-        return render.render_review_expired()
-    return render.render_review_stale(outcome.failure_reason)
+        return render.render_review_expired(action_type)
+    return render.render_review_stale(outcome.failure_reason, action_type=action_type)
 
 
 def _replace_operation(

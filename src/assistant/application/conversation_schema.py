@@ -13,13 +13,23 @@ The schema is the boundary, and it is deliberately narrow in the same way ADR-00
 
 `format: date-time` is carried for the provider's benefit; every timestamp is parsed and checked
 again locally, because schema validation never replaces semantic validation.
+
+Phase 11E adds exactly two eHall operations over the certificate pipeline that already exists.
+`ehall.certificate.prepare` carries a *bounded field map*: it is the only object-valued argument in
+this schema, and it is closed in every way that matters — at most `MAX_CERTIFICATE_FIELDS` keys,
+each key shaped like the pipeline's own field-key pattern, each value a bounded string, and every
+key validated against the live form by the certificate service before anything is prepared.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from assistant.domain.conversation_plan import MAX_OPERATIONS_PER_TURN
+from assistant.domain.conversation_plan import (
+    MAX_CERTIFICATE_FIELDS,
+    MAX_CERTIFICATE_VALUE_CHARS,
+    MAX_OPERATIONS_PER_TURN,
+)
 from assistant.domain.model import JsonSchemaOutput
 
 CONVERSATION_SCHEMA_NAME = "tree_conversation_v1"
@@ -472,6 +482,42 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         "system.capabilities",
         "Describe what this build can currently do, from the runtime. Use this for any question "
         "about Tree's own abilities instead of answering from memory.",
+    ),
+    _operation(
+        "ehall.status",
+        "Report what this build can do with the university eHall certificate pipeline: whether it "
+        "is configured, whether a usable session exists, and — when the form can be read — the "
+        "live form's service, its fields (key, label, type, required, options), the materials it "
+        "asks for and the page-contract fingerprint. Use this before preparing a "
+        "certificate, and for any question about what Tree can submit. It reads only: nothing is "
+        "typed and nothing is submitted.",
+    ),
+    _operation(
+        "ehall.certificate.prepare",
+        "Prepare ONE university certificate application for the user to review. Exactly one "
+        "service exists in this build: the NJU 证明书申请 certificate application. Use only the "
+        "field keys the live form reported (see ehall.status, or the form the user was shown), "
+        "never an invented key. Every value must occur in the user's own message: a value the "
+        "runtime cannot find there is refused, so ask instead of guessing a name, a student number "
+        "or any other personal detail. A missing required field is a question, not a default. This "
+        "only prepares — the runtime shows the exact submission and nothing is submitted until the "
+        "user says 确认提交 themselves. Leave case_id null unless an open case id is in "
+        "recent_entities. For any other university errand (dropping a course, withdrawing an "
+        "application, cancelling anything, any other form) answer that this version cannot do it: "
+        "there is no operation for it.",
+        {
+            "fields": {
+                "type": "object",
+                "maxProperties": MAX_CERTIFICATE_FIELDS,
+                "additionalProperties": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_CERTIFICATE_VALUE_CHARS,
+                },
+            },
+            "case_id": {"type": ["string", "null"], "format": "uuid"},
+        },
+        ("fields", "case_id"),
     ),
 )
 

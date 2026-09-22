@@ -128,8 +128,17 @@ class EHallCertificateService:
         *,
         case_id: CaseId | str,
         field_values: dict[str, str],
+        inspection: EHallInspection | None = None,
     ) -> EHallCertificatePreparation:
         """Prepare one exact certificate submission for one open case.
+
+        `inspection` lets a caller that has *just* read the form reuse that read instead of opening
+        a second one. The conversation handler inspects once, validates the user's own values
+        against that snapshot (so a missing parameter is a question and no case is opened at all),
+        and passes the same read in here. When it is absent — the CLI, and every other caller — the
+        form is read live inside this call, exactly as it has always been. Either way the payload's
+        page contract is the one that was read, and the executor re-verifies the live page against
+        that fingerprint before a single value is typed.
 
         Raises:
             EHallDisabled: the host has not enabled the pipeline.
@@ -142,8 +151,7 @@ class EHallCertificateService:
         """
         self._require_enabled()
         case = await self._require_open_case(case_id)
-        inspection = await self.inspect()
-        snapshot = inspection.snapshot
+        snapshot = (inspection if inspection is not None else await self.inspect()).snapshot
         values = build_field_values(snapshot, field_values)
         payload = EHallCertificatePayload(
             fields=values,

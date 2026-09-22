@@ -14,14 +14,42 @@ from assistant.adapters.ehall.nju_certificate import (
     RawField,
     RawForm,
 )
+from assistant.domain.action import ActionRequest, ActionType
 from assistant.domain.ehall import (
     CERTIFICATE_SERVICE_NAME,
     EHallFieldDefinition,
+    EHallFormSnapshot,
 )
+from assistant.domain.execution import ExecutionOutcome
 from assistant.ports.ehall_certificate import EHallSubmissionOutcome
 
 FIELD_KEY = "applicant-name"
 SECOND_FIELD_KEY = "certificate-type"
+CERTIFICATE_TYPE_OPTIONS = ("在读证明", "成绩证明")
+
+
+def certificate_snapshot(**overrides: object) -> EHallFormSnapshot:
+    """The certificate form as the pipeline describes it, for tests that need no page."""
+    values: dict[str, object] = {
+        "service_identity": "nju-ehall/证明书申请",
+        "fields": (
+            EHallFieldDefinition(
+                key=FIELD_KEY, label="申请人姓名", kind="text", required=True
+            ),
+            EHallFieldDefinition(
+                key=SECOND_FIELD_KEY,
+                label="证明书类型",
+                kind="select",
+                required=True,
+                options=CERTIFICATE_TYPE_OPTIONS,
+            ),
+        ),
+        "required_materials": ("身份证件", "学号"),
+        "submit_control": "certificate-submit",
+        "page_markers": ("证明书申请 服务说明",),
+    }
+    values.update(overrides)
+    return EHallFormSnapshot(**values)  # type: ignore[arg-type]
 
 
 def standard_form(**overrides: object) -> RawForm:
@@ -143,6 +171,29 @@ def gateway_for(
     )
 
 
+def gateway_over(page: FakeEHallPage, *, enabled: bool = True):
+    """A real `NjuCertificateGateway` that always sees the same scripted page.
+
+    Use this when one test performs several reads against one page — a conversation inspects, then
+    the executor re-inspects and submits — so `fills`, `readbacks` and `clicks` accumulate in a
+    single list and "filled once, clicked once" stays a one-line assertion.
+    """
+    from assistant.adapters.ehall.nju_certificate import NjuCertificateGateway
+
+    opened_session = FakeEHallSession()
+
+    async def _open(session_object: object) -> FakeEHallPage:
+        del session_object
+        return page
+
+    return NjuCertificateGateway(
+        lambda: opened_session,  # type: ignore[arg-type,return-value]
+        _open,  # type: ignore[arg-type]
+        enabled=enabled,
+        timeout_seconds=30,
+    )
+
+
 @dataclass
 class FakeCertificateGateway:
     """A scripted gateway for the service/executor tests: it never touches a page."""
@@ -179,12 +230,44 @@ class FakeCertificateGateway:
         return len(self.submissions)
 
 
+class ScriptedEHallExecutor:
+    """An `ActionExecutor` for `ehall.submit-certificate` whose outcome the test chooses.
+
+    It records every call, so "submitted exactly once" is an assertion rather than a hope, and no
+    browser, no gateway and no Playwright runtime is involved.
+    """
+
+    def __init__(self, outcome: ExecutionOutcome | Exception | None = None) -> None:
+        self.outcome: ExecutionOutcome | Exception = outcome or ExecutionOutcome.succeeded()
+        self.calls: list[ActionRequest] = []
+
+    @property
+    def action_type(self) -> ActionType:
+        """The one action type this executor handles."""
+        return ActionType("ehall.submit-certificate")
+
+    def supports(self, action: ActionRequest) -> bool:
+        """A scripted executor can always perform its own action type."""
+        return action.action_type == self.action_type
+
+    async def execute(self, action: ActionRequest) -> ExecutionOutcome:
+        """Record the call, then return or raise the scripted outcome."""
+        self.calls.append(action)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
 __all__ = [
+    "CERTIFICATE_TYPE_OPTIONS",
     "FIELD_KEY",
     "SECOND_FIELD_KEY",
     "FakeCertificateGateway",
     "FakeEHallPage",
     "FakeEHallSession",
+    "ScriptedEHallExecutor",
+    "certificate_snapshot",
     "gateway_for",
+    "gateway_over",
     "standard_form",
 ]

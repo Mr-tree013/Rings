@@ -35,6 +35,7 @@ from assistant.domain.conversation_plan import (
     ConversationOperationType,
     PlanApplyProposalArguments,
 )
+from assistant.domain.conversation_review import EHALL_CERTIFICATE_ACTION_TYPE
 from assistant.domain.errors import StaleConversationCard, UnknownConversationCard
 from assistant.ports.clock import Clock
 from assistant.ports.commitment_repository import CommitmentRepository
@@ -62,6 +63,7 @@ class ConfirmationCardKind(StrEnum):
     """The complete set of things a browser may be asked to confirm."""
 
     MAIL_SEND = "mail_send"
+    EHALL_CERTIFICATE = "ehall_certificate"
     PLAN_APPLY = "plan_apply"
     RECURRING_SCHEDULE = "recurring_schedule"
     FACT_CONFIRMATION = "fact_confirmation"
@@ -174,6 +176,12 @@ class ConversationCardService:
         return tuple(collected)
 
     async def _mail_cards(self, thread_id: UUID) -> list[ConfirmationCard]:
+        """One card per live reviewed external action, built from its own immutable payload.
+
+        The dispatch is closed over the reviewed capabilities: an action type with no card design
+        gets no card, because a card is a decision and a decision without a design would be a
+        generic approval (ADR-0045 §19).
+        """
         waiting = await self._reviews.waiting(thread_id)  # type: ignore[attr-defined]
         cards: list[ConfirmationCard] = []
         for review in waiting:
@@ -182,7 +190,10 @@ class ConversationCardService:
                 # The action behind the review is gone or unreadable. There is nothing honest to
                 # show, and a card that cannot show the exact bytes must not offer to send them.
                 continue
-            cards.append(_mail_card(review, payload))
+            if review.action_type == EHALL_CERTIFICATE_ACTION_TYPE:
+                cards.append(_ehall_certificate_card(review, payload))
+            else:
+                cards.append(_mail_card(review, payload))
         return cards
 
     async def _group_cards(self, thread_id: UUID) -> list[ConfirmationCard]:
@@ -317,6 +328,13 @@ class ConversationCardService:
             return await self._conversation.settle_external_card(
                 thread_id, review_id=_uuid(target), confirm=confirm
             )
+        if kind is ConfirmationCardKind.EHALL_CERTIFICATE:
+            # The same deterministic settlement the terminal phrase reaches; only the card kind
+            # differs, and the recorded phrase is the one a terminal user would have typed
+            # (ADR-0045 §18-§19).
+            return await self._conversation.settle_external_card(
+                thread_id, review_id=_uuid(target), confirm=confirm
+            )
         if kind is ConfirmationCardKind.FACT_CONFIRMATION:
             return await self._conversation.settle_fact_card(
                 thread_id, candidate_id=target, confirm=confirm
@@ -367,7 +385,7 @@ def _mail_card(review: object, payload: dict[str, object]) -> ConfirmationCard:
         kind=ConfirmationCardKind.MAIL_SEND,
         title="邮件发送预览",
         summary=f"发给 {to_line}。下面就是实际会发出的内容。",
-        expected_revision=_mail_revision(
+        expected_revision=_review_revision(
             str(review.action_fingerprint),  # type: ignore[attr-defined]
             str(review.status),  # type: ignore[attr-defined]
             review.updated_at,  # type: ignore[attr-defined]
@@ -420,8 +438,58 @@ def _recurring_card(turn_id: UUID, operations: list[ConversationOperation]) -> C
     )
 
 
-def _mail_revision(fingerprint: str, status: str, updated_at: datetime) -> str:
+def _review_revision(fingerprint: str, status: str, updated_at: datetime) -> str:
+    """The revision one reviewed external action currently has: fingerprint, state and update.
+
+    Shared by both capabilities on purpose — it is derived from the review row itself, so a card
+    for either kind goes stale the moment that row moves.
+    """
     return f"{fingerprint}:{status}:{updated_at.isoformat()}"
+
+
+def _ehall_certificate_card(review: object, payload: dict[str, object]) -> ConfirmationCard:
+    """The exact certificate application, rendered from the immutable action payload.
+
+    Every human-relevant submitted field is shown, with the page's own label. Nothing that is not
+    submitted appears: the payload has no session, no cookie, no selector and no credential in it,
+    and the consequence text is the fixed local one (ADR-0045 §12-§13).
+    """
+    service = str(payload.get("service_identity") or "")
+    raw_fields = payload.get("fields")
+    items: list[dict[str, str]] = []
+    for item in raw_fields if isinstance(raw_fields, list) else []:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "label": str(item.get("label") or item.get("key") or ""),
+                "value": str(item.get("value") or ""),
+            }
+        )
+    raw_materials = payload.get("required_materials")
+    materials = [str(item) for item in raw_materials] if isinstance(raw_materials, list) else []
+    fields = [CardField(label="服务", value=service)]
+    if materials:
+        fields.append(CardField(label="需要准备的材料", value="、".join(materials)))
+    consequence = str(payload.get("consequence") or "")
+    return ConfirmationCard(
+        id=card_id(ConfirmationCardKind.EHALL_CERTIFICATE, review.id),  # type: ignore[attr-defined]
+        kind=ConfirmationCardKind.EHALL_CERTIFICATE,
+        title="证明申请提交预览",
+        summary=f"{service}：下面就是实际会提交的内容。",
+        expected_revision=_review_revision(
+            str(review.action_fingerprint),  # type: ignore[attr-defined]
+            str(review.status),  # type: ignore[attr-defined]
+            review.updated_at,  # type: ignore[attr-defined]
+        ),
+        created_at=review.created_at.isoformat(),  # type: ignore[attr-defined]
+        confirm_label="确认提交",
+        cancel_label="取消",
+        severity="high",
+        fields=tuple(fields[:FIELD_LIMIT]),
+        items=(*items[: FIELD_LIMIT - 1], {"consequence": consequence}),
+        hint="想改？直接告诉 Tree 要改什么，我会重新准备一份给你确认。",
+    )
 
 
 def _operation_revision(operation: ConversationOperation) -> str:

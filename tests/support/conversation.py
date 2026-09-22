@@ -21,14 +21,17 @@ from pathlib import Path
 from typing import Any
 
 from assistant import bootstrap
+from assistant.adapters.ehall.executor import EHallCertificateExecutor
 from assistant.adapters.model.fake import FakeModelAdapter
 from assistant.application.calendar_service import CalendarService
+from assistant.application.case_service import CaseService
 from assistant.application.contacts import ContactService
 from assistant.application.conversation_external_review import (
     ConversationExternalReviewService,
 )
 from assistant.application.conversation_service import ConversationService
 from assistant.application.conversational_facts import ConversationalFactService
+from assistant.application.ehall_certificate import EHallCertificateService
 from assistant.application.learning_service import LearningService
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_send_status import MailSendStatusService
@@ -43,6 +46,7 @@ from assistant.domain.config import AssistantConfig
 from assistant.domain.execution import ExecutionOutcome
 from assistant.domain.mail import MailMessage
 from assistant.store.actions import SqliteActionRepository
+from assistant.store.cases import SqliteCaseRepository
 from assistant.store.commitment import SqliteCommitmentRepository
 from assistant.store.contacts import SqliteContactRepository
 from assistant.store.conversation_reviews import SqliteConversationReviewRepository
@@ -56,6 +60,10 @@ from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
 from assistant.store.planning import SqlitePlanningRepository
 from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
+from tests.support.ehall import (
+    FakeEHallPage,
+    gateway_over,
+)
 from tests.support.fakes import FakeClock
 from tests.support.mail_fakes import FakeMailSource
 
@@ -291,6 +299,11 @@ class ConversationHarness:
     send_status: MailSendStatusService
     review_service: ConversationExternalReviewService
     executor: ScriptedMailExecutor
+    ehall_page: FakeEHallPage | None
+    ehall_gateway: object | None
+    ehall_service: EHallCertificateService | None
+    ehall_executor: EHallCertificateExecutor | None
+    cases: CaseService
     mail_source: FakeMailSource
     mail_sync: MailSyncService | None
 
@@ -381,8 +394,14 @@ async def build_harness(
     config_body: str = CONFIG,
     start: datetime = NOW,
     executor: ScriptedMailExecutor | None = None,
+    ehall_page: FakeEHallPage | None = None,
 ) -> ConversationHarness:
-    """Build the real conversation runtime over a fresh migrated database."""
+    """Build the real conversation runtime over a fresh migrated database.
+
+    `ehall_page` is the only optional capability here, and it is the *real* certificate pipeline
+    over a fake page: no browser is opened, the policy under test is the shipped one, and the fake
+    page records every fill and every click so "submitted exactly once" is an assertion.
+    """
     clock = FakeClock(start=start)
     database = Database.at(tmp_path / "data" / "assistant.db")
     apply_migrations(database, clock=clock)
@@ -390,8 +409,28 @@ async def build_harness(
     model = FakeModelAdapter()
     scripted = executor or ScriptedMailExecutor()
     executors = {ActionType("mail.send"): scripted}
+    cases = CaseService(
+        SqliteCaseRepository(database), SqliteActionRepository(database), clock
+    )
+    ehall_gateway = None if ehall_page is None else gateway_over(ehall_page)
+    ehall_service = (
+        None
+        if ehall_gateway is None
+        else EHallCertificateService(
+            ehall_gateway,
+            SqliteCaseRepository(database),
+            SqliteActionRepository(database),
+            clock,
+            enabled=True,
+        )
+    )
+    ehall_executor = (
+        None if ehall_gateway is None else EHallCertificateExecutor(ehall_gateway)
+    )
+    if ehall_executor is not None:
+        executors[ehall_executor.action_type] = ehall_executor
     service = bootstrap.conversation_service(
-        database, clock, config, model=model, executors=executors
+        database, clock, config, model=model, executors=executors, ehall=ehall_service
     )
     mail_source = FakeMailSource()
     mail_sync = (
@@ -435,6 +474,11 @@ async def build_harness(
             database, clock, config, executors=executors
         ),
         executor=scripted,
+        ehall_page=ehall_page,
+        ehall_gateway=ehall_gateway,
+        ehall_service=ehall_service,
+        ehall_executor=ehall_executor,
+        cases=cases,
         mail_source=mail_source,
         mail_sync=mail_sync,
     )
