@@ -63,7 +63,7 @@ from assistant.domain.errors import (
     StaleMailDraftUpdate,
     TaskNotFound,
 )
-from assistant.domain.mobile import MobileWebSession
+from assistant.domain.mobile import SESSION_TTL_SECONDS, MobileWebSession
 from assistant.domain.task import TaskPriority
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -639,6 +639,11 @@ def _set_cookie(response: Response, name: str, value: str) -> None:
     `HttpOnly` for the session and `SameSite=Strict` for both, always. `Secure` is *not* set: V1 is
     same-LAN HTTP, and claiming transport protection the server does not have would be worse than
     the honest limitation.
+
+    `Max-Age` matches the server-side session lifetime on purpose. Without it the browser treats
+    both cookies as *session* cookies and drops them when it closes, so a user who paired a browser
+    yesterday is asked to pair again today even though the durable session is still valid — the
+    server and the cookie would disagree about how long "paired" lasts.
     """
     response.set_cookie(
         name,
@@ -646,6 +651,7 @@ def _set_cookie(response: Response, name: str, value: str) -> None:
         httponly=name == SESSION_COOKIE,
         samesite="strict",
         path="/",
+        max_age=SESSION_TTL_SECONDS,
     )
 
 

@@ -16,6 +16,7 @@ from assistant.adapters.web.app import (
     CSRF_COOKIE,
     SESSION_COOKIE,
 )
+from assistant.domain.mobile import SESSION_TTL_SECONDS
 from assistant.store.db import Database
 from assistant.store.migrations import apply_migrations
 from tests.support.fakes import FakeClock
@@ -68,6 +69,9 @@ def test_pairing_sets_a_session_and_a_csrf_cookie(stack: MobileStack) -> None:
     assert "HttpOnly" not in csrf_cookie
     for cookie in (session_cookie, csrf_cookie):
         assert "samesite=strict" in cookie.lower()
+        # A browser-session cookie would be dropped when the browser closes, so the user would be
+        # asked to pair again even though the server-side session is still valid for 30 days.
+        assert f"max-age={SESSION_TTL_SECONDS}" in cookie.lower()
     assert issued.issued[:3] == [PAIRING_TOKEN, SESSION_TOKEN, CSRF_TOKEN]
 
 
