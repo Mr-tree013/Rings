@@ -400,27 +400,55 @@ def test_a_fragment_link_pairs_the_browser_without_typing_a_code(tmp_path: Path)
             context = browser.new_context(viewport={"width": 420, "height": 780})
             page = context.new_page()
 
-            page.goto(f"{base}/chat#pair={issued.token}")
-            page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
-            page.wait_for_function(
-                "() => document.querySelectorAll('#messages .message').length >= 0",
-                timeout=UI_TIMEOUT_MS,
-            )
-
+            page.goto(f"{base}/chat#pair={issued.token}", wait_until="load")
+            # The page redeems the fragment token through /api/pair. Wait for the *server-side*
+            # effect (exactly one live session) rather than for the page's own reload, so a
+            # client-side navigation cannot race the assertion.
+            assert _wait_for_live_sessions(stack, expected=1)
             assert "#pair=" not in page.url  # the fragment is gone before anything else happens
-            # Not the "this browser is not paired" notice.
-            assert page.query_selector("#pairing[hidden]") is not None
+
+            page.reload(wait_until="load")
+            page.wait_for_selector("#pairing[hidden]", timeout=UI_TIMEOUT_MS)
 
             # A second visit is already paired: same session, no second row.
-            page.goto(f"{base}/chat#pair={issued.token}")
-            page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
-            assert page.query_selector("#pairing[hidden]") is not None
+            page.goto(f"{base}/chat#pair={issued.token}", wait_until="load")
+            assert _wait_for_live_sessions(stack, expected=1)
+            page.reload(wait_until="load")
+            page.wait_for_selector("#pairing[hidden]", timeout=UI_TIMEOUT_MS)
 
             browser.close()
-    # Outside the Playwright block: its sync API installs its own event loop in this thread, so
-    # `asyncio.run` may only be called before or after it, never inside.
-    sessions = asyncio.run(stack.mobile.auth.list_sessions(include_inactive=False))
-    assert len(sessions) == 1
+    assert _live_session_count(stack) == 1
+
+
+def _live_session_count(stack: ChatStack) -> int:
+    """How many unrevoked sessions exist, straight from the database.
+
+    Read through SQLite rather than `MobileAuthService.list_sessions` on purpose: Playwright's sync
+    API installs its own event loop in this thread, so `asyncio.run` may not be called while the
+    browser is open (it raises and, worse, poisons the next test in the file).
+    """
+    import sqlite3
+
+    connection = sqlite3.connect(str(stack.database.path))
+    try:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM mobile_sessions WHERE revoked_at IS NULL"
+        ).fetchone()
+        return int(row[0])
+    finally:
+        connection.close()
+
+
+def _wait_for_live_sessions(
+    stack: ChatStack, *, expected: int, timeout: float = UI_TIMEOUT_MS / 1000
+) -> bool:
+    """Wait for the server-side effect of a pairing, bounded by the browser timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _live_session_count(stack) == expected:
+            return True
+        time.sleep(0.1)
+    return _live_session_count(stack) == expected
 
 
 async def _issue_session(stack: ChatStack) -> dict[str, str]:
