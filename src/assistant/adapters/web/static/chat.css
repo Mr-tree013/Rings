@@ -443,6 +443,21 @@ button.block {
   width: 100%;
 }
 
+/* The settings entry is an ordinary link, not a button: it navigates, it does not act. */
+.link-button {
+  display: block;
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  text-align: center;
+  text-decoration: none;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  font-size: 0.9rem;
+}
+
 button:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);

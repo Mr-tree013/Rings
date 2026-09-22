@@ -17,7 +17,8 @@ from uuid import UUID
 import httpx
 
 from assistant.adapters.backup.archive import ZipBackupArchive
-from assistant.adapters.config.toml_config import TomlConfigLoader
+from assistant.adapters.config.mail_overlay import OverlayMailSettingsStore, overlay_path
+from assistant.adapters.config.toml_config import TomlConfigLoader, default_config_path
 from assistant.adapters.content.registry import SuffixExtractorRegistry
 from assistant.adapters.ehall.executor import EHallCertificateExecutor
 from assistant.adapters.ehall.nju_certificate import NjuCertificateGateway
@@ -27,7 +28,9 @@ from assistant.adapters.filesystem.scanner import FilesystemScanner
 from assistant.adapters.filesystem.vault_manifest import VaultManifestFile
 from assistant.adapters.interval_waiter import AsyncioIntervalWaiter
 from assistant.adapters.knowledge.index_location import KnowledgeIndexLocator
+from assistant.adapters.mail.connection_test import MailConnectionProbes
 from assistant.adapters.mail.credentials import (
+    EnvironmentMailCredentials,
     available_password,
     available_smtp_password,
     require_password,
@@ -92,6 +95,7 @@ from assistant.application.interpreter_context import InterpreterContextBuilder
 from assistant.application.knowledge_indexer import KnowledgeIndexer
 from assistant.application.knowledge_search import KnowledgeSearchService
 from assistant.application.learning_service import LearningService
+from assistant.application.mail_account_settings import MailAccountSettingsService
 from assistant.application.mail_context import MailContextBuilder
 from assistant.application.mail_drafts import MailDraftService
 from assistant.application.mail_event_handler import (
@@ -534,6 +538,7 @@ def mobile_web_dependencies(
     database: Database,
     *,
     chat: ConversationChatService | None = None,
+    config_path: Path | None = None,
 ) -> WebDependencies:
     """The application services the control plane may speak to, and nothing else.
 
@@ -553,6 +558,7 @@ def mobile_web_dependencies(
         clock=clock,
         chat=chat,
         attention=attention_service(database, clock, config),
+        settings=mail_account_settings_service(config, clock, config_path=config_path),
     )
 
 
@@ -563,6 +569,7 @@ def mobile_web_service(
     *,
     model: ModelPort | None = None,
     chat: ConversationChatService | None = None,
+    config_path: Path | None = None,
 ) -> MobileWebService:
     """The supervised mobile web service, when the control plane is enabled.
 
@@ -576,7 +583,7 @@ def mobile_web_service(
         with contextlib.suppress(ModelNotConfigured, ModelCredentialsMissing):
             surface = conversation_chat_service(database, clock, config, model=model)
     return MobileWebService(
-        mobile_web_dependencies(config, clock, database, chat=surface),
+        mobile_web_dependencies(config, clock, database, chat=surface, config_path=config_path),
         bind=mobile.bind_mode,
         port=mobile.port,
     )
@@ -633,6 +640,26 @@ def conversational_fact_service(
 ) -> ConversationalFactService:
     """Fact proposals a conversation may make, over the existing learning service (ADR-0038)."""
     return ConversationalFactService(learning_service(clock, database))
+
+
+def mail_account_settings_service(
+    config: AssistantConfig | None, clock: Clock, *, config_path: Path | None = None
+) -> MailAccountSettingsService:
+    """Mail account metadata, its safe views and its connectivity diagnostics (ADR-0043).
+
+    The accounts handed in are already the *effective* list — the loader merges the managed overlay
+    — so a write that replaces the overlay with them loses nothing. `credentials` is the
+    environment, which is the only secret source this project has, and it exposes existence and
+    reference names rather than values.
+    """
+    path = Path(config_path) if config_path is not None else default_config_path()
+    return MailAccountSettingsService(
+        store=OverlayMailSettingsStore(overlay_path(path)),
+        accounts=() if config is None else config.mail.accounts,
+        credentials=EnvironmentMailCredentials(),
+        clock=clock,
+        probe=MailConnectionProbes(),
+    )
 
 
 def attention_repository(database: Database) -> SqliteAttentionRepository:

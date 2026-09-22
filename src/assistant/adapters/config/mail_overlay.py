@@ -27,10 +27,12 @@ Everything here is blocking filesystem work, called from the application layer t
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
 from assistant.adapters.runtime.permissions import (
@@ -144,6 +146,26 @@ def merge_accounts(
     return tuple(by_id[account_id] for account_id in order)
 
 
+class OverlayMailSettingsStore:
+    """`MailSettingsStore` over the managed overlay file (ADR-0043 §17-18).
+
+    The application layer owns what may be stored; this owns *where*. It is the only writer, so
+    there is exactly one code path that can change the file, and it is the atomic one.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        """The file this store owns."""
+        return self._path
+
+    async def save_accounts(self, accounts: Sequence[MailAccountConfig]) -> None:
+        """Write the complete managed list atomically, in a worker thread."""
+        await asyncio.to_thread(write_overlay, self._path, tuple(accounts))
+
+
 def _render(accounts: tuple[MailAccountConfig, ...]) -> str:
     """Render `[[mail.accounts]]` tables. Strings go through JSON escaping, which TOML accepts."""
     lines: list[str] = []
@@ -184,6 +206,7 @@ def _boolean(value: bool) -> str:
 __all__ = [
     "MAIL_ACCOUNTS_FILENAME",
     "MANAGED_HEADER",
+    "OverlayMailSettingsStore",
     "merge_accounts",
     "overlay_path",
     "read_overlay",

@@ -170,6 +170,9 @@ def test_the_wheel_carries_the_migrations_and_the_static_assets(wheel: Path) -> 
         "chat.js",
         "index.html",
         "pair.html",
+        "settings.css",
+        "settings.html",
+        "settings.js",
         "styles.css",
     }
     assert "assistant/cli.py" in names

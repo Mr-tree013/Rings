@@ -445,6 +445,14 @@ class InvalidAttentionItem(DomainError):
     """An `AttentionItem` was built with values that break its invariants (ADR-0042)."""
 
 
+class InvalidMailSettings(DomainError):
+    """A mail account setting, or a diagnostic about one, is malformed (ADR-0043)."""
+
+
+class MailAccountSettingsNotFound(DomainError):
+    """No configured mail account has that id."""
+
+
 class AttentionItemNotFound(DomainError):
     """No attention item has that identity."""
 

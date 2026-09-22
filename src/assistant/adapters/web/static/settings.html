@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>设置 · Rings</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/settings.css" />
+  </head>
+  <body>
+    <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>
+
+    <header class="page-head">
+      <div>
+        <h1>设置</h1>
+        <p class="muted small">邮箱、规划与系统状态。这里不会保存任何密码。</p>
+      </div>
+      <a class="back" href="/chat">回到对话</a>
+    </header>
+
+    <main class="page">
+      <section class="panel" aria-labelledby="mail-heading">
+        <h2 id="mail-heading">邮箱</h2>
+        <p class="muted small" id="credentials-note">
+          Rings 当前只保存凭据引用，不会在网页中保存密码。密码要通过主机上的环境变量提供。
+        </p>
+        <p id="mail-status" class="muted small" hidden></p>
+        <ul id="account-list" class="account-list"></ul>
+
+        <form id="account-form" class="account-form" hidden>
+          <h3 id="form-title">添加账号</h3>
+          <div class="grid">
+            <label>账号 id <input name="id" autocomplete="off" required /></label>
+            <label>收件服务器 <input name="host" autocomplete="off" required /></label>
+            <label>收件端口 <input name="port" inputmode="numeric" value="993" /></label>
+            <label>用户名 <input name="username" autocomplete="off" required /></label>
+            <label>收件箱 <input name="mailbox" autocomplete="off" value="INBOX" /></label>
+            <label>发件服务器 <input name="smtp_host" autocomplete="off" /></label>
+            <label>发件端口 <input name="smtp_port" inputmode="numeric" /></label>
+            <label>
+              发件加密
+              <select name="smtp_security">
+                <option value="">（未设置）</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="ssl">SSL</option>
+              </select>
+            </label>
+            <label>发件用户名 <input name="smtp_username" autocomplete="off" /></label>
+            <label>发件地址 <input name="from_address" autocomplete="off" /></label>
+            <label>已发送邮件箱 <input name="sent_mailbox" autocomplete="off" /></label>
+          </div>
+          <p class="muted small">
+            凭据不在表单里：请在主机上设置
+            <code id="secret-reference">GROWING_ASSISTANT_MAIL_&lt;ACCOUNT_ID&gt;_PASSWORD</code>。
+          </p>
+          <div class="row">
+            <button type="submit" class="primary">保存</button>
+            <button type="button" id="cancel-form">取消</button>
+          </div>
+        </form>
+
+        <div class="row">
+          <button type="button" id="add-account" class="primary">添加账号</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="planning-heading">
+        <h2 id="planning-heading">规划</h2>
+        <p class="muted small">
+          计划时区来自主机的配置文件，这里只读显示：Rings 不会在两个地方各存一份时区。
+        </p>
+        <dl class="facts" id="planning-facts"></dl>
+      </section>
+
+      <section class="panel" aria-labelledby="system-heading">
+        <h2 id="system-heading">系统状态</h2>
+        <dl class="facts" id="system-facts"></dl>
+      </section>
+    </main>
+
+    <script src="/settings.js"></script>
+  </body>
+</html>

@@ -19,6 +19,7 @@ feature that is switched off), and `UNAVAILABLE` (not part of this product at al
 outbound compose, eHall in a conversation).
 """
 
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -72,7 +73,13 @@ def build_capability_snapshot(
     *,
     operation_types: tuple[ConversationOperationType, ...] | None = None,
 ) -> CapabilitySnapshot:
-    """Read what this host can do from its configuration and the reviewed vocabulary."""
+    """Read what this host can do from its configuration and the reviewed vocabulary.
+
+    This snapshot travels in every model request, so it describes *capabilities and account
+    metadata* and nothing about how a host proves who it is. ADR-0043 §5 keeps that out of model
+    context entirely, and the per-account answer a user needs lives on `/settings`, where it is
+    asked of the environment directly rather than inferred from anything stored.
+    """
     operations = operation_types or tuple(ConversationOperationType)
     available = frozenset(operations)
     accounts = () if config is None else config.mail.accounts
@@ -164,7 +171,13 @@ def build_capability_snapshot(
                 offered=ConversationOperationType.MAIL_LIST in available,
                 configured=bool(enabled_accounts),
             ),
-            {"configured_accounts": len(accounts), "enabled_accounts": len(enabled_accounts)},
+            {
+                # Counted from configuration, never from how much mail happens to be stored: a
+                # rotated-away login must not look configured because last month's messages are
+                # still on disk (ADR-0043 §30).
+                "configured_accounts": len(accounts),
+                "enabled_accounts": len(enabled_accounts),
+            },
         ),
         CapabilityArea(
             "mail_reply_draft",
@@ -202,6 +215,25 @@ def build_capability_snapshot(
                     "scheduled mail",
                     "automatic send",
                     "address-book lookup",
+                ],
+            },
+        ),
+        CapabilityArea(
+            "mail_account_settings",
+            CapabilityState.AVAILABLE,
+            {
+                "operations": 0,
+                "surface": "/settings",
+                "browser_holds_account_metadata_only": True,
+                "provider_authentication": "host environment",
+                "writes": "managed overlay (mail-accounts.toml)",
+                "restart_required_after_change": True,
+                "connectivity_tests": ["test-imap", "test-smtp"],
+                "sends_test_message": False,
+                "unsupported": [
+                    "browser-held account logins",
+                    "guessing a provider host",
+                    "sending a test message",
                 ],
             },
         ),

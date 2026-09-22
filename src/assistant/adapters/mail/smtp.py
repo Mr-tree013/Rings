@@ -22,6 +22,7 @@ human approval has been consumed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import smtplib
 import ssl
@@ -34,11 +35,17 @@ from email.utils import format_datetime
 from enum import StrEnum
 from typing import Protocol
 
+from assistant.adapters.mail.credentials import available_smtp_password
 from assistant.domain.action import ActionRequest, ActionType
 from assistant.domain.config import MailAccountConfig
 from assistant.domain.errors import InvalidMailSend
 from assistant.domain.execution import ExecutionOutcome
 from assistant.domain.mail_send import MailSendPayload, validate_rfc_message_id
+from assistant.domain.mail_settings import (
+    MailProbeEndpoint,
+    MailProbeOutcome,
+    MailProbeReport,
+)
 
 LOGGER = logging.getLogger("assistant.mail")
 
@@ -82,6 +89,8 @@ class SmtpClient(Protocol):
     def starttls(self, *, context: ssl.SSLContext) -> tuple[int, bytes]: ...
 
     def login(self, user: str, password: str) -> tuple[int, bytes]: ...
+
+    def noop(self) -> tuple[int, bytes]: ...
 
     def mail(self, sender: str) -> tuple[int, bytes]: ...
 
@@ -232,6 +241,119 @@ class SmtpMailExecutor:
             client.quit()
         except Exception:
             LOGGER.debug("smtp quit failed after the outcome was decided")
+
+
+class SmtpConnectionProbe:
+    """A connectivity test that cannot send anything (ADR-0043 §26).
+
+    It lives in this module rather than in a new one on purpose: `smtplib` is allowed in exactly one
+    file, and widening that pin to a second module would trade a real boundary for tidiness.
+
+    The conversation stops at `NOOP`. There is no `mail()`, no `rcpt()` and no `data()` below, so a
+    "test send" cannot exist even by accident — and because there is no message, there is nothing
+    for an `ActionRequest`, an `Approval` or an `ExecutionRun` to describe. A test that needed an
+    approval would be a send, not a test.
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: int = DEFAULT_SMTP_TIMEOUT_SECONDS,
+        client_factory: Callable[[_SmtpTarget], SmtpClient] | None = None,
+    ) -> None:
+        self._timeout = timeout_seconds
+        self._client_factory = client_factory
+
+    async def probe(self, account: MailAccountConfig) -> MailProbeReport:
+        """Connect, TLS, EHLO, maybe LOGIN, NOOP, QUIT — and never DATA.
+
+        The credential is looked up here, in the adapter package that already owns that lookup,
+        rather than being handed in. The core layers therefore never hold a secret value on its way
+        to a test, which is one fewer place it could be copied into.
+        """
+        if not account.smtp_configured:
+            return _report(MailProbeOutcome.NOT_CONFIGURED, "no_outbound_configuration")
+        credential = available_smtp_password(account.id)
+        target = _SmtpTarget(
+            host=account.smtp_host or "",
+            port=account.smtp_port or 0,
+            security=account.smtp_security or "starttls",
+            username=account.smtp_username or "",
+            password=credential or "",
+        )
+        return await asyncio.to_thread(self._probe_sync, target, credential)
+
+    def _probe_sync(self, target: _SmtpTarget, password: str | None) -> MailProbeReport:
+        client: SmtpClient | None = None
+        try:
+            client = self._connect(target)
+            client.ehlo()
+            if target.security == "starttls":
+                client.starttls(context=ssl.create_default_context())
+                client.ehlo()
+        except smtplib.SMTPAuthenticationError as exc:  # pragma: no cover - TLS never authenticates
+            return _report(MailProbeOutcome.AUTHENTICATION_FAILED, f"smtp_code={exc.smtp_code}")
+        except ssl.SSLError as exc:
+            return _report(MailProbeOutcome.TLS_FAILED, f"tls:{type(exc).__name__}")
+        except smtplib.SMTPException as exc:
+            return _report(MailProbeOutcome.SERVER_ERROR, f"protocol:{type(exc).__name__}")
+        except OSError as exc:
+            return _report(MailProbeOutcome.CONNECT_FAILED, f"socket:{type(exc).__name__}")
+        try:
+            if password is None:
+                # Reachable and TLS-clean, and honestly not authenticated: there is nothing to try.
+                return _report(MailProbeOutcome.REACHABLE, "reachable_without_credential")
+            try:
+                client.login(target.username, password)
+            except smtplib.SMTPAuthenticationError as exc:
+                return _report(
+                    MailProbeOutcome.AUTHENTICATION_FAILED, f"smtp_code={exc.smtp_code}"
+                )
+            client.noop()
+            return _report(MailProbeOutcome.OK, "ehlo+tls+auth+noop", authenticated=True)
+        except ssl.SSLError as exc:
+            return _report(MailProbeOutcome.TLS_FAILED, f"tls:{type(exc).__name__}")
+        except smtplib.SMTPException as exc:
+            return _report(MailProbeOutcome.SERVER_ERROR, f"protocol:{type(exc).__name__}")
+        except OSError as exc:
+            return _report(MailProbeOutcome.CONNECT_FAILED, f"socket:{type(exc).__name__}")
+        finally:
+            self._quit(client)
+
+    def _connect(self, target: _SmtpTarget) -> SmtpClient:
+        if self._client_factory is not None:
+            return self._client_factory(target)
+        if target.security == "ssl":
+            return smtplib.SMTP_SSL(
+                target.host,
+                target.port,
+                timeout=self._timeout,
+                context=ssl.create_default_context(),
+            )
+        return smtplib.SMTP(target.host, target.port, timeout=self._timeout)
+
+    def _quit(self, client: SmtpClient | None) -> None:
+        if client is None:
+            return
+        with contextlib.suppress(Exception):
+            client.quit()
+
+
+def _report(
+    outcome: MailProbeOutcome, detail: str, *, authenticated: bool = False
+) -> MailProbeReport:
+    """One SMTP diagnostic. The detail is a short technical reason, never prose.
+
+    Product language is written by the application layer: an adapter that started rendering
+    sentences would be a second place where the product's voice lives, and this module is allowed to
+    speak about mail servers rather than to people.
+    """
+    return MailProbeReport(
+        endpoint=MailProbeEndpoint.SMTP,
+        outcome=outcome,
+        detail=detail,
+        authenticated=authenticated,
+    )
 
 
 def _failed(stage: _Stage, summary: str) -> ExecutionOutcome:

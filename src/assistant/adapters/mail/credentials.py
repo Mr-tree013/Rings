@@ -81,8 +81,35 @@ def require_smtp_password(account_id: MailAccountId) -> str:
     return value
 
 
+class EnvironmentMailCredentials:
+    """The `MailCredentialSource` this host actually has: the process environment (ADR-0043 §15).
+
+    Every method here reports a *fact about* a credential — whether one exists, and which variable
+    names it — which is exactly what a settings page is allowed to know. Nothing hands out a value:
+    the connection probes call `available_password` / `available_smtp_password` directly, inside
+    this package, so a secret never travels through a core-layer signature on its way to a test.
+    """
+
+    def inbound_reference(self, account_id: str) -> str:
+        """The environment variable that would hold this account's inbound secret."""
+        return password_env_var(account_id)
+
+    def outbound_reference(self, account_id: str) -> str:
+        """The environment variable that would hold this account's outbound secret."""
+        return smtp_password_env_var(account_id)
+
+    def has_inbound(self, account_id: str) -> bool:
+        """Whether an inbound credential is available right now."""
+        return available_password(account_id) is not None
+
+    def has_outbound(self, account_id: str) -> bool:
+        """Whether an outbound credential is available right now."""
+        return available_smtp_password(account_id) is not None
+
+
 __all__ = [
     "PREFIX",
+    "EnvironmentMailCredentials",
     "available_password",
     "available_smtp_password",
     "password_env_var",

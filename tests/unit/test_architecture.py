@@ -592,6 +592,11 @@ def test_credentials_and_passwords_stay_out_of_the_core_layers() -> None:
 
     Checked on identifiers rather than raw text, so documentation may still explain *why* a
     password never lives in configuration.
+
+    The plural `credentials` is not in the ban, and it is not a loophole: ADR-0043 gives the
+    settings surface a `MailCredentialStatus` — `{configured, source_kind, reference}` — which is a
+    *fact about* a credential rather than a credential. The singular name stays reserved for the
+    thing that must never appear here.
     """
     forbidden_names = {"password", "passwd", "secret", "api_key", "credential"}
     offenders: list[str] = []
@@ -2951,6 +2956,109 @@ def test_the_watcher_cannot_reach_an_attention_effect() -> None:
         names = _identifiers(path)
         assert not {name for name in names if name.startswith("Attention")}, path
         assert "attention_repository" not in names
+
+
+MAIL_SETTINGS_MODULE = "application/mail_account_settings.py"
+"""Typed mail metadata and safe views. ADR-0043 §1-8, §13-16."""
+
+SMTP_PROBE_CLASS = "SmtpConnectionProbe"
+"""The one connectivity probe allowed to speak SMTP, in the one module allowed to import smtplib."""
+
+
+def test_the_mail_settings_service_cannot_reach_a_secret_or_an_effect() -> None:
+    """§75: metadata and diagnostics, and nothing that could send, approve or disclose."""
+    path = SOURCE_ROOT / MAIL_SETTINGS_MODULE
+    source = path.read_text(encoding="utf-8")
+    imported = {
+        node.module or ""
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom)
+    }
+
+    for forbidden in (
+        "assistant.adapters.mail.smtp",
+        "assistant.application.action_execution",
+        "assistant.application.approval_service",
+        "assistant.application.mail_send_actions",
+        "smtplib",
+        "imaplib",
+        "httpx",
+        "sqlite3",
+    ):
+        assert forbidden not in imported, f"{MAIL_SETTINGS_MODULE} imports {forbidden}"
+    # The service holds no field a secret could be assigned to.
+    assert "password" not in {
+        name for name in _identifiers(path) if name.isidentifier()
+    } - {"inbound_password", "outbound_password", "has_inbound", "has_outbound"}
+
+
+def test_the_connection_probes_cannot_send_anything() -> None:
+    """§26/§75: a connectivity test has no `DATA`, no `sendmail` and no executor.
+
+    The SMTP probe shares a module with the delivery executor, because `smtplib` is allowed in
+    exactly one file. The boundary therefore lives inside the class: its body is the thing under
+    test, copied out by its own indentation.
+    """
+    smtp_source = (SOURCE_ROOT / SMTP_MODULE).read_text(encoding="utf-8")
+    probe_body = _class_body(smtp_source, SMTP_PROBE_CLASS)
+
+    assert probe_body, "the SMTP probe was not found"
+    for forbidden in (".data(", ".mail(", ".rcpt(", "sendmail", "ActionExecutor", "approve("):
+        assert forbidden not in probe_body, f"the SMTP probe reaches {forbidden}"
+    # It stops at NOOP, which is what makes it a test rather than a send.
+    assert ".noop()" in probe_body
+
+    imap_path = SOURCE_ROOT / "adapters" / "mail" / "connection_test.py"
+    imap_source = imap_path.read_text(encoding="utf-8")
+    # The IMAP side is checked by the calls it actually makes, not by the words in its prose: the
+    # module docstring says which commands it avoids, and a text search would read that as guilt.
+    called = {
+        node.func.attr
+        for node in ast.walk(ast.parse(imap_source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    } | {
+        node.func.id
+        for node in ast.walk(ast.parse(imap_source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert not called & {"store", "expunge", "append", "copy", "delete", "uid"}
+    # Read-only is the same call the sync service already makes.
+    assert "readonly=True" in imap_source
+
+
+def test_no_settings_route_can_return_a_secret_or_send_a_message() -> None:
+    """§24: the frozen settings surface, checked by name rather than by trust."""
+    source = (SOURCE_ROOT / "adapters" / "web" / "settings.py").read_text(encoding="utf-8")
+    routes = sorted(re.findall(r'@app\.(get|post|patch|put|delete)\("([^"]+)"', source))
+
+    assert routes == [
+        ("get", "/api/settings/mail/accounts"),
+        ("get", "/settings"),
+        ("get", "/settings.css"),
+        ("get", "/settings.js"),
+        ("patch", "/api/settings/mail/accounts/{account_id}"),
+        ("post", "/api/settings/mail/accounts"),
+        ("post", "/api/settings/mail/accounts/{account_id}/test-imap"),
+        ("post", "/api/settings/mail/accounts/{account_id}/test-smtp"),
+    ]
+    joined = " ".join(path for _, path in routes)
+    for forbidden in ("password", "secret", "send-test", "execute", "approve", "submit"):
+        assert forbidden not in joined
+
+
+def _class_body(source: str, class_name: str) -> str:
+    """The text of one class body, up to the next top-level definition."""
+    marker = f"class {class_name}"
+    start = source.find(marker)
+    if start == -1:
+        return ""
+    rest = source[start + len(marker) :]
+    end = len(rest)
+    for candidate in ("\nclass ", "\ndef ", "\n__all__"):
+        position = rest.find(candidate)
+        if position != -1:
+            end = min(end, position)
+    return rest[:end]
 
 
 def test_no_release_added_a_production_dependency() -> None:

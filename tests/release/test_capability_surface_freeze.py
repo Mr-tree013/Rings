@@ -67,6 +67,11 @@ def test_the_mobile_route_set_is_frozen(tmp_path: Path) -> None:
         ("GET", "/approve/{action_id}"),
         ("GET", "/app.js"),
         ("GET", "/styles.css"),
+        # Phase 11C (ADR-0043 §27): the settings shell is static like every other shell; its data
+        # routes are registered only when this host has a mail configuration to manage.
+        ("GET", "/settings"),
+        ("GET", "/settings.js"),
+        ("GET", "/settings.css"),
         ("POST", "/api/pair"),
         ("GET", "/api/me"),
         ("POST", "/api/logout"),

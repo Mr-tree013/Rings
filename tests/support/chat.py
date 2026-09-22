@@ -124,6 +124,11 @@ class ChatStack:
             attention=bootstrap.attention_service(
                 self.database, self.clock, self.harness.config
             ),
+            settings=bootstrap.mail_account_settings_service(
+                self.harness.config,
+                self.clock,
+                config_path=self.harness.tmp_path / "host" / "config.toml",
+            ),
         )
 
     def client(self, *, is_private: Callable[[str], bool] | None = None) -> TestClient:

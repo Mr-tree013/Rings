@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from assistant.adapters.web.chat import register_chat_routes
+from assistant.adapters.web.settings import register_settings_routes
 from assistant.application.action_service import ActionService, ApprovalState
 from assistant.application.approval_service import ApprovalService
 from assistant.application.case_service import CaseService
@@ -117,6 +118,14 @@ class WebDependencies:
     there is no route below that would let it (ADR-0042 §21).
     """
 
+    settings: Any = None
+    """`MailAccountSettingsService`: typed mail metadata, safe views and connectivity tests.
+
+    `None` means the settings page is served without its mail section: a host whose composition
+    root does not build the service has nothing to show, and a form that could not save would be a
+    worse promise than an honest absence.
+    """
+
 
 class _PrivateClientMiddleware(BaseHTTPMiddleware):
     """Refuse anything that is not loopback or a private address.
@@ -176,7 +185,30 @@ def build_app(
     _register_approval_link_routes(app, dependencies)
     if dependencies.chat is not None:
         _register_chat_routes(app, dependencies, assets)
+    _register_settings_routes(app, dependencies, assets)
     return app
+
+
+def _register_settings_routes(
+    app: FastAPI, dependencies: WebDependencies, assets: Path
+) -> None:
+    """Mount the settings surface behind the same session and CSRF pair as everything else."""
+
+    async def _session(request: Request) -> MobileWebSession | JSONResponse:
+        return await _require_session(dependencies, request)
+
+    async def _mutation(request: Request) -> MobileWebSession | JSONResponse:
+        return await _require_mutation(dependencies, request)
+
+    register_settings_routes(
+        app,
+        settings=(
+            None if dependencies.settings is None else lambda: dependencies.settings
+        ),
+        assets=assets,
+        require_session=_session,
+        require_mutation=_mutation,
+    )
 
 
 def _register_chat_routes(

@@ -62,6 +62,7 @@ def build_services(
     database: Database,
     *,
     model: ModelPort | None = None,
+    config_path: Path | None = None,
 ) -> list[AsyncService]:
     """Compose the services the daemon supervises today.
 
@@ -100,7 +101,11 @@ def build_services(
             chat = bootstrap.conversation_chat_service(
                 database, clock, config, model=model, broker=broker
             )
-        services.append(bootstrap.mobile_web_service(config, clock, database, chat=chat))
+        services.append(
+            bootstrap.mobile_web_service(
+                config, clock, database, chat=chat, config_path=config_path
+            )
+        )
         if chat is not None:
             # The durable queue needs an owner that survives restarts: recovery on start, and only
             # queued work resumed (ADR-0041 §10).
@@ -183,7 +188,7 @@ async def _serve_runtime(
         config.indexing.run_on_startup,
     )
     database = bootstrap.runtime_database(clock)
-    services = build_services(config, clock, database)
+    services = build_services(config, clock, database, config_path=config_path)
     LOGGER.info(
         "assistantd starting (pid=%d, services=%s)",
         os.getpid(),
