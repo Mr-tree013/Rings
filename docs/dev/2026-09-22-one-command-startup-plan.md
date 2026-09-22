@@ -395,14 +395,17 @@ async def test_minting_a_pairing_code_prunes_the_spent_ones(
     clock.advance(seconds=PAIRING_TTL_SECONDS + 1)
     third = await repository.add_pairing_token(_pairing_at(clock.now()))
 
-    stored = {token.id for token in await repository.list_pairing_tokens()}
-    assert stored == {third.id}
+    # The repository exposes lookup by id, not a lister: ask about exactly the three tokens.
+    assert await repository.get_pairing_token_by_id(first.id) is None
+    assert await repository.get_pairing_token_by_id(second.id) is None
+    assert await repository.get_pairing_token_by_id(third.id) is not None
     assert consumed.session.id is not None
 ```
 
 `tests/integration/test_mobile_auth.py` already has the fixtures and helper builders for pairing
-tokens and sessions; reuse them (`_pairing_at`, `_session_at` may be named differently in that file —
-use the builders already defined there, and `PAIRING_TTL_SECONDS` from `assistant.domain.mobile`).
+tokens and sessions; reuse whatever those builders are called there, and `PAIRING_TTL_SECONDS` from
+`assistant.domain.mobile`. `get_pairing_token_by_id` is the only by-id lookup the store has — there
+is deliberately no "list all pairing tokens" method.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -695,7 +698,10 @@ def test_stop_daemon_signals_the_holder_and_waits_for_the_lock(
         lambda pid, sig: signals.append((pid, sig)),
     )
 
-    outcome = stop_daemon(root, timeout_seconds=1.0, sleep=lambda _s: None)
+    ticks = iter([0.0, 0.0, 0.1, 0.2, 2.0])
+    outcome = stop_daemon(
+        root, timeout_seconds=1.0, sleep=lambda _s: None, monotonic=lambda: next(ticks)
+    )
 
     assert signals == [(4242, 15)]
     assert outcome == StopOutcome(stopped=False, pid=4242)  # it never became free in the window
@@ -719,7 +725,9 @@ def test_the_command_is_the_console_script_when_this_environment_has_one() -> No
     argv = assistantd_argv()
 
     assert argv
-    assert "assistantd" in argv[0]
+    # Either the console script next to this interpreter, or the module fallback — both start the
+    # real daemon, and neither is a user-supplied string.
+    assert argv[0].endswith("assistantd") or "assistant.daemon" in " ".join(argv)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1259,7 +1267,13 @@ def render_up(report: UpReport) -> str:
 def run_up(
     *, deps: UpDeps | None = None, foreground: bool = False, open_browser: bool = True
 ) -> UpReport:
-    """Start or reuse the daemon, pair this browser and open `/chat`."""
+    """Start or reuse the daemon, pair this browser and open `/chat`.
+
+    Raises:
+        TimeoutError: the daemon never became ready; the message names its log file. The CLI turns
+            that into a bounded failure report and a non-zero exit (spec D4) — it never claims a
+            start that did not happen.
+    """
     return asyncio.run(_run_up(deps=deps, foreground=foreground, open_browser=open_browser))
 
 
@@ -1326,26 +1340,109 @@ def run_down(*, deps: UpDeps | None = None) -> int:
 
 def default_deps() -> UpDeps:
     """The real world: bootstrap services, the process adapter, the browser and the clock."""
-    ...
+    # Imported here, not at module scope: `cli_chat` imports this module to dispatch the verbs, so
+    # a top-level import of `web_chat_url` would be a cycle.
+    from assistant.adapters.mail.credentials import available_password
+    from assistant.cli_chat import web_chat_url
+
+    def runtime_root() -> Path:
+        return AppPaths.resolve().runtime
+
+    async def load_config() -> Any:
+        return await bootstrap.config_loader().load()
+
+    async def mint_pairing_token() -> Any:
+        clock = bootstrap.system_clock()
+        database = bootstrap.runtime_database(clock)
+        config = await load_config()
+        return await bootstrap.mobile_auth_service(
+            config, clock, database
+        ).create_pairing_token()
+
+    async def mail_summary(config: Any) -> MailSummary:
+        if config is None or not config.mail.accounts:
+            return MailSummary(accounts=0, ready=0, stored=0)
+        clock = bootstrap.system_clock()
+        database = bootstrap.runtime_database(clock)
+        stored = await bootstrap.mail_repository(database).count_messages()
+        ready = sum(
+            1
+            for account in config.mail.accounts
+            if account.enabled and available_password(account.id) is not None
+        )
+        return MailSummary(accounts=len(config.mail.accounts), ready=ready, stored=stored)
+
+    def ehall_summary(config: Any) -> EHallSummary:
+        state = session_state()
+        return EHallSummary(
+            enabled=config is not None and config.ehall.enabled,
+            profile_present=state.profile_exists,
+        )
+
+    return UpDeps(
+        load_config=load_config,
+        daemon_state=daemon_state,
+        spawn_daemon=lambda root: spawn_daemon(root),
+        probe_http=lambda url: probe_http(url),
+        mint_pairing_token=mint_pairing_token,
+        open_browser=webbrowser.open,
+        load_secrets=load_secret_environment_into_process,
+        runtime_root=runtime_root,
+        web_url=web_chat_url,
+        mail_summary=mail_summary,
+        ehall_summary=ehall_summary,
+        sleep=time.sleep,
+        monotonic=time.monotonic,
+    )
 
 
 def main(arguments: Sequence[str]) -> int:
     """Dispatch `rings up|down|autostart …`, or explain the usage."""
-    ...
+    verb, rest = arguments[0], list(arguments[1:])
+    if verb == "up":
+        try:
+            report = run_up(
+                foreground="--foreground" in rest, open_browser="--no-open" not in rest
+            )
+        except TimeoutError as exc:
+            # Spec D4: a start that did not finish is reported, never claimed.
+            console.print(f"Rings 没有在限定时间内就绪：{exc}")
+            console.print("日志的最后几行：")
+            console.print(read_log_tail(AppPaths.resolve().runtime))
+            return 1
+        console.print(render_up(report))
+        return 0
+    if verb == "down":
+        return run_down()
+    if verb == "autostart":
+        action = ""
+        repo: Path | None = None
+        pending = list(rest)
+        while pending:
+            item = pending.pop(0)
+            if item == "--repo" and pending:
+                repo = Path(pending.pop(0))
+            elif not action:
+                action = item
+        return run_autostart(action, repo=repo)
+    console.print(
+        "用法：rings up [--foreground] [--no-open] | rings down | "
+        "rings autostart install|status|remove [--repo PATH]"
+    )
+    return 2
+
+
+def read_log_tail(runtime_root: Path, *, lines: int = 8) -> str:
+    """The last few lines of the daemon log, so a bounded failure says something useful."""
+    path = daemon_log_path(Path(runtime_root))
+    if not path.is_file():
+        return "（还没有日志文件）"
+    content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(content[-lines:]) or "（日志是空的）"
 ```
 
-Fill `default_deps()` and `main()` with the real wiring: `default_deps()` builds `bootstrap`-based
-callables (`bootstrap.config_loader().load`, `bootstrap.mobile_auth_service(...).create_pairing_token`,
-`bootstrap.runtime_database(...).count_messages()` for the mail summary, `session_state()` for eHall,
-`webbrowser.open` for the browser, `AppPaths.resolve().runtime` for the root, and `web_chat_url` from
-`cli_chat` — import it, do not copy it). `main()` parses exactly these forms and returns
-`0`/`1`/`2`:
-
-```text
-up [--foreground] [--no-open]
-down
-autostart install|status|remove
-```
+`main()` returns `0` on success, `1` on a bounded failure (nothing ready, nothing to read) and `2`
+on a usage error.
 
 - [ ] **Step 4: Wire the dispatch and the entry points**
 
@@ -1527,7 +1624,9 @@ def test_the_command_is_one_wsl_line_with_windows_line_endings(tmp_path: Path) -
     rendered = render_autostart_cmd(_spec(tmp_path))
 
     assert rendered.endswith("\r\n")
-    assert "\r\n" in rendered and "\n\n" not in rendered.replace("\r\n", "\n\n")
+    # Windows batch files want CRLF, and a bare LF must not survive anywhere in the file.
+    assert "\r\n" in rendered
+    assert "\n" not in rendered.replace("\r\n", "")
     assert "wsl.exe -d Debian -u mrtree -- bash -lc" in rendered
     assert "cd '/home/mrtree/projects/growing-assistant'" in rendered
     assert "'/home/mrtree/.local/bin/uv' run assistantd" in rendered
