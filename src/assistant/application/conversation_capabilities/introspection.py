@@ -155,6 +155,19 @@ def build_capability_snapshot(
             {
                 "timezone": None if planning is None else planning.timezone,
                 "proposals_need_confirmation": True,
+                "operations": 5,
+                "durable_preferences": True,
+                "preference_fields": [
+                    "planning day start",
+                    "planning day end",
+                    "maximum planned minutes per day",
+                    "preferred block duration",
+                    "maximum block duration",
+                ],
+                "large_tasks_are_split": True,
+                "past_blocks_are_history": True,
+                "manual_blocks_are_never_replaced": True,
+                "timezone_is_editable_here": False,
             },
         ),
         CapabilityArea(

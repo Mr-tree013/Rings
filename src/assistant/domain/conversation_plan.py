@@ -69,6 +69,7 @@ class ConversationOperationType(StrEnum):
     WORK_RECORD = "work.record"
 
     PLAN_CURRENT = "plan.current"
+    PLAN_REPLAN_WEEK = "plan.replan_week"
     PLAN_PROPOSE_WEEK = "plan.propose_week"
     PLAN_APPLY_PROPOSAL = "plan.apply_proposal"
 
@@ -100,6 +101,9 @@ class ConversationOperationType(StrEnum):
 
     BRIEF_TODAY = "brief.today"
 
+    PLANNING_PREFERENCES_SHOW = "planning.preferences.show"
+    PLANNING_PREFERENCES_UPDATE = "planning.preferences.update"
+
     ATTENTION_LIST = "attention.list"
     ATTENTION_ACKNOWLEDGE = "attention.acknowledge"
     ATTENTION_DISMISS = "attention.dismiss"
@@ -115,6 +119,7 @@ READ_OPERATIONS = frozenset(
         ConversationOperationType.CALENDAR_LIST,
         ConversationOperationType.CALENDAR_RECURRING_LIST,
         ConversationOperationType.PLAN_CURRENT,
+        ConversationOperationType.PLANNING_PREFERENCES_SHOW,
         ConversationOperationType.NOTIFICATION_LIST,
         ConversationOperationType.KNOWLEDGE_ASK,
         ConversationOperationType.MAIL_STATUS,
@@ -269,6 +274,79 @@ class PlanCurrentArguments:
     operation_type: ConversationOperationType = field(
         default=ConversationOperationType.PLAN_CURRENT, init=False
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PlanReplanWeekArguments:
+    """Replan what is left of this week. It proposes; it never applies."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.PLAN_REPLAN_WEEK, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningPreferencesShowArguments:
+    """The capacity rules the planner currently uses."""
+
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.PLANNING_PREFERENCES_SHOW, init=False
+    )
+
+
+MAX_PREFERENCE_MINUTES = 24 * 60
+"""A day is 24 hours; anything larger is a typo rather than a preference."""
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningPreferencesUpdateArguments:
+    """A bounded change to the planner's capacity rules.
+
+    Every field is optional, and a field that is absent is left alone rather than reset. Only the
+    five values ADR-0044 §6 allows are here: the timezone is not one of them, because it has exactly
+    one authority and this is not it.
+    """
+
+    day_start: str | None = None
+    day_end: str | None = None
+    max_daily_minutes: int | None = None
+    preferred_block_minutes: int | None = None
+    max_block_minutes: int | None = None
+    operation_type: ConversationOperationType = field(
+        default=ConversationOperationType.PLANNING_PREFERENCES_UPDATE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        for clock_value, clock_name in (
+            (self.day_start, "day_start"),
+            (self.day_end, "day_end"),
+        ):
+            if clock_value is not None:
+                _clock_text(clock_value, clock_name)
+        for value, name in (
+            (self.max_daily_minutes, "max_daily_minutes"),
+            (self.preferred_block_minutes, "preferred_block_minutes"),
+            (self.max_block_minutes, "max_block_minutes"),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidConversationPlan(f"{name} must be a whole number of minutes")
+            if not 1 <= value <= MAX_PREFERENCE_MINUTES:
+                raise InvalidConversationPlan(
+                    f"{name} must be between 1 and {MAX_PREFERENCE_MINUTES} minutes"
+                )
+        if all(
+            value is None
+            for value in (
+                self.day_start,
+                self.day_end,
+                self.max_daily_minutes,
+                self.preferred_block_minutes,
+                self.max_block_minutes,
+            )
+        ):
+            raise InvalidConversationPlan("a preference change has to change something")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1017,6 +1095,9 @@ ConversationOperationArguments = (
     | PlanCurrentArguments
     | PlanProposeWeekArguments
     | PlanApplyProposalArguments
+    | PlanReplanWeekArguments
+    | PlanningPreferencesShowArguments
+    | PlanningPreferencesUpdateArguments
     | NotificationListArguments
     | NotificationReadArguments
     | KnowledgeAskArguments
@@ -1100,6 +1181,17 @@ _ALLOWED_KEYS: dict[ConversationOperationType, frozenset[str]] = {
     ConversationOperationType.CALENDAR_RECURRING_RETIRE: frozenset({"rule_id"}),
     ConversationOperationType.WORK_RECORD: frozenset({"task_id", "started_at", "ended_at"}),
     ConversationOperationType.PLAN_CURRENT: frozenset(),
+    ConversationOperationType.PLAN_REPLAN_WEEK: frozenset(),
+    ConversationOperationType.PLANNING_PREFERENCES_SHOW: frozenset(),
+    ConversationOperationType.PLANNING_PREFERENCES_UPDATE: frozenset(
+        {
+            "day_start",
+            "day_end",
+            "max_daily_minutes",
+            "preferred_block_minutes",
+            "max_block_minutes",
+        }
+    ),
     ConversationOperationType.PLAN_PROPOSE_WEEK: frozenset({"next_week"}),
     ConversationOperationType.PLAN_APPLY_PROPOSAL: frozenset({"proposal_id"}),
     ConversationOperationType.NOTIFICATION_LIST: frozenset({"unread_only"}),
@@ -1368,6 +1460,18 @@ def build_arguments(
         return PlanApplyProposalArguments(
             proposal_id=_optional_strings(payload.get("proposal_id"), "proposal_id")
         )
+    if kind is ConversationOperationType.PLAN_REPLAN_WEEK:
+        return PlanReplanWeekArguments()
+    if kind is ConversationOperationType.PLANNING_PREFERENCES_SHOW:
+        return PlanningPreferencesShowArguments()
+    if kind is ConversationOperationType.PLANNING_PREFERENCES_UPDATE:
+        return PlanningPreferencesUpdateArguments(
+            day_start=_optional_strings(payload.get("day_start"), "day_start"),
+            day_end=_optional_strings(payload.get("day_end"), "day_end"),
+            max_daily_minutes=_optional_estimated(payload.get("max_daily_minutes")),
+            preferred_block_minutes=_optional_estimated(payload.get("preferred_block_minutes")),
+            max_block_minutes=_optional_estimated(payload.get("max_block_minutes")),
+        )
     if kind is ConversationOperationType.NOTIFICATION_LIST:
         return NotificationListArguments(
             unread_only=_boolean(payload.get("unread_only"), "unread_only", default=True)
@@ -1532,6 +1636,7 @@ def requires_planning_timezone(
         ConversationOperationType.WORK_RECORD,
         ConversationOperationType.CALENDAR_LIST,
         ConversationOperationType.PLAN_CURRENT,
+        ConversationOperationType.PLANNING_PREFERENCES_SHOW,
         ConversationOperationType.PLAN_PROPOSE_WEEK,
         ConversationOperationType.PLAN_APPLY_PROPOSAL,
     ):
@@ -1654,7 +1759,10 @@ __all__ = [
     "PlanApplyProposalArguments",
     "PlanCurrentArguments",
     "PlanProposeWeekArguments",
+    "PlanReplanWeekArguments",
     "PlannedOperation",
+    "PlanningPreferencesShowArguments",
+    "PlanningPreferencesUpdateArguments",
     "StatusGetArguments",
     "SystemCapabilitiesArguments",
     "TaskClearDeadlineArguments",

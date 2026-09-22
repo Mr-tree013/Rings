@@ -256,6 +256,7 @@ def test_the_settings_route_set_is_exactly_this_and_contains_no_secret_route() -
         ("PATCH", "/api/settings/mail/accounts/{account_id}"),
         ("POST", "/api/settings/mail/accounts/{account_id}/test-imap"),
         ("POST", "/api/settings/mail/accounts/{account_id}/test-smtp"),
+        ("GET", "/api/settings/planning"),
     }
     joined = " ".join(path for _, path in routes)
     for forbidden in ("password", "secret", "send", "message", "execute", "approve", "submit"):

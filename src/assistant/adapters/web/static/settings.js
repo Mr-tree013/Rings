@@ -315,12 +315,33 @@ async function loadCapabilities() {
   }
 }
 
-function loadPlanning() {
+async function loadPlanning() {
   const facts = document.getElementById("planning-facts");
   facts.replaceChildren();
-  definition("计划时区", "见主机配置文件 [planning].timezone").forEach((n) =>
+  let payload = null;
+  try {
+    payload = await api("GET", "/api/settings/planning");
+  } catch (error) {
+    payload = null;
+  }
+  if (!payload || !payload.available) {
+    definition("计划", "这台主机还没有配置计划时区").forEach((n) => facts.appendChild(n));
+    return;
+  }
+  const prefs = payload.preferences || {};
+  definition("计划时区", `${text(payload.timezone)}（来自 ${payload.timezone_authority}，只读）`).forEach(
+    (n) => facts.appendChild(n)
+  );
+  definition("计划时段", `${text(prefs.day_start_local)}–${text(prefs.day_end_local)}`).forEach((n) =>
     facts.appendChild(n)
   );
+  definition("每天上限", `${text(prefs.max_daily_hours)} 小时`).forEach((n) =>
+    facts.appendChild(n)
+  );
+  definition(
+    "单次时长",
+    `通常 ${text(prefs.preferred_block_minutes)} 分钟，最长 ${text(prefs.max_block_minutes)} 分钟`
+  ).forEach((n) => facts.appendChild(n));
   definition("计划提案", "需要你确认之后才会生效").forEach((n) => facts.appendChild(n));
 }
 

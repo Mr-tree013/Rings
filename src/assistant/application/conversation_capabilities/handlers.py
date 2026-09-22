@@ -40,6 +40,7 @@ from assistant.application.mail_send_status import MailDeliveryState, MailSendSt
 from assistant.application.mail_sync import MailSyncService
 from assistant.application.new_mail_drafts import NewMailDraftService
 from assistant.application.planner_service import PlannerService
+from assistant.application.planning_preferences_service import PlanningPreferencesService
 from assistant.application.recipient_resolution import (
     RecipientResolver,
     RecipientSource,
@@ -86,7 +87,10 @@ from assistant.domain.conversation_plan import (
     NotificationReadArguments,
     PlanApplyProposalArguments,
     PlanCurrentArguments,
+    PlanningPreferencesShowArguments,
+    PlanningPreferencesUpdateArguments,
     PlanProposeWeekArguments,
+    PlanReplanWeekArguments,
     StatusGetArguments,
     SystemCapabilitiesArguments,
     TaskClearDeadlineArguments,
@@ -202,6 +206,7 @@ class ConversationHandlers:
         mail_accounts: tuple[MailAccountConfig, ...] = (),
         knowledge_limit: int = 8,
         attention: AttentionService | None = None,
+        planning_preferences: PlanningPreferencesService | None = None,
     ) -> None:
         self._tasks = tasks
         self._calendar = calendar
@@ -230,6 +235,7 @@ class ConversationHandlers:
         self._mail_accounts = mail_accounts
         self._knowledge_limit = knowledge_limit
         self._attention = attention
+        self._planning_preferences = planning_preferences
 
     # ------------------------------------------------------------------------- reads
 
@@ -1311,6 +1317,54 @@ class ConversationHandlers:
             kind="proposal", ref=str(detail.proposal.id), data=_detail(detail)
         )
 
+    async def plan_replan_week(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Propose a replacement for what is left of this week. Nothing is superseded yet."""
+        _expect(PlanReplanWeekArguments, arguments)
+        detail = await self._planner.create_replan()
+        return OperationResult(kind="proposal", data=_detail(detail))
+
+    async def planning_preferences_show(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """The capacity rules in force, read from this host rather than from the conversation."""
+        _expect(PlanningPreferencesShowArguments, arguments)
+        service = self._require_planning_preferences()
+        effective = await service.effective()
+        return OperationResult(
+            kind="planning_preferences",
+            data={
+                "effective": effective.to_payload(),
+                "summary": service.describe(effective),
+                "stored": (await service.show()).to_payload(),
+            },
+        )
+
+    async def planning_preferences_update(
+        self, arguments: ConversationOperationArguments
+    ) -> OperationResult:
+        """Store a bounded change and report exactly what it produced."""
+        arguments = _expect(PlanningPreferencesUpdateArguments, arguments)
+        service = self._require_planning_preferences()
+        updated = await service.update(
+            day_start=arguments.day_start,
+            day_end=arguments.day_end,
+            max_daily_minutes=arguments.max_daily_minutes,
+            preferred_block_minutes=arguments.preferred_block_minutes,
+            max_block_minutes=arguments.max_block_minutes,
+        )
+        return OperationResult(
+            kind="planning_preferences_updated",
+            data={"effective": updated.to_payload(), "summary": service.describe(updated)},
+        )
+
+    def _require_planning_preferences(self) -> PlanningPreferencesService:
+        service = self._planning_preferences
+        if service is None:
+            raise ConversationCapabilityUnavailable("这台主机还不能保存计划偏好")
+        return service
+
     async def plan_apply_proposal(
         self, arguments: ConversationOperationArguments
     ) -> OperationResult:
@@ -1451,6 +1505,21 @@ def build_phase_10a_registry(handlers: ConversationHandlers) -> ConversationCapa
             ConfirmationPolicy.CONFIRM_LOCAL,
             handlers.plan_apply_proposal,
             handlers.preflight_proposal,
+        ),
+        (
+            ConversationOperationType.PLAN_REPLAN_WEEK,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.plan_replan_week,
+        ),
+        (
+            ConversationOperationType.PLANNING_PREFERENCES_SHOW,
+            ConfirmationPolicy.READ,
+            handlers.planning_preferences_show,
+        ),
+        (
+            ConversationOperationType.PLANNING_PREFERENCES_UPDATE,
+            ConfirmationPolicy.LOCAL_WRITE,
+            handlers.planning_preferences_update,
         ),
         (
             ConversationOperationType.NOTIFICATION_READ,

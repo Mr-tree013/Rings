@@ -17,6 +17,7 @@ from assistant.domain.calendar_event import CalendarEvent
 from assistant.domain.deadline import Deadline
 from assistant.domain.errors import InvalidTimeInterval
 from assistant.domain.plan_block import PlanBlock
+from assistant.domain.planning_preferences import DailyWindow, ProposalMode
 from assistant.domain.task import Task, TaskId, TaskPriority
 
 PlanProposalId = UUID
@@ -80,6 +81,8 @@ class PlanningIssueCode(StrEnum):
     BUFFER_VIOLATED = "BUFFER_VIOLATED"
     NO_AVAILABILITY = "NO_AVAILABILITY"
     WINDOW_CAPACITY_EXHAUSTED = "WINDOW_CAPACITY_EXHAUSTED"
+    DAILY_CAPACITY_REACHED = "DAILY_CAPACITY_REACHED"
+    """The user's own daily limit stopped the plan, and the remainder is honestly unscheduled."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +142,9 @@ class PlanProposal:
     created_at: datetime
     id: PlanProposalId = field(default_factory=new_proposal_id)
     status: PlanProposalStatus = PlanProposalStatus.PENDING
+    mode: ProposalMode = ProposalMode.NORMAL
+    """What this proposal intends to do with the plan that already exists (ADR-0044 §39).
+    """
     applied_at: datetime | None = None
     superseded_at: datetime | None = None
 
@@ -187,6 +193,20 @@ class PlanningRequest:
     min_block_minutes: int
     max_block_minutes: int
     deadline_buffer_minutes: int
+    preferred_block_minutes: int = 0
+    """The normal length of one sitting. `0` means "use `max_block_minutes`".
+
+    It defaults to zero rather than to a number so that a caller which has not been told what the
+    user prefers plans exactly as it did before this preference existed, instead of quietly
+    shortening every block.
+    """
+    daily_capacity: tuple[DailyWindow, ...] = ()
+    """Local days the plan may use, with their own minute budget. Empty means "availability only".
+
+    Each window is the planner's whole picture of a day: it is why a personal rule such as "at most
+    six hours" is a hard constraint rather than a suggestion, and why nothing can be placed after
+    the user's own day has ended.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +224,7 @@ class PlanningSnapshot:
 
 
 __all__ = [
+    "DailyWindow",
     "PlanProposal",
     "PlanProposalDetail",
     "PlanProposalId",
@@ -216,6 +237,7 @@ __all__ = [
     "PlanningSnapshot",
     "PlanningTask",
     "PlanningWindow",
+    "ProposalMode",
     "ProposedPlanBlock",
     "new_planning_issue_id",
     "new_proposal_id",

@@ -101,7 +101,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
     assert [migration.version for migration in applied] == [
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
         "0010", "0011", "0012", "0013", "0014", "0015", "0016",
-        "0017", "0018", "0019", "0020", "0021",
+        "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     assert [migration.name for migration in applied] == [
         "0001_initial.sql",
@@ -125,6 +125,7 @@ def test_fresh_database_applies_the_initial_migration(database: Database, clock:
         "0019_contacts_and_outbound_mail.sql",
         "0020_conversation_requests.sql",
         "0021_attention_items.sql",
+        "0022_planning_preferences.sql",
     ]
 
 
@@ -150,7 +151,8 @@ def test_running_migrations_twice_is_a_noop(database: Database, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -201,7 +203,7 @@ def test_upgrade_adds_the_observation_tables(tmp_path: Path, clock: FakeClock) -
         "0017",
         "0018",
         "0019",
-        "0020", "0021",
+        "0020", "0021", "0022",
     ]
     assert {
         "web_watch_state",
@@ -221,7 +223,8 @@ def test_upgrade_adds_the_observation_tables(tmp_path: Path, clock: FakeClock) -
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -455,7 +458,7 @@ def test_upgrade_adds_the_playbook_tables(tmp_path: Path, clock: FakeClock) -> N
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     assert {
         "playbook_candidates",
@@ -475,7 +478,8 @@ def test_upgrade_adds_the_playbook_tables(tmp_path: Path, clock: FakeClock) -> N
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -876,7 +880,7 @@ def test_upgrade_adds_the_learning_tables(tmp_path: Path, clock: FakeClock) -> N
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     assert {"corrections", "fact_candidates", "confirmed_facts"} <= _table_names(database)
     assert "confirmed_facts_current_idx" in _index_names(database)
@@ -892,7 +896,8 @@ def test_upgrade_adds_the_learning_tables(tmp_path: Path, clock: FakeClock) -> N
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1038,7 +1043,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     assert {"mobile_pairing_tokens", "mobile_sessions"} <= _table_names(database)
     assert {
@@ -1057,7 +1062,7 @@ def test_upgrade_adds_the_mobile_tables(tmp_path: Path, clock: FakeClock) -> Non
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
         "0010", "0011", "0012", "0013", "0014", "0015", "0016",
-        "0017", "0018", "0019", "0020", "0021",
+        "0017", "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1152,7 +1157,7 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
 
     assert [migration.version for migration in applied] == [
         "0007", "0008", "0009", "0010", "0011", "0012",
-        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         names = {
@@ -1177,7 +1182,8 @@ def test_upgrade_adds_the_inbound_mail_tables(tmp_path: Path, clock: FakeClock) 
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1272,7 +1278,7 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
 
     assert [migration.version for migration in applied] == [
         "0008", "0009", "0010", "0011", "0012", "0013",
-        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         names = {
@@ -1293,7 +1299,8 @@ def test_upgrade_adds_mail_threads_and_analyses(tmp_path: Path, clock: FakeClock
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1411,7 +1418,7 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
 
     assert [migration.version for migration in applied] == [
         "0009", "0010", "0011", "0012", "0013", "0014",
-        "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         names = {
@@ -1437,7 +1444,8 @@ def test_upgrade_adds_reply_drafts_and_the_reply_to_column(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1571,7 +1579,7 @@ def test_upgrade_adds_the_case_action_approval_tables(
 
     assert [migration.version for migration in applied] == [
         "0010", "0011", "0012", "0013", "0014",
-        "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         names = {
@@ -1596,7 +1604,8 @@ def test_upgrade_adds_the_case_action_approval_tables(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1834,7 +1843,8 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
     applied = apply_migrations(database, clock=clock)
 
     assert [migration.version for migration in applied] == [
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         names = {
@@ -1858,7 +1868,8 @@ def test_upgrade_adds_send_links_and_reconciliations(tmp_path: Path, clock: Fake
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -1988,7 +1999,7 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
 
     assert [migration.version for migration in applied] == [
         "0006", "0007", "0008", "0009", "0010", "0011",
-        "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         tables = {
@@ -2015,7 +2026,8 @@ def test_upgrade_adds_scheduled_jobs_and_notifications(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -2257,7 +2269,7 @@ def test_upgrade_from_0001_preserves_existing_events(
     assert [migration.version for migration in applied] == [
         "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009",
         "0010", "0011", "0012", "0013", "0014", "0015", "0016",
-        "0017", "0018", "0019", "0020", "0021",
+        "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         migrated = connection.execute(
@@ -2323,7 +2335,8 @@ def test_upgrade_from_0001_preserves_existing_events(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -2395,7 +2408,7 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
 
     assert [migration.version for migration in applied] == [
         "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012",
-        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         event_row = connection.execute(
@@ -2479,7 +2492,8 @@ def test_upgrade_from_v0_1_0_adds_the_storage_catalog(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -2537,7 +2551,7 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
 
     assert [migration.version for migration in applied] == [
         "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012",
-        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         stored_event = connection.execute(
@@ -2591,7 +2605,8 @@ def test_upgrade_from_v0_2_0_adds_the_commitment_core(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )
 
 
@@ -2631,7 +2646,7 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
 
     assert [migration.version for migration in applied] == [
         "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013",
-        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022",
     ]
     with database.connect() as connection:
         block = connection.execute(
@@ -2691,5 +2706,6 @@ def test_upgrade_adds_planning_proposals_and_block_provenance(
     assert apply_migrations(database, clock=clock) == ()
     assert applied_versions(database) == (
         "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-        "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021",
+        "0011", "0012", "0013", "0014", "0015", "0016", "0017",
+        "0018", "0019", "0020", "0021", "0022",
     )

@@ -11,9 +11,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from assistant.application.planning_availability import generate_availability
+from assistant.application.planning_availability import (
+    generate_availability,
+    generate_daily_windows,
+)
 from assistant.application.planning_effort import compute_remaining_effort
 from assistant.application.planning_fingerprint import planning_fingerprint
+from assistant.application.planning_preferences_service import PlanningPreferencesService
 from assistant.application.recurring_calendar_service import RecurringCalendarService
 from assistant.domain.config import PlanningConfig
 from assistant.domain.errors import (
@@ -37,6 +41,7 @@ from assistant.domain.planning import (
     PlanProposalSummary,
 )
 from assistant.domain.planning_intervals import Interval, merge_intervals
+from assistant.domain.planning_preferences import PlanningPreferences, ProposalMode
 from assistant.ports.clock import Clock
 from assistant.ports.planner import Planner
 from assistant.ports.planning_repository import ApplyOutcome, ApplyResult, PlanningRepository
@@ -57,6 +62,7 @@ class PlannerService:
         *,
         max_attempts: int = MAX_PLANNING_ATTEMPTS,
         recurring: RecurringCalendarService | None = None,
+        preferences: PlanningPreferencesService | None = None,
     ) -> None:
         self._planning = planning
         self._planner = planner
@@ -64,6 +70,7 @@ class PlannerService:
         self._clock = clock
         self._max_attempts = max(1, max_attempts)
         self._recurring = recurring
+        self._preferences = preferences
 
     @property
     def config(self) -> PlanningConfig | None:
@@ -125,7 +132,40 @@ class PlannerService:
         """Create a proposal for the current (or next) local week."""
         return await self.create_proposal(self.week_window(next_week=next_week))
 
-    async def create_proposal(self, window: PlanningWindow) -> PlanProposalDetail:
+    def replan_window(self) -> PlanningWindow:
+        """The rest of this local week: from now until the week ends (ADR-0044 §42).
+
+        This is what "今天没做完的往后排" means in time. It is deliberately the *same* instant the
+        weekly plan ends, so a replan cannot straddle two planning horizons and produce two
+        proposals a user would have to reconcile by hand.
+        """
+        window = self.week_window()
+        config = self.require_config()
+        timezone = ZoneInfo(config.timezone)
+        local_now = self._clock.now().astimezone(timezone)
+        monday = datetime.combine(
+            local_now.date() - timedelta(days=local_now.weekday()),
+            time(0, 0),
+            tzinfo=timezone,
+        )
+        end = monday + timedelta(days=7)
+        return PlanningWindow(
+            starts_at=window.starts_at,
+            ends_at=end.astimezone(UTC),
+            timezone=config.timezone,
+        )
+
+    async def create_replan(self) -> PlanProposalDetail:
+        """Propose a replacement for what is left of this week.
+
+        The result is an ordinary pending proposal in `REPLACE_FUTURE` mode: nothing is superseded
+        until the user applies it (ADR-0044 §11-12).
+        """
+        return await self.create_proposal(self.replan_window(), mode=ProposalMode.REPLACE_FUTURE)
+
+    async def create_proposal(
+        self, window: PlanningWindow, *, mode: ProposalMode = ProposalMode.NORMAL
+    ) -> PlanProposalDetail:
         """Plan `window` and store the result as a durable proposal.
 
         Raises:
@@ -133,21 +173,31 @@ class PlannerService:
                 was stored.
         """
         config = self.require_config()
+        preferences = await self._effective_preferences()
         for _ in range(self._max_attempts):
             snapshot = await self._planning.load_snapshot(window)
             tasks, pre_issues = planning_tasks(snapshot)
             request = PlanningRequest(
                 window=window,
                 tasks=tasks,
-                availability=generate_availability(window, config),
+                availability=generate_availability(
+                    window,
+                    config,
+                    day_window=(preferences.day_start_local, preferences.day_end_local),
+                ),
                 busy_intervals=busy_intervals(snapshot, await self._recurring_busy(window)),
                 min_block_minutes=config.min_block_minutes,
-                max_block_minutes=config.max_block_minutes,
+                # The user's own ceiling wins over the configured one: the configuration is what
+                # the host allows, the preference is what the person asked for (ADR-0044 §6).
+                max_block_minutes=preferences.max_block_minutes,
                 deadline_buffer_minutes=config.deadline_buffer_minutes,
+                preferred_block_minutes=preferences.preferred_block_minutes,
+                daily_capacity=generate_daily_windows(window, config, preferences),
             )
             result = self._planner.plan(request)
             proposal = PlanProposal(
                 window=window,
+                mode=mode,
                 input_fingerprint=planning_fingerprint(
                     window=window, config=config, snapshot=snapshot
                 ),
@@ -171,6 +221,15 @@ class PlannerService:
         raise PlanningStateUnstable(
             f"planning input changed {self._max_attempts} times in a row; nothing was stored"
         )
+
+    async def _effective_preferences(self) -> PlanningPreferences:
+        """The capacity rules to plan under, or the configuration's own defaults."""
+        if self._preferences is None:
+            return PlanningPreferences(
+                preferred_block_minutes=self.require_config().max_block_minutes,
+                max_block_minutes=self.require_config().max_block_minutes,
+            )
+        return await self._preferences.effective()
 
     async def list_proposals(self, *, limit: int | None = 20) -> list[PlanProposal]:
         """List proposals, newest first."""

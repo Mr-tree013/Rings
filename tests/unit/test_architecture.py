@@ -522,6 +522,7 @@ def test_the_schema_stops_at_the_reviewed_migration_set() -> None:
         "0019_contacts_and_outbound_mail.sql",
         "0020_conversation_requests.sql",
         "0021_attention_items.sql",
+        "0022_planning_preferences.sql",
     ]
 
 
@@ -2503,7 +2504,7 @@ def test_the_mcp_surface_adds_no_schema() -> None:
     """§49: MCP keeps no durable server state, so the migration set stays the reviewed one."""
     migrations = sorted(path.name for path in (SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
 
-    assert migrations[-1] == "0021_attention_items.sql"
+    assert migrations[-1] == "0022_planning_preferences.sql"
     assert not [name for name in migrations if "mcp" in name]
 
 
@@ -3033,6 +3034,7 @@ def test_no_settings_route_can_return_a_secret_or_send_a_message() -> None:
 
     assert routes == [
         ("get", "/api/settings/mail/accounts"),
+        ("get", "/api/settings/planning"),
         ("get", "/settings"),
         ("get", "/settings.css"),
         ("get", "/settings.js"),
@@ -3082,9 +3084,9 @@ def test_the_release_keeps_the_migration_set_closed() -> None:
     names = [path.name for path in migrations]
 
     assert names[0] == "0001_initial.sql"
-    assert names[-1] == "0021_attention_items.sql"
-    assert len(names) == 21
-    assert "0022" not in "".join(names)
+    assert names[-1] == "0022_planning_preferences.sql"
+    assert len(names) == 22
+    assert "0023" not in "".join(names)
     assert len(names) == REVIEWED_MIGRATION_COUNT
 
 

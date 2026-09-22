@@ -91,6 +91,9 @@ def test_the_mobile_route_set_is_frozen(tmp_path: Path) -> None:
         ("POST", "/api/actions/{reference}/approve"),
         ("POST", "/api/approval-link/preview"),
         ("POST", "/api/approval-link/approve"),
+        # Phase 11D (ADR-0044 §44): the planning capacity rules, reported read-only. There is no
+        # write route for the timezone, because it has exactly one authority.
+        ("GET", "/api/settings/planning"),
     }
 
     assert _mobile_routes(tmp_path) == expected

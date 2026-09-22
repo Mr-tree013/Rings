@@ -124,6 +124,7 @@ from assistant.application.observation_event_handler import (
 )
 from assistant.application.paths import AppPaths
 from assistant.application.planner_service import PlannerService
+from assistant.application.planning_preferences_service import PlanningPreferencesService
 from assistant.application.playbook_replay import PlaybookReplayRegistry
 from assistant.application.playbook_service import PlaybookService
 from assistant.application.recipient_resolution import RecipientResolver
@@ -186,6 +187,7 @@ from assistant.store.mobile_sessions import SqliteMobileSessionRepository
 from assistant.store.new_mail_drafts import SqliteNewMailDraftRepository
 from assistant.store.observation_analyses import SqliteObservationAnalysisRepository
 from assistant.store.planning import SqlitePlanningRepository
+from assistant.store.planning_preferences import SqlitePlanningPreferencesRepository
 from assistant.store.playbooks import SqlitePlaybookRepository
 from assistant.store.recurring_calendar import SqliteRecurringCalendarRepository
 from assistant.store.scheduler import SqliteSchedulerRepository
@@ -559,6 +561,8 @@ def mobile_web_dependencies(
         chat=chat,
         attention=attention_service(database, clock, config),
         settings=mail_account_settings_service(config, clock, config_path=config_path),
+        planning_preferences=planning_preferences_service(database, clock, config),
+        planning_timezone=_planning_timezone_of(config),
     )
 
 
@@ -1072,6 +1076,17 @@ def planning_repository(database: Database) -> SqlitePlanningRepository:
     return SqlitePlanningRepository(database)
 
 
+def planning_preferences_service(
+    database: Database, clock: Clock, config: AssistantConfig | None
+) -> PlanningPreferencesService:
+    """Durable capacity rules for the deterministic planner (ADR-0044)."""
+    return PlanningPreferencesService(
+        SqlitePlanningPreferencesRepository(database, clock),
+        clock,
+        config=None if config is None else config.planning,
+    )
+
+
 def planner_service(
     database: Database, clock: Clock, config: AssistantConfig | None
 ) -> PlannerService:
@@ -1087,6 +1102,7 @@ def planner_service(
         None if config is None else config.planning,
         clock,
         recurring=recurring_calendar_service(database, clock, config),
+        preferences=planning_preferences_service(database, clock, config),
     )
 
 
@@ -1594,6 +1610,7 @@ def conversation_capabilities(
         capability_snapshot=snapshot,
         mail_accounts=() if config is None else config.mail.accounts,
         attention=attention_service(database, clock, config),
+        planning_preferences=planning_preferences_service(database, clock, config),
     )
     return build_phase_10a_registry(handlers)
 

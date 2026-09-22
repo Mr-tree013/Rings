@@ -42,6 +42,7 @@ from assistant.domain.planning import (
     PlanProposalSummary,
     ProposedPlanBlock,
 )
+from assistant.domain.planning_preferences import ProposalMode
 from assistant.domain.task import Task, TaskPriority, TaskStatus
 from assistant.ports.planning_repository import ApplyOutcome, ApplyResult
 from assistant.store.commitment_revision import increment_revision, read_revision
@@ -55,7 +56,7 @@ _PLAN_BLOCK_FIELDS = (
 
 _PROPOSAL_FIELDS = (
     "id, status, window_start, window_end, timezone, input_fingerprint, input_revision, "
-    "created_at, applied_at, superseded_at"
+    "created_at, applied_at, superseded_at, mode"
 )
 
 _TASK_FIELDS = (
@@ -245,7 +246,7 @@ class SqlitePlanningRepository:
                 )
                 connection.execute(
                     f"INSERT INTO plan_proposals ({_PROPOSAL_FIELDS}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     _proposal_parameters(proposal),
                 )
                 for ordinal, block in enumerate(blocks):
@@ -425,11 +426,19 @@ class SqlitePlanningRepository:
                     proposal=_with_status(proposal, PlanProposalStatus.STALE),
                 )
             replaced = connection.execute(
-                "UPDATE plan_blocks SET cancelled_at = ?, updated_at = ? "
+                # Supersession is recorded *beside* cancellation, never instead of it: every reader
+                # that already filters `cancelled_at IS NULL` keeps working, and the two facts stay
+                # distinguishable — "the user cancelled this" versus "a later plan replaced it".
+                # Past blocks are untouched because the window starts at "now": a replan cannot
+                # rewrite history it never covered (ADR-0044 §9, §35).
+                "UPDATE plan_blocks SET cancelled_at = ?, updated_at = ?, "
+                "superseded_at = ?, superseded_by_proposal_id = ? "
                 "WHERE origin = ? AND cancelled_at IS NULL AND starts_at < ? AND ends_at > ?",
                 (
                     to_utc_iso(applied_at),
                     to_utc_iso(applied_at),
+                    to_utc_iso(applied_at),
+                    str(proposal_id),
                     str(PlanBlockOrigin.PLANNER),
                     to_utc_iso(proposal.window.ends_at),
                     to_utc_iso(proposal.window.starts_at),
@@ -492,6 +501,7 @@ def _proposal_parameters(proposal: PlanProposal) -> tuple[object, ...]:
         to_utc_iso(proposal.created_at),
         None if proposal.applied_at is None else to_utc_iso(proposal.applied_at),
         None if proposal.superseded_at is None else to_utc_iso(proposal.superseded_at),
+        str(proposal.mode),
     )
 
 
@@ -511,6 +521,7 @@ def _row_to_proposal(row: sqlite3.Row) -> PlanProposal:
             applied_at=(
                 None if row["applied_at"] is None else from_utc_iso(str(row["applied_at"]))
             ),
+            mode=ProposalMode(str(row["mode"])),
             superseded_at=(
                 None
                 if row["superseded_at"] is None

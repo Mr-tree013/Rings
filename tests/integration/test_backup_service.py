@@ -77,7 +77,7 @@ async def test_a_used_runtime_is_backed_up_with_its_referenced_objects(
     assert manifest.counts.mail_messages == 1
     assert manifest.counts.web_observations == 1
     assert manifest.counts.confirmed_facts == 1
-    assert manifest.migration_files[-1] == "0021_attention_items.sql"
+    assert manifest.migration_files[-1] == "0022_planning_preferences.sql"
 
 
 async def test_the_archive_excludes_everything_it_must(

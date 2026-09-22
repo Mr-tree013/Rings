@@ -7,6 +7,7 @@ POST  /api/settings/mail/accounts                add one account
 PATCH /api/settings/mail/accounts/{id}           edit one account
 POST  /api/settings/mail/accounts/{id}/test-imap read-only inbound diagnostic
 POST  /api/settings/mail/accounts/{id}/test-smtp connect + auth + NOOP, never DATA
+GET   /api/settings/planning                    the capacity rules and where the timezone comes from
 ```
 
 What is deliberately absent is the point of the module. There is **no** route that returns a
@@ -33,6 +34,7 @@ from assistant.application.mail_account_settings import (
     MailAccountDraft,
     MailAccountSettingsService,
 )
+from assistant.application.planning_preferences_service import PlanningPreferencesService
 from assistant.domain.errors import (
     InvalidMailSettings,
     MailAccountSettingsNotFound,
@@ -50,6 +52,8 @@ def register_settings_routes(
     app: FastAPI,
     *,
     settings: Callable[[], MailAccountSettingsService] | None,
+    planning: Callable[[], PlanningPreferencesService] | None = None,
+    planning_timezone: str | None = None,
     assets: object,
     require_session: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
     require_mutation: Callable[[Request], Awaitable[MobileWebSession | JSONResponse]],
@@ -70,6 +74,28 @@ def register_settings_routes(
     @app.get("/settings.css")
     async def settings_styles() -> FileResponse:
         return FileResponse(assets / "settings.css", media_type="text/css")  # type: ignore[operator]
+
+    @app.get("/api/settings/planning")
+    async def planning_settings(request: Request) -> JSONResponse:
+        session = await require_session(request)
+        if isinstance(session, JSONResponse):
+            return session
+        if planning is None:
+            return JSONResponse({"available": False, "timezone": None, "preferences": None})
+        service = planning()
+        effective = await service.effective()
+        return JSONResponse(
+            {
+                "available": True,
+                # The timezone is *reported*, never edited here: it has exactly one authority, and
+                # a settings field that wrote a second copy is how a host ends up with two ideas
+                # about which day today is (ADR-0044 §4-5).
+                "timezone": planning_timezone,
+                "timezone_authority": "[planning].timezone",
+                "preferences": effective.to_payload(),
+                "summary": service.describe(effective),
+            }
+        )
 
     if settings is None:
         return

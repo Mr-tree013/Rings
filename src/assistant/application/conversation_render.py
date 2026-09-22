@@ -119,6 +119,8 @@ def render_result(result: OperationResult, *, timezone: str | None) -> str:
         )
     if result.kind in ("proposal", "proposal_applied"):
         return _render_proposal(data, timezone, result.kind == "proposal_applied")
+    if result.kind in ("planning_preferences", "planning_preferences_updated"):
+        return _render_planning_preferences(data)
     if result.kind == "proposal_absent":
         return "现在没有待审阅的周计划提案。"
     if result.kind == "notifications":
@@ -527,6 +529,16 @@ def _render_facts(data: dict[str, Any]) -> str:
 def _render_fact(data: dict[str, Any]) -> str:
     fact = data.get("fact") or {}
     return f"{fact.get('key', '')}：{fact.get('value', '')}"
+
+
+def _render_planning_preferences(data: dict[str, Any]) -> str:
+    """The capacity rules in force, in the runtime's own words and nothing else."""
+    summary = str(data.get("summary") or "")
+    if not summary:
+        return "现在使用主机配置里的默认计划规则。"
+    prefix = "已更新计划偏好。" if "updated" in str(data.get("changed", "updated")) else ""
+    del prefix
+    return summary
 
 
 _SEVERITY_WORDS: dict[str, str] = {

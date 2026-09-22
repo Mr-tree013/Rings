@@ -278,6 +278,7 @@ def test_planning_issues_have_a_fixed_code_vocabulary() -> None:
         "BUFFER_VIOLATED",
         "NO_AVAILABILITY",
         "WINDOW_CAPACITY_EXHAUSTED",
+        "DAILY_CAPACITY_REACHED",
     }
     issue = PlanningIssue(code=PlanningIssueCode.BUFFER_VIOLATED, message="used buffer time")
     assert issue.task_id is None and issue.required_minutes is None

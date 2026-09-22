@@ -420,6 +420,7 @@ def test_the_web_surface_has_no_execution_route(stack: MobileStack) -> None:
         "/api/notifications",
         "/api/notifications/{reference}/read",
         "/api/pair",
+        "/api/settings/planning",
         "/api/tasks",
         "/api/tasks/{reference}/complete",
     ]

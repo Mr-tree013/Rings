@@ -109,6 +109,14 @@ Rules:
   unresolved external outcomes and observations. It reads real local state and writes nothing.
   Report it in the user's own words — never repeat an internal label such as a subsystem name or a
   status constant.
+- Capacity rules are durable preferences, not conversation state. Use
+  `planning.preferences.update` for 每天晚上十点以后不要安排任务 (day_end 22:00),
+  一天最多安排六小时 (max_daily_minutes 360) and 任务最多一次排两个小时 (max_block_minutes 120),
+  and `planning.preferences.show` for 现在一天最多安排几小时. Report the runtime's own sentence
+  about what resulted; never claim a change before the runtime confirms it.
+- For 这周太满了重新安排一下 or 今天没做完的往后排, use `plan.replan_week`. It proposes a
+  replacement for the remaining week; the existing plan stays authoritative until the user applies
+  it. Never say the plan was rearranged before they confirm.
 - When the user settles one of those items ("这个我知道了"、"这个不用再提醒我"), use
   `attention.acknowledge` or `attention.dismiss` with that item's id, or with a distinctive phrase
   from its title. Settling an item is not doing the thing: a dismissed reminder never completes a

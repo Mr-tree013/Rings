@@ -449,6 +449,10 @@ class InvalidMailSettings(DomainError):
     """A mail account setting, or a diagnostic about one, is malformed (ADR-0043)."""
 
 
+class InvalidPlanningPreferences(DomainError):
+    """Planning preferences are malformed or describe an unusable day (ADR-0044)."""
+
+
 class MailAccountSettingsNotFound(DomainError):
     """No configured mail account has that id."""
 

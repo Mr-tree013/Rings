@@ -7,6 +7,17 @@ proposal reviewable and reproducible.
 Algorithm: order the tasks, subtract busy time from availability, then first-fit each task's
 remaining effort into the earliest free slots — soft-deadline space first, then the deadline
 buffer, and finally report what could not be placed.
+
+Three capacity rules from ADR-0044 sit on top of that, and all three are *hard*:
+
+* a local day has a minute budget (`daily_capacity`), so "at most six hours" is enforced by the
+  planner rather than hoped for;
+* a sitting never exceeds `max_block_minutes`;
+* a sitting normally *is* `preferred_block_minutes`, so a five-hour task becomes a handful of
+  ordinary afternoons rather than one impossible evening.
+
+When the budget runs out the remainder is reported, never silently dropped: an honest "this does not
+fit" is a thing a user can act on, and a plan that quietly forgot two hours is not.
 """
 
 from __future__ import annotations
@@ -39,6 +50,8 @@ class GreedyPlanner:
         free_slots: list[Interval] = subtract_intervals(
             request.availability, request.busy_intervals
         )
+        budget = _DayBudget(request)
+        preferred = request.preferred_block_minutes or request.max_block_minutes
         tasks = _ordered_tasks(request.tasks)
         blocks: list[ProposedPlanBlock] = []
         issues: list[PlanningIssue] = []
@@ -77,6 +90,8 @@ class GreedyPlanner:
                 limit=soft_limit,
                 min_block=request.min_block_minutes,
                 max_block=request.max_block_minutes,
+                preferred=preferred,
+                budget=budget,
             )
             buffer_minutes = 0
             if needed > 0 and task.deadline is not None:
@@ -88,6 +103,8 @@ class GreedyPlanner:
                     limit=task.deadline,
                     min_block=request.min_block_minutes,
                     max_block=request.max_block_minutes,
+                    preferred=preferred,
+                    budget=budget,
                 )
                 scheduled += buffer_minutes
             if buffer_minutes > 0:
@@ -110,13 +127,22 @@ class GreedyPlanner:
                         code=(
                             PlanningIssueCode.INSUFFICIENT_CAPACITY
                             if has_deadline
-                            else PlanningIssueCode.WINDOW_CAPACITY_EXHAUSTED
+                            else (
+                                PlanningIssueCode.DAILY_CAPACITY_REACHED
+                                if budget.exhausted
+                                else PlanningIssueCode.WINDOW_CAPACITY_EXHAUSTED
+                            )
                         ),
                         task_id=task.task_id,
                         message=(
                             "not enough time before the deadline to finish this task"
                             if has_deadline
-                            else "the planning window has insufficient capacity for this task"
+                            else (
+                                "the daily planning limit was reached before this task fitted; "
+                                "the remainder is not scheduled"
+                                if budget.exhausted
+                                else "the planning window has insufficient capacity for this task"
+                            )
                         ),
                         required_minutes=required,
                         scheduled_minutes=scheduled,
@@ -159,6 +185,55 @@ def _soft_limit(task: PlanningTask, request: PlanningRequest) -> datetime | None
     return soft
 
 
+class _DayBudget:
+    """How much of each local day's planning budget is still unspent (ADR-0044 §18).
+
+    A day with no window in the request has no cap: that is what keeps a host with no stored
+    preferences planning exactly as it did before the preference existed.
+    """
+
+    def __init__(self, request: PlanningRequest) -> None:
+        self._windows = tuple(request.daily_capacity)
+        self._spent = [0] * len(self._windows)
+        self._exhausted = False
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether a daily limit was the reason something could not be placed."""
+        return self._exhausted
+
+    def remaining(self, start: datetime, end: datetime) -> int:
+        """Minutes still available inside the day that covers this slot, or a huge number."""
+        index = self._index_of(start)
+        if index is None:
+            return _minutes(end - start)
+        window = self._windows[index]
+        return max(0, window.capacity_minutes - self._spent[index])
+
+    def spend(self, start: datetime, minutes: int) -> None:
+        """Record planned time against the day that contains `start`."""
+        index = self._index_of(start)
+        if index is not None:
+            self._spent[index] += minutes
+
+    def note_exhausted(self) -> None:
+        """Remember that a limit, not the clock, is what stopped the plan."""
+        self._exhausted = True
+
+    def _index_of(self, moment: datetime) -> int | None:
+        for index, window in enumerate(self._windows):
+            if window.starts_at <= moment < window.ends_at:
+                return index
+        return None
+
+
+def _minutes(span: object) -> int:
+    """Whole minutes in a timedelta."""
+    if not isinstance(span, timedelta):  # pragma: no cover - the caller always passes a difference
+        return 0
+    return int(span.total_seconds() // 60)
+
+
 def _fill_slots(
     free_slots: list[Interval],
     *,
@@ -168,6 +243,8 @@ def _fill_slots(
     limit: datetime | None,
     min_block: int,
     max_block: int,
+    preferred: int,
+    budget: _DayBudget,
 ) -> tuple[int, int]:
     """First-fit `needed` minutes into `free_slots`, capped by `limit`.
 
@@ -186,9 +263,26 @@ def _fill_slots(
         while needed > 0:
             available = int((slot_end - cursor).total_seconds() // 60)
             if available <= 0:
+                # The slot itself is used up. That is the calendar, not the user's daily limit.
                 break
-            block_minutes = min(needed, max_block, available)
+            budget_left = budget.remaining(cursor, slot_end)
+            if budget_left <= 0:
+                # There is room in the calendar and none in the day: this is the daily limit.
+                budget.note_exhausted()
+                break
+            room = min(available, budget_left)
+            # The preferred length is the target; the maximum is the ceiling; the remainder of the
+            # task is the floor only when it is itself a legitimate sitting.
+            block_minutes = min(needed, max_block, room, preferred)
             if block_minutes < min_block and block_minutes < needed:
+                # A fragment that would not finish the task is not worth a calendar entry — but one
+                # that *does* finish it is always worth placing, however short.
+                #
+                # Only a daily limit is reported as a daily limit: a slot that is merely too short
+                # is availability, and blaming the user's own setting for the calendar would send
+                # them to change the wrong thing.
+                if budget_left < available:
+                    budget.note_exhausted()
                 break
             block_end = cursor + timedelta(minutes=block_minutes)
             blocks.append(
@@ -199,6 +293,7 @@ def _fill_slots(
                     ordinal=len(blocks),
                 )
             )
+            budget.spend(cursor, block_minutes)
             scheduled += block_minutes
             needed -= block_minutes
             cursor = block_end
@@ -212,4 +307,3 @@ def _fill_slots(
 
 
 __all__ = ["GreedyPlanner"]
-

@@ -211,6 +211,32 @@ OPERATION_SCHEMAS: tuple[dict[str, Any], ...] = (
         ("next_week",),
     ),
     _operation(
+        "plan.replan_week",
+        "Propose a replacement for what is left of this week: the remaining time is replanned and "
+        "the existing automatic blocks it overlaps stop being current. Use this for 这周太满了重新 "
+        "安排一下 / 今天没做完的往后排. It only proposes; the user still has to apply it.",
+    ),
+    _operation(
+        "planning.preferences.show",
+        "Show the capacity rules the planner currently uses: the planning day, the daily limit and "
+        "the block lengths. Use this for 一天最多给我安排几小时 / 现在是怎么安排的, instead of "
+        "answering from memory.",
+    ),
+    _operation(
+        "planning.preferences.update",
+        "Change the planner's capacity rules. Use this for 每天晚上十点以后不要安排学习 "
+        "(day_end 22:00), 一天最多给我安排六小时 (max_daily_minutes 360), 任务最多一次排两个小时 "
+        "(max_block_minutes 120). Only the fields the user named; the timezone is not one of them.",
+        {
+            "day_start": {"type": ["string", "null"]},
+            "day_end": {"type": ["string", "null"]},
+            "max_daily_minutes": {"type": ["integer", "null"]},
+            "preferred_block_minutes": {"type": ["integer", "null"]},
+            "max_block_minutes": {"type": ["integer", "null"]},
+        },
+        (),
+    ),
+    _operation(
         "plan.apply_proposal",
         "Apply a pending weekly proposal. The user must confirm this before it happens.",
         {"proposal_id": {"type": ["string", "null"]}},

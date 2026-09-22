@@ -292,11 +292,11 @@ def test_the_migration_set_is_pinned_through_the_request_queue() -> None:
     migrations = sorted((SOURCE_ROOT.parents[1] / "migrations").glob("*.sql"))
     names = [path.name for path in migrations]
 
-    assert names[-1] == "0021_attention_items.sql"
+    assert names[-1] == "0022_planning_preferences.sql"
     assert len([name for name in names if name.startswith("0020")]) == 1
     assert len([name for name in names if name.startswith("0019")]) == 1
     assert len([name for name in names if name.startswith("0021")]) == 1
-    assert "0022" not in "".join(names)
+    assert "0023" not in "".join(names)
 
 
 # ------------------------------------------------------- weekly commitments (ADR-0036 §9-§13)

@@ -118,6 +118,13 @@ class WebDependencies:
     there is no route below that would let it (ADR-0042 §21).
     """
 
+    planning_preferences: Any = None
+    """`PlanningPreferencesService`: the capacity rules the planner uses, read-only here."""
+
+    planning_timezone: str | None = None
+    """The one authoritative planning timezone, reported so `/settings` can show where it comes
+    from rather than offering a second place to change it."""
+
     settings: Any = None
     """`MailAccountSettingsService`: typed mail metadata, safe views and connectivity tests.
 
@@ -205,6 +212,12 @@ def _register_settings_routes(
         settings=(
             None if dependencies.settings is None else lambda: dependencies.settings
         ),
+        planning=(
+            None
+            if dependencies.planning_preferences is None
+            else lambda: dependencies.planning_preferences
+        ),
+        planning_timezone=dependencies.planning_timezone,
         assets=assets,
         require_session=_session,
         require_mutation=_mutation,
