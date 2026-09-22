@@ -93,14 +93,43 @@
   // ------------------------------------------------------------------ startup
 
   function start() {
-    loadBootstrap().catch(reportStartupFailure);
+    // `rings up` opens /chat#pair=<token>. The fragment never reaches the server, so it is read
+    // here, kept for the 401 path below, and removed before anything else can observe it.
+    var pairToken = readPairFragment();
+    clearPairFragment();
+    loadBootstrap().catch(function (error) {
+      reportStartupFailure(error, pairToken);
+    });
+  }
+
+  function readPairFragment() {
+    var raw = window.location.hash || "";
+    var match = /(?:^#|&)pair=([^&]+)/.exec(raw);
+    if (!match) {
+      return "";
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function clearPairFragment() {
+    if (window.location.hash) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
   }
 
   /* Why a start failed is three different things, and v1.2 said the same sentence for all of
    * them. Saying "无法连接主机" when the host is answering perfectly well and merely does not
    * recognise this browser is simply false, and it sends the user to look at the wrong problem. */
-  function reportStartupFailure(error) {
+  function reportStartupFailure(error, pairToken) {
     if (error && error.status === 401) {
+      if (pairToken) {
+        redeemPairToken(pairToken);
+        return;
+      }
       if (hasSessionCookie()) {
         showPairing("配对状态已失效，请重新配对。", "重新配对");
       } else {
@@ -109,6 +138,20 @@
       return;
     }
     setConnection("无法连接主机，正在重试…", "offline");
+  }
+
+  /* The token is a one-time, 600 s capability, exactly like the approval link: it is redeemed
+   * through the route that already exists, and a failure is reported rather than retried. */
+  function redeemPairToken(token) {
+    setConnection("正在配对这个浏览器…", "connecting");
+    api("POST", "/api/pair", { token: token }).then(
+      function () {
+        window.location.replace(window.location.pathname);
+      },
+      function () {
+        showPairing("这次自动配对没有成功（配对码可能已过期），请重新配对。", "去配对");
+      }
+    );
   }
 
   function showPairing(text, label) {

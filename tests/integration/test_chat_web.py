@@ -419,3 +419,29 @@ async def test_the_thread_list_is_bounded_and_titled_deterministically(
         assert len(title) <= 40
         assert title.endswith("…")
         assert listing[0]["active"] is True
+
+
+def test_the_chat_page_redeems_a_fragment_pairing_token() -> None:
+    """The auto-pair contract lives in the page: read the fragment, strip it, redeem once.
+
+    `rings up` opens `/chat#pair=<token>`; the token is a capability, so it must never travel in a
+    query string, must never become markup, and must be gone from the URL before the page does
+    anything else with it.
+    """
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "assistant"
+        / "adapters"
+        / "web"
+        / "static"
+        / "chat.js"
+    ).read_text(encoding="utf-8")
+
+    assert "readPairFragment" in script
+    assert "clearPairFragment" in script
+    assert "history.replaceState" in script
+    assert '"/api/pair"' in script
+    assert "?pair=" not in script
+    for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+        assert forbidden not in script

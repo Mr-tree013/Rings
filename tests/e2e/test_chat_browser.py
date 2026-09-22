@@ -381,6 +381,48 @@ def _cookie(name: str, value: str) -> dict[str, object]:
     return {"name": name, "value": value, "url": "http://127.0.0.1"}
 
 
+@requires_browser
+def test_a_fragment_link_pairs_the_browser_without_typing_a_code(tmp_path: Path) -> None:
+    """`rings up` opens this URL; a browser with no cookies must land in the chat, once.
+
+    The token is the same one-time, 600 s capability `pw mobile pair` prints — the difference is
+    that it arrives in the URL fragment (which never reaches the server) instead of by hand, and
+    that a browser which is *already* paired reuses its session rather than minting another.
+    """
+    from playwright.sync_api import sync_playwright
+
+    stack = asyncio.run(build_chat(tmp_path))
+    issued = asyncio.run(stack.mobile.auth.create_pairing_token())
+    with _Server(build_app(stack.dependencies(), is_private=is_private_client)) as server:
+        base = f"http://127.0.0.1:{server.port}"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, args=["--no-sandbox"])
+            context = browser.new_context(viewport={"width": 420, "height": 780})
+            page = context.new_page()
+
+            page.goto(f"{base}/chat#pair={issued.token}")
+            page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
+            page.wait_for_function(
+                "() => document.querySelectorAll('#messages .message').length >= 0",
+                timeout=UI_TIMEOUT_MS,
+            )
+
+            assert "#pair=" not in page.url  # the fragment is gone before anything else happens
+            # Not the "this browser is not paired" notice.
+            assert page.query_selector("#pairing[hidden]") is not None
+
+            # A second visit is already paired: same session, no second row.
+            page.goto(f"{base}/chat#pair={issued.token}")
+            page.wait_for_selector("#composer", timeout=UI_TIMEOUT_MS)
+            assert page.query_selector("#pairing[hidden]") is not None
+
+            browser.close()
+    # Outside the Playwright block: its sync API installs its own event loop in this thread, so
+    # `asyncio.run` may only be called before or after it, never inside.
+    sessions = asyncio.run(stack.mobile.auth.list_sessions(include_inactive=False))
+    assert len(sessions) == 1
+
+
 async def _issue_session(stack: ChatStack) -> dict[str, str]:
     """Mint a session the way `pw mobile pair` + `POST /api/pair` do, without a browser login."""
     issued = await stack.mobile.auth.create_pairing_token()
