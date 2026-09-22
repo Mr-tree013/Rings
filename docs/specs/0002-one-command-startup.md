@@ -72,21 +72,24 @@ rings autostart install|status|remove
 `pw` keeps its own surface unchanged; `pw mobile pair` remains for phones and for any browser that
 cannot be opened locally.
 
-**D2 — lifecycle detection uses the existing instance lock.** `assistantd` already holds an `flock`
-on `<runtime>/assistantd.lock` with `pid`, `started_at`, `version` and `runtime_root` written as
-metadata, and the kernel drops the lock when the process dies. So:
+**D2 — lifecycle detection uses the existing instance lock and its existing probe.** `assistantd`
+already holds an `flock` on `<runtime>/assistantd.lock` with `pid`, `started_at`, `version` and
+`runtime_root` written as metadata, the kernel drops the lock when the process dies, and
+`inspect_lock(path) -> LockState(held, metadata)` already answers "is a live process holding it"
+without a side effect (it is what the v1.3 tests use to prove single-instance behaviour). So
+`rings up`/`rings down` need no new probing machinery:
 
 ```text
-probe:  InstanceLock(path).acquire()   ── succeeds ──► nobody holds it (start the daemon)
-                                       └─ InstanceLockHeld(metadata) ─► a live process holds it;
-                                          metadata names that process (reuse it, or signal it)
+inspect_lock(path) ── held=False ─► nobody is running (start the daemon)
+                   └─ held=True  ─► a live process holds it; metadata names it (reuse / SIGTERM it)
 ```
 
 No pid file, no `ps` parsing, no stale-lock handling: a lock file left by a power cut is not an
 obstacle, which is the property ADR-0032 already tested.
 
-The probe holds the lock for microseconds and releases it before the child starts. If another
-process wins the race in between, the child fails with the existing, already-clear
+The probe holds the lock for microseconds and releases it before the child starts (`inspect_lock`
+does exactly this). If another process wins the race in between, the child fails with the existing,
+already-clear
 "Another assistantd instance is already running" error; `rings up` reports that verbatim rather
 than retrying in a loop.
 
@@ -214,8 +217,9 @@ it never restarts a live daemon on its own.
 
 | Area | File |
 | --- | --- |
-| Verbs, status block, autostart | `src/assistant/cli_chat.py`, `src/assistant/cli_up.py` (new) |
-| Detached start, readiness, log rotation | `src/assistant/daemon/launcher.py` (new) |
+| Verbs, status block, deps seam | `src/assistant/cli_chat.py`, `src/assistant/cli_up.py` (new) |
+| Lock probe / detached start / log rotation / readiness / stop | `src/assistant/adapters/runtime/daemon_process.py` (new), reusing `inspect_lock` |
+| Windows Startup file | `src/assistant/adapters/runtime/windows_autostart.py` (new) |
 | Credential file | `src/assistant/adapters/config/secrets_env.py` (new) |
 | Pairing token prune | `src/assistant/store/mobile_sessions.py` |
 | Fragment redemption | `src/assistant/adapters/web/static/chat.js` |
