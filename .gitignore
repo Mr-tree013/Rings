@@ -48,3 +48,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Superpowers SDD scratch (plan ledgers, briefs, review packages)
+.superpowers/
