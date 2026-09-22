@@ -49,6 +49,7 @@ from assistant import (
     cli_scheduler,
     cli_watch,
 )
+from assistant.adapters.config.secrets_env import load_secret_environment_into_process
 from assistant.adapters.ehall.session import session_state
 from assistant.adapters.filesystem.vault_manifest import manifest_path_for
 from assistant.adapters.mail.credentials import (
@@ -780,6 +781,9 @@ def _print_scan_result(result: CatalogScanResult) -> None:
 
 def main() -> None:
     """Console-script entry point (`pw`)."""
+    # The user's own secrets file, loaded once per process (ADR-0046). Credentials stay
+    # environment-only; this only reads a file the person wrote into that environment.
+    load_secret_environment_into_process(model_key=bootstrap.MODEL_API_KEY_ENV)
     try:
         app()
     except DomainError as exc:  # pragma: no cover - defensive: commands report their own errors

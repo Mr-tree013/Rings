@@ -31,6 +31,7 @@ import sys
 from typing import Any
 
 from assistant import bootstrap
+from assistant.adapters.config.secrets_env import load_secret_environment_into_process
 from assistant.adapters.mcp.resources import register_resources
 from assistant.adapters.mcp.tools import register_tools
 from assistant.application.mcp_facade import McpFacade
@@ -117,6 +118,9 @@ def main() -> None:
     server and believing they asked for something else.
     """
     configure_logging()
+    # The same user-owned secrets file the other entry points read, so a stdio client sees the
+    # same environment. Nothing is printed to stdout here — stdout carries the protocol (ADR-0046).
+    load_secret_environment_into_process(model_key=bootstrap.MODEL_API_KEY_ENV)
     arguments = sys.argv[1:]
     if arguments and arguments != ["--version"]:
         LOGGER.error(

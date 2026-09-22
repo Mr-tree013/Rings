@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 import typer
 
-from assistant import bootstrap
+from assistant import bootstrap, cli_up
 from assistant.adapters.web.server import lan_addresses
 from assistant.application import conversation_render as render
 from assistant.application.conversation_capabilities.introspection import (
@@ -373,14 +373,21 @@ def main() -> None:
     The default is deliberately unchanged. `rings` is still the terminal conversation, and
     `rings --web` is a *convenience* that opens the browser surface this host already serves — it
     never starts a daemon, never runs a command and never automates a browser (ADR-0041 §54).
+    `rings up` / `rings down` are the one-command start and stop path (ADR-0046).
     """
     arguments = sys.argv[1:]
     if not arguments:
+        cli_up.load_secrets_for_entry_point()
         raise SystemExit(run_conversation(announce="Rings — 本地个人运营系统"))
     if arguments == [WEB_FLAG]:
+        cli_up.load_secrets_for_entry_point()
         raise SystemExit(open_web_chat())
+    if arguments[0] in {"up", "down"}:
+        raise SystemExit(cli_up.main(arguments))
     error_console.print(f"无法识别的参数：{' '.join(arguments)}")
-    error_console.print("用法：rings [--web]")
+    error_console.print(
+        "用法：rings [--web] | rings up [--foreground] [--no-open] | rings down"
+    )
     raise SystemExit(2)
 
 

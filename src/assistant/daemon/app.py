@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from assistant import bootstrap
+from assistant.adapters.config.secrets_env import load_secret_environment_into_process
 from assistant.adapters.runtime.instance_lock import (
     InstanceLock,
     InstanceLockHeld,
@@ -202,6 +203,9 @@ async def _serve_runtime(
 
 def main() -> None:
     """Console-script entry point (`assistantd`)."""
+    # The user's own secrets file first, so the services this process composes find credentials
+    # without anyone exporting them by hand (ADR-0046).
+    load_secret_environment_into_process(model_key=bootstrap.MODEL_API_KEY_ENV)
     arguments = sys.argv[1:]
     if arguments == ["--version"]:
         sys.stdout.write(f"assistantd {bootstrap.assistant_version()}\n")
